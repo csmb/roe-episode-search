@@ -1,0 +1,17 @@
+node_modules/
+.wrangler/
+.DS_Store
+*.tgz
+
+# Transcripts are generated data (large), not source code
+transcripts/
+
+# Temp files from audio conversion
+/tmp/
+
+# Environment / secrets
+.env*
+.dev.vars*
+
+# R2 CORS config (has account-specific data)
+r2-cors.json

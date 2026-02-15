@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ROE Episode Search</title>
+<style>
+	* { box-sizing: border-box; margin: 0; padding: 0; }
+	body {
+		font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+		max-width: 800px;
+		margin: 0 auto;
+		padding: 20px;
+		background: #fafafa;
+		color: #222;
+	}
+	h1 { margin-bottom: 20px; font-size: 1.5rem; }
+	.search-box {
+		display: flex;
+		gap: 8px;
+		margin-bottom: 24px;
+	}
+	.search-box input {
+		flex: 1;
+		padding: 10px 14px;
+		font-size: 1rem;
+		border: 2px solid #ddd;
+		border-radius: 6px;
+		outline: none;
+	}
+	.search-box input:focus { border-color: #555; }
+	.search-box button {
+		padding: 10px 20px;
+		font-size: 1rem;
+		background: #222;
+		color: #fff;
+		border: none;
+		border-radius: 6px;
+		cursor: pointer;
+	}
+	.search-box button:hover { background: #444; }
+	.status { color: #888; margin-bottom: 16px; }
+	.player-bar {
+		position: sticky;
+		bottom: 0;
+		background: #222;
+		color: #fff;
+		padding: 12px 16px;
+		border-radius: 8px 8px 0 0;
+		margin: 0 -20px;
+		display: none;
+	}
+	.player-bar.active { display: block; }
+	.player-title {
+		font-size: 0.85rem;
+		color: #aaa;
+		margin-bottom: 6px;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+	.player-bar audio {
+		width: 100%;
+		height: 36px;
+		filter: invert(1);
+	}
+	.episode {
+		background: #fff;
+		border: 1px solid #e0e0e0;
+		border-radius: 8px;
+		margin-bottom: 16px;
+		padding: 16px;
+	}
+	.episode-title {
+		font-weight: 600;
+		font-size: 1.1rem;
+		margin-bottom: 10px;
+	}
+	.match-count { color: #888; font-weight: normal; font-size: 0.85rem; }
+	.match {
+		padding: 8px 0;
+		border-top: 1px solid #f0f0f0;
+		display: flex;
+		gap: 12px;
+		align-items: baseline;
+		cursor: pointer;
+	}
+	.match:first-child { border-top: none; }
+	.match:hover { background: #f8f8f8; }
+	.match.no-audio { cursor: default; }
+	.match.no-audio:hover { background: transparent; }
+	.timestamp {
+		font-family: monospace;
+		font-size: 0.85rem;
+		color: #0066cc;
+		white-space: nowrap;
+		min-width: 70px;
+		text-decoration: underline;
+		text-decoration-style: dotted;
+	}
+	.match.no-audio .timestamp {
+		color: #888;
+		text-decoration: none;
+	}
+	.match-text { font-size: 0.95rem; line-height: 1.4; }
+	mark { background: #fff3a8; padding: 1px 2px; border-radius: 2px; }
+	.load-more {
+		display: block;
+		width: 100%;
+		padding: 12px;
+		font-size: 1rem;
+		background: #fff;
+		border: 2px solid #ddd;
+		border-radius: 6px;
+		cursor: pointer;
+		margin-top: 8px;
+		margin-bottom: 80px;
+	}
+	.load-more:hover { border-color: #999; }
+	.hidden { display: none; }
+</style>
+</head>
+<body>
+
+<h1>ROE Episode Search</h1>
+
+<div class="search-box">
+	<input type="text" id="search-input" placeholder="Search episodes... (e.g. coffee, San Francisco)" autofocus>
+	<button id="search-btn">Search</button>
+</div>
+
+<div id="status" class="status"></div>
+<div id="results"></div>
+<button id="load-more" class="load-more hidden">Load more results</button>
+
+<div id="player-bar" class="player-bar">
+	<div id="player-title" class="player-title"></div>
+	<audio id="audio-player" controls preload="none"></audio>
+</div>
+
+<script>
+const searchInput = document.getElementById('search-input');
+const searchBtn = document.getElementById('search-btn');
+const statusEl = document.getElementById('status');
+const resultsEl = document.getElementById('results');
+const loadMoreBtn = document.getElementById('load-more');
+const playerBar = document.getElementById('player-bar');
+const playerTitle = document.getElementById('player-title');
+const audioPlayer = document.getElementById('audio-player');
+
+let currentQuery = '';
+let currentPage = 1;
+let hasMore = false;
+let currentAudioSrc = '';
+let pendingSeek = null;
+
+// Seek once the browser has enough data
+audioPlayer.addEventListener('loadedmetadata', () => {
+	if (pendingSeek !== null) {
+		audioPlayer.currentTime = pendingSeek;
+		pendingSeek = null;
+	}
+});
+
+searchBtn.addEventListener('click', () => doSearch());
+searchInput.addEventListener('keydown', (e) => {
+	if (e.key === 'Enter') doSearch();
+});
+loadMoreBtn.addEventListener('click', () => loadMore());
+
+// Load query from URL on page load
+const params = new URLSearchParams(window.location.search);
+if (params.get('q')) {
+	searchInput.value = params.get('q');
+	doSearch();
+}
+
+function playAt(audioUrl, startMs, title) {
+	const startSeconds = startMs / 1000;
+
+	playerBar.classList.add('active');
+	playerTitle.textContent = title + ' @ ' + formatTime(startMs);
+
+	if (currentAudioSrc !== audioUrl) {
+		// New episode — load it, queue the seek, play from click context
+		currentAudioSrc = audioUrl;
+		pendingSeek = startSeconds;
+		audioPlayer.src = audioUrl;
+		audioPlayer.load();
+		audioPlayer.play().catch(() => {});
+	} else {
+		// Same episode — just seek and play
+		audioPlayer.currentTime = startSeconds;
+		audioPlayer.play().catch(() => {});
+	}
+}
+
+async function doSearch() {
+	const q = searchInput.value.trim();
+	if (!q) return;
+
+	currentQuery = q;
+	currentPage = 1;
+	resultsEl.innerHTML = '';
+	statusEl.textContent = 'Searching...';
+	loadMoreBtn.classList.add('hidden');
+
+	history.replaceState(null, '', '?q=' + encodeURIComponent(q));
+
+	await fetchResults();
+}
+
+async function loadMore() {
+	currentPage++;
+	await fetchResults();
+}
+
+async function fetchResults() {
+	try {
+		const res = await fetch('/api/search?q=' + encodeURIComponent(currentQuery) + '&page=' + currentPage);
+		const data = await res.json();
+
+		if (data.error) {
+			statusEl.textContent = 'Error: ' + data.error;
+			return;
+		}
+
+		hasMore = data.has_more;
+		loadMoreBtn.classList.toggle('hidden', !hasMore);
+
+		const totalMatches = data.results.reduce((sum, ep) => sum + ep.matches.length, 0);
+
+		if (currentPage === 1) {
+			if (totalMatches === 0) {
+				statusEl.textContent = 'No results found for "' + currentQuery + '"';
+				return;
+			}
+			statusEl.textContent = 'Results for "' + currentQuery + '"';
+		}
+
+		for (const episode of data.results) {
+			resultsEl.appendChild(renderEpisode(episode));
+		}
+	} catch (err) {
+		statusEl.textContent = 'Error: ' + err.message;
+	}
+}
+
+function renderEpisode(episode) {
+	const div = document.createElement('div');
+	div.className = 'episode';
+
+	const title = document.createElement('div');
+	title.className = 'episode-title';
+	title.textContent = episode.title + ' ';
+	const count = document.createElement('span');
+	count.className = 'match-count';
+	count.textContent = '(' + episode.matches.length + ' match' + (episode.matches.length !== 1 ? 'es' : '') + ')';
+	title.appendChild(count);
+	div.appendChild(title);
+
+	for (const match of episode.matches) {
+		const matchDiv = document.createElement('div');
+		matchDiv.className = 'match' + (episode.audio_file ? '' : ' no-audio');
+
+		const ts = document.createElement('span');
+		ts.className = 'timestamp';
+		ts.textContent = formatTime(match.start_ms);
+		matchDiv.appendChild(ts);
+
+		const text = document.createElement('span');
+		text.className = 'match-text';
+		text.innerHTML = highlightQuery(match.text, currentQuery);
+		matchDiv.appendChild(text);
+
+		if (episode.audio_file) {
+			matchDiv.addEventListener('click', () => {
+				playAt(episode.audio_file, match.start_ms, episode.title);
+			});
+		}
+
+		div.appendChild(matchDiv);
+	}
+
+	return div;
+}
+
+function formatTime(ms) {
+	const totalSeconds = Math.floor(ms / 1000);
+	const h = Math.floor(totalSeconds / 3600);
+	const m = Math.floor((totalSeconds % 3600) / 60);
+	const s = totalSeconds % 60;
+	if (h > 0) {
+		return h + ':' + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+	}
+	return m + ':' + String(s).padStart(2, '0');
+}
+
+function highlightQuery(text, query) {
+	const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+	const regex = new RegExp('(' + escaped + ')', 'gi');
+	return text.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(regex, '<mark>$1</mark>');
+}
+</script>
+
+</body>
+</html>

@@ -1,0 +1,28 @@
+{
+  "name": "roe-episode-search",
+  "main": "src/index.js",
+  "compatibility_date": "2024-12-01",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "roe-episodes",
+      "database_id": "cc7207a0-a581-4d3a-9c8f-12597b1ab46d"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "AUDIO",
+      "bucket_name": "roe-audio"
+    }
+  ],
+  "observability": {
+    "enabled": true
+  },
+  "rules": [
+    {
+      "type": "Text",
+      "globs": ["**/*.html"],
+      "fallthrough": false
+    }
+  ]
+}
