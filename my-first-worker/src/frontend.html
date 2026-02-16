@@ -101,6 +101,23 @@
 		margin-bottom: 0.75rem;
 	}
 	.info-card p:last-of-type { margin-bottom: 0; }
+	.info-links {
+		display: flex;
+		gap: 1.5rem;
+		flex-wrap: wrap;
+		margin-top: 0.5rem;
+	}
+	.info-links a {
+		color: #505050;
+		text-decoration: none;
+		font-weight: 500;
+		border-bottom: 1px solid transparent;
+		transition: all 0.2s ease;
+	}
+	.info-links a:hover {
+		color: #303030;
+		border-bottom-color: #505050;
+	}
 	.info-card .cta-button { margin-top: 1.5rem; }
 	.cta-button {
 		display: inline-block;
@@ -479,6 +496,11 @@
 			<p>Roll Over Easy is a radio show that's all about starting your day off right. We take you from under the covers to after coffee every Thursday morning, and along the way we'll give you plenty of good tunes 🎵 and fun conversation about the City you know and love.</p>
 			<p>Broadcasting exclusively on BFF.fm &ndash; Best Frequencies Forever, a San Francisco-based community radio station run by a volunteer staff of music nerds who love independent music and are hell-bent on delivering awesome radio programming.</p>
 			<p>We're broadcasting from all corners of San Francisco in locations like the BFF.fm Studios, Manny's, walking up Market St., the Ferry Building 🚢, a Ferry, the Wave Organ, a Cable Car 🚃, through Union Square, and in Golden Gate Park 🌲</p>
+			<p class="info-links">
+				<a href="https://bff.fm/shows/roll-over-easy">BFF.FM</a>
+				<a href="https://open.spotify.com/show/2twThxpgTjI3ZEpZhBXC28">Spotify</a>
+				<a href="https://podcasts.apple.com/us/podcast/roll-over-easy-from-bff-fm/id1013488895">Apple Podcasts</a>
+			</p>
 		</div>
 		<div class="info-card">
 			<h2>Support BFF.fm 📻</h2>
