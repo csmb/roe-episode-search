@@ -117,7 +117,7 @@ async function handleSemanticSearch(url, env) {
 	if (episodeIds.length > 0) {
 		const placeholders = episodeIds.map(() => '?').join(', ');
 		const { results } = await env.DB.prepare(
-			`SELECT id, duration_ms, summary FROM episodes WHERE id IN (${placeholders})`
+			`SELECT id, title, duration_ms, summary FROM episodes WHERE id IN (${placeholders})`
 		)
 			.bind(...episodeIds)
 			.all();
@@ -136,7 +136,7 @@ async function handleSemanticSearch(url, env) {
 			const dbMeta = episodeMeta[epId] || {};
 			episodeMap.set(epId, {
 				episode_id: epId,
-				title: meta.title,
+				title: dbMeta.title || meta.title,
 				duration_ms: dbMeta.duration_ms || null,
 				summary: dbMeta.summary || null,
 				audio_file: `/audio/${epId}.m4a`,
