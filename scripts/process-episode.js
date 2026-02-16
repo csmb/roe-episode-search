@@ -42,35 +42,33 @@ const WHISPER_MODEL_CANDIDATES = [
 ];
 const WHISPER_MODEL_PATH = WHISPER_MODEL_CANDIDATES.find((p) => fs.existsSync(p)) || WHISPER_MODEL_CANDIDATES[0];
 
+// Whisper prompt: ~224 token limit. Prioritize proper nouns whisper would mishear.
 const SF_VOCAB_PROMPT = [
-	'Roll Over Easy, BFF.fm, San Francisco, the Bay Area,',
-	'the Mission, the Castro, the Haight, Haight-Ashbury, SoMa, the Tenderloin,',
-	'Noe Valley, Potrero Hill, Dogpatch, Bernal Heights, the Sunset, the Richmond,',
-	'the Outer Sunset, the Inner Richmond, North Beach, Chinatown, Japantown,',
-	'the Marina, Pac Heights, Pacific Heights, Russian Hill, Nob Hill, Telegraph Hill,',
-	'the Fillmore, Hayes Valley, Cole Valley, Glen Park, Excelsior, Bayview,',
-	'Hunters Point, Visitacion Valley, the Outer Richmond, Sea Cliff, the Presidio,',
-	'the Ferry Building, Coit Tower, Golden Gate Bridge, Golden Gate Park,',
-	'Alcatraz, Fishermans Wharf, Pier 39, AT&T Park, Oracle Park,',
-	'Dolores Park, Alamo Square, the Painted Ladies, Twin Peaks,',
-	'Sutro Baths, Lands End, Ocean Beach, Baker Beach, Fort Mason,',
-	'the de Young Museum, Cal Academy, California Academy of Sciences,',
-	'SFMOMA, the Exploratorium, Palace of Fine Arts, City Lights Bookstore,',
-	'Tartine, Bi-Rite, Humphry Slocombe, Mitchell\'s Ice Cream,',
-	'Anchor Brewing, Toronado, Zeitgeist, the Knockout, El Rio,',
-	'Hamburger Haven, the San Francisco Botanical Garden,',
-	'Muni, BART, Caltrain, the N-Judah, the L-Taraval, the K-Ingleside,',
-	'the F-Market, cable cars, the 38 Geary, the Transbay Terminal,',
-	'Salesforce Transit Center, SFO, Oakland,',
-	'the San Francisco Chronicle, the SF Examiner, KQED, KALW,',
-	'SF State, UCSF, USF, City College, the Board of Supervisors,',
-	'the Giants, the 49ers, the Warriors, Chase Center,',
-	'sourdough, cioppino, Mission burrito, Irish coffee, Dungeness crab,',
-	'dim sum, boba, the Ferry Plaza Farmers Market,',
-	'Karl the Fog, fog, microclimates, the Bay, the Pacific,',
-	'Marin, the East Bay, the Peninsula, Silicon Valley,',
-	'tech, gentrification, rent control, the housing crisis, NIMBYism, YIMBYism,',
-	'the Summer of Love, the Beat Generation, Burning Man,',
+	// Show & station
+	'Roll Over Easy, BFF.fm, Stroll Over Easy,',
+	// Neighborhoods (compact)
+	'SoMa, the Tenderloin, Dogpatch, Bernal Heights, Japantown, Visitacion Valley,',
+	'Haight-Ashbury, Pac Heights, Noe Valley, Potrero Hill, the Fillmore, Bayview,',
+	// Landmarks & places
+	'the Ferry Building, Golden Gate Park, Sutro Baths, Lands End, McLaren Park,',
+	'JFK Promenade, Crosstown Trail, Pier 70, Wave Organ, Transamerica Pyramid,',
+	'Conservatory of Flowers, the Botanical Garden, Salesforce Park,',
+	// Venues & businesses
+	'Hamburger Haven, Club Fugazi, Manny\'s, The Lab, Spin City, Parklab,',
+	'La Cocina, Bi-Rite, Tartine, Humphry Slocombe, Lazy Bear, Toronado,',
+	'Wesburger, Lady Falcon Coffee Club, The New Wheel, Laughing Monk,',
+	// People & characters
+	'Emperor Norton, Herb Caen, Cosmic Amanda, Dr. Guacamole,',
+	// Organizations & media
+	'Muni Diaries, Noise Pop, Litquake, Litcrawl, KQED, KALW, Hoodline,',
+	'Mission Local, SFGate, Tablehopper, Total SF, Bay City Beacon,',
+	'BAYCAT, ODC, YBCA, Gray Area, SFMOMA, the Exploratorium,',
+	'Sisters of Perpetual Indulgence, Cacophony Society,',
+	// Transit
+	'Muni, BART, Caltrain, the N-Judah, the F-Market,',
+	// Culture & SF-specific
+	'Eichler Homes, Compton\'s Cafeteria, Critical Mass, Sketch Fest, Karl the Fog,',
+	'NIMBYism, YIMBYism, Dungeness crab, cioppino, dim sum, sourdough,',
 ].join(' ');
 
 const projectRoot = path.resolve(path.dirname(decodeURIComponent(new URL(import.meta.url).pathname)), '..');
