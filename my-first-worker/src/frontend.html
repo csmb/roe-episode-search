@@ -284,6 +284,22 @@
 	}
 	.load-more:hover { border-color: #999; color: #303030; }
 
+	.show-more-matches {
+		display: block;
+		width: 100%;
+		padding: 8px;
+		margin-top: 4px;
+		font-size: 0.85rem;
+		font-weight: 500;
+		color: #888;
+		background: none;
+		border: none;
+		border-top: 1px solid #eee;
+		cursor: pointer;
+		transition: color 0.2s ease;
+	}
+	.show-more-matches:hover { color: #505050; }
+
 	/* Episode browse cards */
 	.episode-meta {
 		color: #999;
@@ -698,9 +714,14 @@ function renderEpisode(episode) {
 		div.appendChild(summary);
 	}
 
-	for (const match of episode.matches) {
+	const maxVisible = 10;
+	const hasOverflow = episode.matches.length > maxVisible;
+
+	for (let i = 0; i < episode.matches.length; i++) {
+		const match = episode.matches[i];
 		const matchDiv = document.createElement('div');
 		matchDiv.className = 'match' + (episode.audio_file ? '' : ' no-audio');
+		if (i >= maxVisible) matchDiv.classList.add('hidden');
 
 		const ts = document.createElement('span');
 		ts.className = 'timestamp';
@@ -726,6 +747,18 @@ function renderEpisode(episode) {
 		}
 
 		div.appendChild(matchDiv);
+	}
+
+	if (hasOverflow) {
+		const remaining = episode.matches.length - maxVisible;
+		const showMore = document.createElement('button');
+		showMore.className = 'show-more-matches';
+		showMore.textContent = 'Show ' + remaining + ' more mention' + (remaining !== 1 ? 's' : '');
+		showMore.addEventListener('click', () => {
+			div.querySelectorAll('.match.hidden').forEach(el => el.classList.remove('hidden'));
+			showMore.remove();
+		});
+		div.appendChild(showMore);
 	}
 
 	return div;
