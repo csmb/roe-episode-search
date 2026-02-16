@@ -3,7 +3,8 @@ CREATE TABLE episodes (
     title TEXT NOT NULL,
     audio_file TEXT,
     duration_ms INTEGER,
-    published_at TEXT
+    published_at TEXT,
+    summary TEXT
 );
 
 CREATE TABLE transcript_segments (

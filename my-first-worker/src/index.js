@@ -1,4 +1,5 @@
 import FRONTEND_HTML from './frontend.html';
+import EPISODES_HTML from './episodes.html';
 
 export default {
 	async fetch(request, env) {
@@ -9,6 +10,11 @@ export default {
 		}
 		if (url.pathname === '/api/episodes') {
 			return handleEpisodes(env);
+		}
+		if (url.pathname === '/episodes') {
+			return new Response(EPISODES_HTML, {
+				headers: { 'Content-Type': 'text/html; charset=utf-8' },
+			});
 		}
 		if (url.pathname.startsWith('/audio/')) {
 			return handleAudio(request, url, env);
@@ -36,6 +42,7 @@ async function handleSearch(url, env) {
 			e.id AS episode_id,
 			e.title AS episode_title,
 			e.duration_ms AS episode_duration_ms,
+			e.summary AS episode_summary,
 			e.audio_file,
 			s.start_ms,
 			s.end_ms,
@@ -59,6 +66,7 @@ async function handleSearch(url, env) {
 				episode_id: row.episode_id,
 				title: row.episode_title,
 				duration_ms: row.episode_duration_ms,
+				summary: row.episode_summary,
 				audio_file: `/audio/${row.episode_id}.m4a`,
 				matches: [],
 			});
@@ -68,6 +76,11 @@ async function handleSearch(url, env) {
 			end_ms: row.end_ms,
 			text: row.text,
 		});
+	}
+
+	// Sort matches chronologically within each episode
+	for (const ep of episodeMap.values()) {
+		ep.matches.sort((a, b) => a.start_ms - b.start_ms);
 	}
 
 	return json({
@@ -80,7 +93,7 @@ async function handleSearch(url, env) {
 
 async function handleEpisodes(env) {
 	const { results } = await env.DB.prepare(
-		'SELECT id, title, duration_ms, published_at FROM episodes ORDER BY id'
+		'SELECT id, title, duration_ms, published_at, summary FROM episodes ORDER BY id'
 	).all();
 
 	return json({ episodes: results });
