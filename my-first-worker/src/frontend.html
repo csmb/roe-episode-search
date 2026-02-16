@@ -175,7 +175,7 @@
 		font-size: 1.1rem;
 		color: #999;
 		pointer-events: none;
-		transition: opacity 0.4s ease;
+		transition: opacity 0.8s ease;
 	}
 	.rotating-placeholder.hidden { opacity: 0; }
 	.search-box button {
@@ -426,7 +426,7 @@
 			<div class="search-box">
 				<div class="search-input-wrap">
 					<input type="text" id="search-input" autofocus>
-					<span id="rotating-placeholder" class="rotating-placeholder">Search for &ldquo;coffee&rdquo;</span>
+					<span id="rotating-placeholder" class="rotating-placeholder">coffee</span>
 				</div>
 				<button id="search-btn">Search</button>
 			</div>
@@ -798,9 +798,11 @@ function rotatePlaceholder() {
 	placeholderEl.classList.add('hidden');
 	setTimeout(() => {
 		placeholderIdx = (placeholderIdx + 1) % placeholderExamples.length;
-		placeholderEl.innerHTML = 'Search for \u201c' + placeholderExamples[placeholderIdx] + '\u201d';
+		placeholderEl.textContent = placeholderExamples[placeholderIdx];
+		// Force a reflow before removing hidden so the browser sees the opacity change
+		placeholderEl.offsetWidth;
 		updatePlaceholderVisibility();
-	}, 400);
+	}, 800);
 }
 
 searchInput.addEventListener('focus', updatePlaceholderVisibility);
