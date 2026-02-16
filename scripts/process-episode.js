@@ -182,6 +182,66 @@ function parseEpisodeId(mp3Path) {
 	return stem;
 }
 
+// ── Transcript cleanup ─────────────────────────────────────────────────
+
+/**
+ * Clean whisper.cpp artifacts from parsed segments:
+ *  - Drop zero-duration segments (start_ms == end_ms)
+ *  - Deduplicate consecutive identical text
+ *  - Drop segments with internal phrase looping (same phrase 4+ times)
+ */
+function cleanSegments(segments) {
+	const cleaned = [];
+
+	for (let i = 0; i < segments.length; i++) {
+		const seg = segments[i];
+
+		// Drop zero-duration segments
+		if (seg.start_ms === seg.end_ms) continue;
+
+		// Drop consecutive duplicates (same text as previous kept segment)
+		if (cleaned.length > 0 && seg.text === cleaned[cleaned.length - 1].text) continue;
+
+		// Drop segments with internal phrase looping
+		if (hasInternalLoop(seg.text)) continue;
+
+		cleaned.push(seg);
+	}
+
+	return cleaned;
+}
+
+/**
+ * Detect internal looping: a phrase of 3+ words repeating 4+ times in a row.
+ * E.g. "I think that I think that I think that I think that"
+ */
+function hasInternalLoop(text) {
+	const words = text.toLowerCase().split(/\s+/);
+	if (words.length < 12) return false;
+
+	// Check phrase lengths from 3 to 8 words
+	for (let phraseLen = 3; phraseLen <= 8 && phraseLen <= words.length / 4; phraseLen++) {
+		// Slide through the text looking for repeating phrases
+		for (let start = 0; start <= words.length - phraseLen * 4; start++) {
+			const phrase = words.slice(start, start + phraseLen).join(' ');
+			let repeats = 1;
+			let pos = start + phraseLen;
+			while (pos + phraseLen <= words.length) {
+				const next = words.slice(pos, pos + phraseLen).join(' ');
+				if (next === phrase) {
+					repeats++;
+					pos += phraseLen;
+				} else {
+					break;
+				}
+			}
+			if (repeats >= 4) return true;
+		}
+	}
+
+	return false;
+}
+
 // ── Step 3: Transcribe (whisper.cpp) ───────────────────────────────────
 
 function transcribe(mp3Path, episodeId, force) {
@@ -224,8 +284,8 @@ function transcribe(mp3Path, episodeId, force) {
 		const whisperData = JSON.parse(fs.readFileSync(whisperJsonPath, 'utf-8'));
 		const rawSegments = whisperData.transcription || [];
 
-		// Convert to our format, filtering hallucinations
-		const segments = [];
+		// Convert to our format, filtering obvious bad segments
+		const parsed = [];
 		for (const seg of rawSegments) {
 			const text = (seg.text || '').trim();
 
@@ -236,12 +296,15 @@ function transcribe(mp3Path, episodeId, force) {
 			if (text.length < 3) continue;
 
 			// offsets.from and offsets.to are in centiseconds (10ms units)
-			segments.push({
+			parsed.push({
 				start_ms: seg.offsets.from * 10,
 				end_ms: seg.offsets.to * 10,
 				text,
 			});
 		}
+
+		// Clean up whisper artifacts
+		const segments = cleanSegments(parsed);
 
 		const transcript = {
 			episode_id: episodeId,
@@ -250,7 +313,7 @@ function transcribe(mp3Path, episodeId, force) {
 		};
 
 		fs.writeFileSync(outputPath, JSON.stringify(transcript, null, 2));
-		timer.done(`${segments.length} segments`);
+		timer.done(`${segments.length} segments (${parsed.length - segments.length} removed by cleanup)`);
 	} finally {
 		fs.rmSync(tmpDir, { recursive: true, force: true });
 	}
