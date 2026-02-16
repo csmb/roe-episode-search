@@ -11,6 +11,9 @@ export default {
 		if (url.pathname === '/api/semantic-search') {
 			return handleSemanticSearch(url, env);
 		}
+		if (url.pathname === '/api/timeline') {
+			return handleTimeline(url, env);
+		}
 		if (url.pathname === '/api/episodes') {
 			return handleEpisodes(env);
 		}
@@ -161,6 +164,51 @@ async function handleSemanticSearch(url, env) {
 		page: 1,
 		results: Array.from(episodeMap.values()),
 		has_more: false,
+	});
+}
+
+async function handleTimeline(url, env) {
+	const query = url.searchParams.get('q')?.trim();
+	if (!query) {
+		return json({ error: 'Missing ?q= parameter' }, 400);
+	}
+
+	const [timelineResult, rangeResult] = await Promise.all([
+		env.DB.prepare(`
+			SELECT
+				SUBSTR(e.id, 16, 7) AS month,
+				COUNT(*) AS mention_count,
+				COUNT(DISTINCT e.id) AS episode_count
+			FROM transcript_fts fts
+			JOIN transcript_segments s ON s.rowid = fts.rowid
+			JOIN episodes e ON e.id = s.episode_id
+			WHERE transcript_fts MATCH ?1
+			GROUP BY SUBSTR(e.id, 16, 7)
+			ORDER BY month
+		`).bind(query).all(),
+		env.DB.prepare(`
+			SELECT
+				MIN(SUBSTR(id, 16, 7)) AS first_month,
+				MAX(SUBSTR(id, 16, 7)) AS last_month
+			FROM episodes
+		`).all(),
+	]);
+
+	const timeline = timelineResult.results.map(row => ({
+		month: row.month,
+		mentions: row.mention_count,
+		episodes: row.episode_count,
+	}));
+
+	const totalMentions = timeline.reduce((sum, t) => sum + t.mentions, 0);
+	const range = rangeResult.results[0] || {};
+
+	return json({
+		query,
+		timeline,
+		total_mentions: totalMentions,
+		first_month: range.first_month,
+		last_month: range.last_month,
 	});
 }
 

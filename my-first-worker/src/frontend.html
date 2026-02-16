@@ -366,6 +366,62 @@
 		border-bottom-color: #505050;
 	}
 
+	/* Timeline */
+	.timeline-card {
+		background: #fff;
+		border-radius: 12px;
+		box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+		margin-bottom: 16px;
+		padding: 20px;
+	}
+	.timeline-header {
+		display: flex;
+		justify-content: space-between;
+		align-items: baseline;
+		margin-bottom: 12px;
+	}
+	.timeline-label {
+		font-weight: 600;
+		font-size: 0.95rem;
+		color: #404040;
+	}
+	.timeline-total {
+		font-size: 0.85rem;
+		color: #999;
+	}
+	.timeline-svg {
+		width: 100%;
+		display: block;
+	}
+	.timeline-bar {
+		fill: #b0b0b0;
+		transition: fill 0.1s ease;
+	}
+	.timeline-bar.active {
+		fill: #505050;
+	}
+	.timeline-year-label {
+		fill: #999;
+		font-size: 11px;
+		font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+	}
+	.timeline-tooltip {
+		position: absolute;
+		background: #303030;
+		color: #fff;
+		padding: 6px 10px;
+		border-radius: 6px;
+		font-size: 0.8rem;
+		white-space: nowrap;
+		pointer-events: none;
+		opacity: 0;
+		transition: opacity 0.15s ease;
+		z-index: 50;
+	}
+	.timeline-tooltip.visible {
+		opacity: 1;
+	}
+
 	@media (max-width: 768px) {
 		.hero { height: 60vh; min-height: 400px; }
 		.hero h1 { font-size: 2.5rem; }
@@ -420,6 +476,7 @@
 				</div>
 			</div>
 			<div id="status" class="status"></div>
+			<div id="timeline"></div>
 			<div id="results"></div>
 			<button id="load-more" class="load-more hidden">Load more results</button>
 		</div>
@@ -475,6 +532,8 @@ const loadMoreBtn = document.getElementById('load-more');
 const playerBar = document.getElementById('player-bar');
 const playerTitle = document.getElementById('player-title');
 const audioPlayer = document.getElementById('audio-player');
+
+const timelineEl = document.getElementById('timeline');
 
 const episodesStatusEl = document.getElementById('episodes-status');
 const episodesListEl = document.getElementById('episodes-list');
@@ -558,11 +617,16 @@ async function doSearch() {
 	currentQuery = q;
 	currentPage = 1;
 	resultsEl.innerHTML = '';
+	timelineEl.innerHTML = '';
 	statusEl.textContent = 'Searching...';
 	loadMoreBtn.classList.add('hidden');
 
 	const modeParam = searchMode === 'semantic' ? '&mode=semantic' : '';
 	history.replaceState(null, '', '?q=' + encodeURIComponent(q) + modeParam);
+
+	if (searchMode === 'keyword') {
+		fetchTimeline(currentQuery);
+	}
 	await fetchResults();
 }
 
@@ -665,6 +729,187 @@ function renderEpisode(episode) {
 	}
 
 	return div;
+}
+
+// Timeline
+async function fetchTimeline(query) {
+	try {
+		const res = await fetch('/api/timeline?q=' + encodeURIComponent(query));
+		const data = await res.json();
+		if (data.error || !data.timeline || data.timeline.length === 0) {
+			timelineEl.innerHTML = '';
+			return;
+		}
+		renderTimeline(data);
+	} catch (err) {
+		timelineEl.innerHTML = '';
+	}
+}
+
+function generateMonthRange(first, last) {
+	const months = [];
+	let [y, m] = first.split('-').map(Number);
+	const [ly, lm] = last.split('-').map(Number);
+	while (y < ly || (y === ly && m <= lm)) {
+		months.push(y + '-' + String(m).padStart(2, '0'));
+		m++;
+		if (m > 12) { m = 1; y++; }
+	}
+	return months;
+}
+
+function renderTimeline(data) {
+	const allMonths = generateMonthRange(data.first_month, data.last_month);
+	const mentionMap = {};
+	for (const t of data.timeline) {
+		mentionMap[t.month] = t;
+	}
+
+	const card = document.createElement('div');
+	card.className = 'timeline-card';
+
+	const header = document.createElement('div');
+	header.className = 'timeline-header';
+	header.innerHTML = '<span class="timeline-label">\u201c' + escapeHtml(data.query) + '\u201d over time</span>'
+		+ '<span class="timeline-total">' + data.total_mentions + ' mention' + (data.total_mentions !== 1 ? 's' : '') + '</span>';
+	card.appendChild(header);
+
+	const container = document.createElement('div');
+	container.style.position = 'relative';
+	card.appendChild(container);
+
+	// SVG dimensions
+	const padding = { top: 4, bottom: 24, left: 0, right: 0 };
+	const barMaxHeight = 60;
+	const svgHeight = barMaxHeight + padding.top + padding.bottom;
+	const maxMentions = Math.max(...allMonths.map(m => (mentionMap[m]?.mentions || 0)));
+
+	const svgNs = 'http://www.w3.org/2000/svg';
+	const svg = document.createElementNS(svgNs, 'svg');
+	svg.setAttribute('class', 'timeline-svg');
+	svg.setAttribute('viewBox', '0 0 1000 ' + svgHeight);
+	svg.setAttribute('preserveAspectRatio', 'none');
+	svg.style.height = (svgHeight) + 'px';
+
+	const chartWidth = 1000 - padding.left - padding.right;
+	const barWidth = chartWidth / allMonths.length;
+	const gap = Math.max(0.5, barWidth * 0.15);
+
+	// Draw bars
+	for (let i = 0; i < allMonths.length; i++) {
+		const m = allMonths[i];
+		const count = mentionMap[m]?.mentions || 0;
+		if (count === 0) continue;
+		const h = (count / maxMentions) * barMaxHeight;
+		const x = padding.left + i * barWidth + gap / 2;
+		const y = padding.top + barMaxHeight - h;
+		const rect = document.createElementNS(svgNs, 'rect');
+		rect.setAttribute('class', 'timeline-bar');
+		rect.setAttribute('x', x);
+		rect.setAttribute('y', y);
+		rect.setAttribute('width', Math.max(0.5, barWidth - gap));
+		rect.setAttribute('height', h);
+		rect.setAttribute('rx', Math.min(2, (barWidth - gap) / 2));
+		rect.dataset.index = i;
+		svg.appendChild(rect);
+	}
+
+	// Year labels
+	const yearsShown = new Set();
+	for (let i = 0; i < allMonths.length; i++) {
+		const year = allMonths[i].substring(0, 4);
+		if (yearsShown.has(year)) continue;
+		// Place label at january (or first month of that year in range)
+		yearsShown.add(year);
+		const x = padding.left + i * barWidth;
+		const label = document.createElementNS(svgNs, 'text');
+		label.setAttribute('class', 'timeline-year-label');
+		label.setAttribute('x', x);
+		label.setAttribute('y', svgHeight - 2);
+		label.textContent = year;
+		svg.appendChild(label);
+	}
+
+	container.appendChild(svg);
+
+	// Tooltip
+	const tooltip = document.createElement('div');
+	tooltip.className = 'timeline-tooltip';
+	container.appendChild(tooltip);
+
+	// Interaction
+	let activeBar = null;
+	const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+	function showTooltip(clientX, clientY, monthIndex) {
+		if (activeBar !== null) {
+			const prev = svg.querySelector('.timeline-bar.active');
+			if (prev) prev.classList.remove('active');
+		}
+		activeBar = monthIndex;
+		const m = allMonths[monthIndex];
+		const info = mentionMap[m];
+		if (!info) {
+			tooltip.classList.remove('visible');
+			return;
+		}
+		const [yr, mo] = m.split('-');
+		const mName = monthNames[parseInt(mo, 10) - 1];
+		tooltip.textContent = mName + ' ' + yr + ' \u2014 ' + info.mentions + ' mention' + (info.mentions !== 1 ? 's' : '') + ' in ' + info.episodes + ' episode' + (info.episodes !== 1 ? 's' : '');
+		tooltip.classList.add('visible');
+
+		// Highlight bar
+		const bar = svg.querySelector('.timeline-bar[data-index="' + monthIndex + '"]');
+		if (bar) bar.classList.add('active');
+
+		// Position tooltip
+		const containerRect = container.getBoundingClientRect();
+		let left = clientX - containerRect.left;
+		const tooltipWidth = tooltip.offsetWidth;
+		// Keep tooltip within bounds
+		if (left + tooltipWidth / 2 > containerRect.width) left = containerRect.width - tooltipWidth / 2;
+		if (left - tooltipWidth / 2 < 0) left = tooltipWidth / 2;
+		tooltip.style.left = left + 'px';
+		tooltip.style.top = '-28px';
+		tooltip.style.transform = 'translateX(-50%)';
+	}
+
+	function getMonthIndex(clientX) {
+		const svgRect = svg.getBoundingClientRect();
+		const relX = clientX - svgRect.left;
+		const ratio = relX / svgRect.width;
+		return Math.max(0, Math.min(allMonths.length - 1, Math.floor(ratio * allMonths.length)));
+	}
+
+	function hideTooltip() {
+		tooltip.classList.remove('visible');
+		const prev = svg.querySelector('.timeline-bar.active');
+		if (prev) prev.classList.remove('active');
+		activeBar = null;
+	}
+
+	// Desktop
+	svg.addEventListener('mousemove', (e) => {
+		const idx = getMonthIndex(e.clientX);
+		showTooltip(e.clientX, e.clientY, idx);
+	});
+	svg.addEventListener('mouseleave', hideTooltip);
+
+	// Mobile
+	svg.addEventListener('touchstart', (e) => {
+		const touch = e.touches[0];
+		const idx = getMonthIndex(touch.clientX);
+		showTooltip(touch.clientX, touch.clientY, idx);
+	}, { passive: true });
+	svg.addEventListener('touchmove', (e) => {
+		const touch = e.touches[0];
+		const idx = getMonthIndex(touch.clientX);
+		showTooltip(touch.clientX, touch.clientY, idx);
+	}, { passive: true });
+	svg.addEventListener('touchend', hideTooltip);
+
+	timelineEl.innerHTML = '';
+	timelineEl.appendChild(card);
 }
 
 // Episodes browsing
