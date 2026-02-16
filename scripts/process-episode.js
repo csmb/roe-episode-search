@@ -17,7 +17,7 @@
  *   --skip step1,step2       Skip specific steps (transcribe, seed-db, embeddings, summary, upload-audio)
  */
 
-import { execSync } from 'node:child_process';
+import { execSync, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -260,18 +260,17 @@ function transcribe(mp3Path, episodeId, force) {
 		// Convert MP3 → WAV (16kHz mono)
 		const wavPath = path.join(tmpDir, 'audio.wav');
 		console.log('  Converting to WAV (16kHz mono)...');
-		execSync(
-			`ffmpeg -y -i "${mp3Path}" -ar 16000 -ac 1 "${wavPath}" 2>/dev/null`,
-			{ encoding: 'utf-8' }
-		);
+		execFileSync('ffmpeg', ['-y', '-i', mp3Path, '-ar', '16000', '-ac', '1', wavPath], {
+			encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'],
+		});
 
 		// Run whisper.cpp
 		const whisperOutput = path.join(tmpDir, 'output');
 		console.log('  Running whisper.cpp (this will take a while)...');
-		execSync(
-			`whisper-cli -m "${WHISPER_MODEL_PATH}" --language en --output-json-full --output-file "${whisperOutput}" --prompt "${SF_VOCAB_PROMPT}" "${wavPath}"`,
-			{ encoding: 'utf-8', stdio: ['pipe', 'pipe', 'inherit'], timeout: 0, maxBuffer: 50 * 1024 * 1024 }
-		);
+		execFileSync('whisper-cli', [
+			'-m', WHISPER_MODEL_PATH, '--language', 'en', '--output-json-full',
+			'--output-file', whisperOutput, '--prompt', SF_VOCAB_PROMPT, wavPath,
+		], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'inherit'], timeout: 0, maxBuffer: 50 * 1024 * 1024 });
 
 		// Parse whisper.cpp JSON
 		const whisperJsonPath = `${whisperOutput}.json`;
@@ -646,10 +645,9 @@ function uploadAudio(mp3Path, episodeId, force) {
 		// Convert MP3 → M4A (AAC 128k, faststart)
 		console.log('  Converting to M4A...');
 		const m4aPath = path.join(tmpDir, 'converted.m4a');
-		execSync(
-			`ffmpeg -y -i "${mp3Path}" -c:a aac -b:a 128k -movflags +faststart "${m4aPath}" 2>/dev/null`,
-			{ encoding: 'utf-8' }
-		);
+		execFileSync('ffmpeg', ['-y', '-i', mp3Path, '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', m4aPath], {
+			encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'],
+		});
 
 		// Upload to R2
 		const r2Key = `${episodeId}.m4a`;
