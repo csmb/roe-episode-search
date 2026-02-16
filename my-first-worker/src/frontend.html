@@ -18,8 +18,8 @@
 	.hero {
 		position: relative;
 		width: 100%;
-		height: 70vh;
-		min-height: 500px;
+		height: 40vh;
+		min-height: 300px;
 		background: linear-gradient(135deg, #808080 0%, #a0a0a0 50%, #606060 100%);
 		display: flex;
 		align-items: center;
@@ -162,7 +162,11 @@
 		background: #fff;
 		transition: border-color 0.2s ease;
 	}
-	.search-box input:focus { border-color: #505050; }
+	.search-box input:focus {
+		border-color: #505050;
+		box-shadow: 0 0 0 3px rgba(80, 80, 80, 0.25);
+		outline: none;
+	}
 .search-box button {
 		padding: 14px 32px;
 		font-size: 1.1rem;
@@ -196,7 +200,7 @@
 		color: #404040;
 		margin-bottom: 10px;
 	}
-	.match-count { color: #999; font-weight: normal; font-size: 0.85rem; }
+	.match-count { color: #767676; font-weight: normal; font-size: 0.85rem; }
 	.match {
 		padding: 8px 0;
 		border-top: 1px solid #eee;
@@ -207,9 +211,17 @@
 		transition: background 0.15s ease;
 	}
 	.match:first-child { border-top: none; }
-	.match:hover { background: #f9f9f9; }
+	.match:not(.no-audio):hover { background: #f5f5f5; }
 	.match.no-audio { cursor: default; }
 	.match.no-audio:hover { background: transparent; }
+	.match:not(.no-audio)::before {
+		content: '\25B6';
+		font-size: 0.6rem;
+		color: #b0b0b0;
+		transition: color 0.15s ease;
+		flex-shrink: 0;
+	}
+	.match:not(.no-audio):hover::before { color: #505050; }
 	.timestamp {
 		font-family: monospace;
 		font-size: 0.85rem;
@@ -220,7 +232,7 @@
 		transition: border-color 0.2s ease;
 	}
 	.match:not(.no-audio) .timestamp:hover { border-bottom-color: #505050; }
-	.match.no-audio .timestamp { color: #999; }
+	.match.no-audio .timestamp { color: #767676; }
 	.match-text { font-size: 0.95rem; line-height: 1.5; }
 	mark { background: #e0e0e0; padding: 1px 3px; border-radius: 2px; }
 
@@ -248,7 +260,7 @@
 		border-radius: 50px;
 		cursor: pointer;
 		background: transparent;
-		color: #888;
+		color: #636363;
 		transition: all 0.2s ease;
 	}
 	.mode-toggle button.active {
@@ -261,7 +273,7 @@
 	.score-badge {
 		font-size: 0.75rem;
 		font-weight: 600;
-		color: #888;
+		color: #6b6b6b;
 		background: #f0f0f0;
 		padding: 2px 6px;
 		border-radius: 8px;
@@ -291,7 +303,7 @@
 		margin-top: 4px;
 		font-size: 0.85rem;
 		font-weight: 500;
-		color: #888;
+		color: #6b6b6b;
 		background: none;
 		border: none;
 		border-top: 1px solid #eee;
@@ -302,7 +314,7 @@
 
 	/* Episode browse cards */
 	.episode-meta {
-		color: #999;
+		color: #767676;
 		font-size: 0.85rem;
 		margin-bottom: 10px;
 	}
@@ -357,6 +369,23 @@
 
 	.hidden { display: none; }
 
+	.sr-only {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		padding: 0;
+		margin: -1px;
+		overflow: hidden;
+		clip: rect(0, 0, 0, 0);
+		white-space: nowrap;
+		border: 0;
+	}
+
+	:focus-visible {
+		outline: 2px solid #505050;
+		outline-offset: 2px;
+	}
+
 	/* Section nav tabs */
 	.section-tabs {
 		display: flex;
@@ -368,7 +397,7 @@
 		padding: 12px 24px;
 		font-size: 1rem;
 		font-weight: 600;
-		color: #999;
+		color: #767676;
 		background: none;
 		border: none;
 		cursor: pointer;
@@ -403,7 +432,7 @@
 	}
 	.timeline-total {
 		font-size: 0.85rem;
-		color: #999;
+		color: #767676;
 	}
 	.timeline-svg {
 		width: 100%;
@@ -417,7 +446,7 @@
 		fill: #505050;
 	}
 	.timeline-year-label {
-		fill: #999;
+		fill: #767676;
 		font-size: 11px;
 		font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
 	}
@@ -439,7 +468,7 @@
 	}
 
 	@media (max-width: 768px) {
-		.hero { height: 60vh; min-height: 400px; }
+		.hero { height: 35vh; min-height: 250px; }
 		.hero h1 { font-size: 2.5rem; }
 		.hero .tagline { font-size: 1.2rem; }
 		.container { padding: 3rem 1.5rem; }
@@ -462,25 +491,26 @@
 <body>
 
 <div class="hero">
-	<img class="hero-image" src="https://akiaiq6swxkqiixrwd6qcomhaystacksoftwarearq-us-west-1.s3.us-west-1.amazonaws.com/ferry_building.png" alt="Ferry Building">
+	<img class="hero-image" src="https://akiaiq6swxkqiixrwd6qcomhaystacksoftwarearq-us-west-1.s3.us-west-1.amazonaws.com/ferry_building.png" alt="" role="presentation">
 	<div class="hero-content">
 		<h1>Roll Over Easy</h1>
-		<div class="tagline">Taking San Francisco from under the covers 'til after coffee ☕</div>
+		<p class="tagline">Taking San Francisco from under the covers 'til after coffee ☕</p>
 	</div>
 </div>
 
-<div class="container">
+<main class="container">
 
 	<!-- Search + Episodes tabs -->
 	<div class="content-section" id="search-episodes-section">
-		<div class="section-tabs">
-			<button class="section-tab active" id="tab-search" onclick="switchTab('search')">🔍 Search Episodes</button>
-			<button class="section-tab" id="tab-browse" onclick="switchTab('browse')">🎧 Browse All Episodes</button>
+		<div class="section-tabs" role="tablist" aria-label="Episode navigation">
+			<button class="section-tab active" id="tab-search" role="tab" aria-selected="true" aria-controls="panel-search" onclick="switchTab('search')">🔍 Search Episodes</button>
+			<button class="section-tab" id="tab-browse" role="tab" aria-selected="false" aria-controls="panel-browse" onclick="switchTab('browse')">🎧 Browse All Episodes</button>
 		</div>
 
 		<!-- Search panel -->
-		<div id="panel-search">
+		<div id="panel-search" role="tabpanel" aria-labelledby="tab-search">
 			<div class="search-box">
+				<label for="search-input" class="sr-only">Search episodes</label>
 				<input type="text" id="search-input" placeholder="Search through the fog...">
 				<button id="search-btn">Search</button>
 			</div>
@@ -491,14 +521,14 @@
 					<button id="mode-semantic" onclick="setSearchMode('semantic')">Semantic</button>
 				</div>
 			</div>
-			<div id="status" class="status"></div>
+			<div id="status" class="status" aria-live="polite" aria-atomic="true"></div>
 			<div id="timeline"></div>
 			<div id="results"></div>
 			<button id="load-more" class="load-more hidden">Load more results</button>
 		</div>
 
 		<!-- Browse panel -->
-		<div id="panel-browse" class="hidden">
+		<div id="panel-browse" role="tabpanel" aria-labelledby="tab-browse" class="hidden">
 			<div id="episodes-status" class="status"></div>
 			<div id="episodes-list"></div>
 		</div>
@@ -537,7 +567,7 @@
 		<a href="mailto:rollovereasy@gmail.com" class="cta-button">Get in Touch ✉️</a>
 	</div>
 
-</div>
+</main>
 
 <div id="player-bar" class="player-bar">
 	<div class="player-inner">
@@ -581,6 +611,8 @@ function setSearchMode(mode) {
 function switchTab(tab) {
 	document.getElementById('tab-search').classList.toggle('active', tab === 'search');
 	document.getElementById('tab-browse').classList.toggle('active', tab === 'browse');
+	document.getElementById('tab-search').setAttribute('aria-selected', tab === 'search');
+	document.getElementById('tab-browse').setAttribute('aria-selected', tab === 'browse');
 	document.getElementById('panel-search').classList.toggle('hidden', tab !== 'search');
 	document.getElementById('panel-browse').classList.toggle('hidden', tab !== 'browse');
 
@@ -748,8 +780,13 @@ function renderEpisode(episode) {
 		}
 
 		if (episode.audio_file) {
-			matchDiv.addEventListener('click', () => {
-				playAt(episode.audio_file, match.start_ms, episode.title);
+			matchDiv.setAttribute('role', 'button');
+			matchDiv.setAttribute('tabindex', '0');
+			matchDiv.setAttribute('aria-label', 'Play at ' + formatTime(match.start_ms));
+			const handler = () => playAt(episode.audio_file, match.start_ms, episode.title);
+			matchDiv.addEventListener('click', handler);
+			matchDiv.addEventListener('keydown', (e) => {
+				if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handler(); }
 			});
 		}
 
@@ -827,6 +864,8 @@ function renderTimeline(data) {
 	const svgNs = 'http://www.w3.org/2000/svg';
 	const svg = document.createElementNS(svgNs, 'svg');
 	svg.setAttribute('class', 'timeline-svg');
+	svg.setAttribute('role', 'img');
+	svg.setAttribute('aria-label', 'Timeline showing mentions of \u201c' + data.query + '\u201d across ' + allMonths.length + ' months');
 	svg.setAttribute('viewBox', '0 0 1000 ' + svgHeight);
 	svg.setAttribute('preserveAspectRatio', 'none');
 	svg.style.height = (svgHeight) + 'px';
