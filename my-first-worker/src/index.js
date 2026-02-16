@@ -39,13 +39,25 @@ async function handleSearch(url, env) {
 	}
 
 	const page = Math.max(1, parseInt(url.searchParams.get('page') || '1', 10));
-	const pageSize = 50;
+	const pageSize = 20;
 	const offset = (page - 1) * pageSize;
 
-	// FTS5 search — join back to segments and episodes for full context
+	// Paginate by episodes, not segments — avoids duplicate episode cards
 	const { results } = await env.DB.prepare(`
+		WITH matched_episodes AS (
+			SELECT
+				e.id AS episode_id,
+				MIN(fts.rank) AS best_rank
+			FROM transcript_fts fts
+			JOIN transcript_segments s ON s.rowid = fts.rowid
+			JOIN episodes e ON e.id = s.episode_id
+			WHERE transcript_fts MATCH ?1
+			GROUP BY e.id
+			ORDER BY best_rank
+			LIMIT ?2 OFFSET ?3
+		)
 		SELECT
-			e.id AS episode_id,
+			me.episode_id,
 			e.title AS episode_title,
 			e.duration_ms AS episode_duration_ms,
 			e.summary AS episode_summary,
@@ -53,13 +65,13 @@ async function handleSearch(url, env) {
 			s.start_ms,
 			s.end_ms,
 			s.text,
-			fts.rank
-		FROM transcript_fts fts
-		JOIN transcript_segments s ON s.rowid = fts.rowid
-		JOIN episodes e ON e.id = s.episode_id
+			me.best_rank
+		FROM matched_episodes me
+		JOIN episodes e ON e.id = me.episode_id
+		JOIN transcript_segments s ON e.id = s.episode_id
+		JOIN transcript_fts fts ON s.rowid = fts.rowid
 		WHERE transcript_fts MATCH ?1
-		ORDER BY fts.rank
-		LIMIT ?2 OFFSET ?3
+		ORDER BY me.best_rank, s.start_ms
 	`)
 		.bind(query, pageSize, offset)
 		.all();
@@ -93,7 +105,7 @@ async function handleSearch(url, env) {
 		query,
 		page,
 		results: Array.from(episodeMap.values()),
-		has_more: results.length === pageSize,
+		has_more: episodeMap.size === pageSize,
 	});
 }
 
