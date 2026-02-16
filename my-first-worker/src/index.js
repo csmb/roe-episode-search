@@ -8,6 +8,9 @@ export default {
 		if (url.pathname === '/api/search') {
 			return handleSearch(url, env);
 		}
+		if (url.pathname === '/api/semantic-search') {
+			return handleSemanticSearch(url, env);
+		}
 		if (url.pathname === '/api/episodes') {
 			return handleEpisodes(env);
 		}
@@ -88,6 +91,76 @@ async function handleSearch(url, env) {
 		page,
 		results: Array.from(episodeMap.values()),
 		has_more: results.length === pageSize,
+	});
+}
+
+async function handleSemanticSearch(url, env) {
+	const query = url.searchParams.get('q')?.trim();
+	if (!query) {
+		return json({ error: 'Missing ?q= parameter' }, 400);
+	}
+
+	// Embed the query
+	const embeddingResult = await env.AI.run('@cf/baai/bge-base-en-v1.5', { text: [query] });
+	const queryVector = embeddingResult.data[0];
+
+	// Query Vectorize
+	const vectorResults = await env.VECTORIZE.query(queryVector, {
+		topK: 20,
+		returnMetadata: 'all',
+	});
+
+	// Collect unique episode IDs to enrich with D1 metadata
+	const episodeIds = [...new Set(vectorResults.matches.map((m) => m.metadata.episode_id))];
+
+	let episodeMeta = {};
+	if (episodeIds.length > 0) {
+		const placeholders = episodeIds.map(() => '?').join(', ');
+		const { results } = await env.DB.prepare(
+			`SELECT id, duration_ms, summary FROM episodes WHERE id IN (${placeholders})`
+		)
+			.bind(...episodeIds)
+			.all();
+		for (const row of results) {
+			episodeMeta[row.id] = row;
+		}
+	}
+
+	// Group results by episode (same pattern as handleSearch)
+	const episodeMap = new Map();
+	for (const match of vectorResults.matches) {
+		const meta = match.metadata;
+		const epId = meta.episode_id;
+
+		if (!episodeMap.has(epId)) {
+			const dbMeta = episodeMeta[epId] || {};
+			episodeMap.set(epId, {
+				episode_id: epId,
+				title: meta.title,
+				duration_ms: dbMeta.duration_ms || null,
+				summary: dbMeta.summary || null,
+				audio_file: `/audio/${epId}.m4a`,
+				matches: [],
+			});
+		}
+		episodeMap.get(epId).matches.push({
+			start_ms: meta.start_ms,
+			end_ms: meta.end_ms,
+			text: meta.text,
+			score: match.score,
+		});
+	}
+
+	// Sort matches chronologically within each episode
+	for (const ep of episodeMap.values()) {
+		ep.matches.sort((a, b) => a.start_ms - b.start_ms);
+	}
+
+	return json({
+		query,
+		page: 1,
+		results: Array.from(episodeMap.values()),
+		has_more: false,
 	});
 }
 

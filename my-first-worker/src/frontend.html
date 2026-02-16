@@ -223,6 +223,50 @@
 	.match-text { font-size: 0.95rem; line-height: 1.5; }
 	mark { background: #e0e0e0; padding: 1px 3px; border-radius: 2px; }
 
+	/* Search mode toggle */
+	.search-mode {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		margin-bottom: 16px;
+		font-size: 0.9rem;
+		color: #666;
+	}
+	.search-mode-label { font-weight: 500; }
+	.mode-toggle {
+		display: inline-flex;
+		background: #e8e8e8;
+		border-radius: 50px;
+		padding: 2px;
+	}
+	.mode-toggle button {
+		padding: 6px 16px;
+		font-size: 0.85rem;
+		font-weight: 600;
+		border: none;
+		border-radius: 50px;
+		cursor: pointer;
+		background: transparent;
+		color: #888;
+		transition: all 0.2s ease;
+	}
+	.mode-toggle button.active {
+		background: #505050;
+		color: #fff;
+		box-shadow: 0 1px 4px rgba(0,0,0,0.15);
+	}
+	.mode-toggle button:not(.active):hover { color: #505050; }
+
+	.score-badge {
+		font-size: 0.75rem;
+		font-weight: 600;
+		color: #888;
+		background: #f0f0f0;
+		padding: 2px 6px;
+		border-radius: 8px;
+		white-space: nowrap;
+	}
+
 	.load-more {
 		display: block;
 		width: 100%;
@@ -367,6 +411,13 @@
 				<input type="text" id="search-input" placeholder="Search episodes..." autofocus>
 				<button id="search-btn">Search</button>
 			</div>
+			<div class="search-mode">
+				<span class="search-mode-label">Search mode:</span>
+				<div class="mode-toggle">
+					<button id="mode-keyword" class="active" onclick="setSearchMode('keyword')">Keyword</button>
+					<button id="mode-semantic" onclick="setSearchMode('semantic')">Semantic</button>
+				</div>
+			</div>
 			<div id="status" class="status"></div>
 			<div id="results"></div>
 			<button id="load-more" class="load-more hidden">Load more results</button>
@@ -433,6 +484,15 @@ let hasMore = false;
 let currentAudioSrc = '';
 let pendingSeek = null;
 let episodesLoaded = false;
+let searchMode = 'keyword';
+
+function setSearchMode(mode) {
+	searchMode = mode;
+	document.getElementById('mode-keyword').classList.toggle('active', mode === 'keyword');
+	document.getElementById('mode-semantic').classList.toggle('active', mode === 'semantic');
+	// Re-run search if there's a current query
+	if (currentQuery) doSearch();
+}
 
 // Tab switching
 function switchTab(tab) {
@@ -460,8 +520,11 @@ searchInput.addEventListener('keydown', (e) => {
 });
 loadMoreBtn.addEventListener('click', () => loadMore());
 
-// Load query from URL on page load
+// Load query and mode from URL on page load
 const params = new URLSearchParams(window.location.search);
+if (params.get('mode') === 'semantic') {
+	setSearchMode('semantic');
+}
 if (params.get('q')) {
 	searchInput.value = params.get('q');
 	doSearch();
@@ -497,7 +560,8 @@ async function doSearch() {
 	statusEl.textContent = 'Searching...';
 	loadMoreBtn.classList.add('hidden');
 
-	history.replaceState(null, '', '?q=' + encodeURIComponent(q));
+	const modeParam = searchMode === 'semantic' ? '&mode=semantic' : '';
+	history.replaceState(null, '', '?q=' + encodeURIComponent(q) + modeParam);
 	await fetchResults();
 }
 
@@ -508,7 +572,8 @@ async function loadMore() {
 
 async function fetchResults() {
 	try {
-		const res = await fetch('/api/search?q=' + encodeURIComponent(currentQuery) + '&page=' + currentPage);
+		const endpoint = searchMode === 'semantic' ? '/api/semantic-search' : '/api/search';
+		const res = await fetch(endpoint + '?q=' + encodeURIComponent(currentQuery) + '&page=' + currentPage);
 		const data = await res.json();
 
 		if (data.error) {
@@ -517,7 +582,7 @@ async function fetchResults() {
 		}
 
 		hasMore = data.has_more;
-		loadMoreBtn.classList.toggle('hidden', !hasMore);
+		loadMoreBtn.classList.toggle('hidden', !hasMore || searchMode === 'semantic');
 
 		const totalMatches = data.results.reduce((sum, ep) => sum + ep.matches.length, 0);
 
@@ -579,8 +644,15 @@ function renderEpisode(episode) {
 
 		const text = document.createElement('span');
 		text.className = 'match-text';
-		text.innerHTML = highlightQuery(match.text, currentQuery);
+		text.innerHTML = searchMode === 'keyword' ? highlightQuery(match.text, currentQuery) : escapeHtml(match.text);
 		matchDiv.appendChild(text);
+
+		if (match.score != null) {
+			const badge = document.createElement('span');
+			badge.className = 'score-badge';
+			badge.textContent = Math.round(match.score * 100) + '%';
+			matchDiv.appendChild(badge);
+		}
 
 		if (episode.audio_file) {
 			matchDiv.addEventListener('click', () => {

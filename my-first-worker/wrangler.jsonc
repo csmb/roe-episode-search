@@ -15,6 +15,15 @@
       "bucket_name": "roe-audio"
     }
   ],
+  "vectorize": [
+    {
+      "binding": "VECTORIZE",
+      "index_name": "roe-transcripts"
+    }
+  ],
+  "ai": {
+    "binding": "AI"
+  },
   "observability": {
     "enabled": true
   },
