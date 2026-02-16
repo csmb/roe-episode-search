@@ -388,31 +388,6 @@
 		outline-offset: 2px;
 	}
 
-	/* Section nav tabs */
-	.section-tabs {
-		display: flex;
-		gap: 0;
-		margin-bottom: 2rem;
-		border-bottom: 2px solid #e0e0e0;
-	}
-	.section-tab {
-		padding: 12px 24px;
-		font-size: 1rem;
-		font-weight: 600;
-		color: #767676;
-		background: none;
-		border: none;
-		cursor: pointer;
-		border-bottom: 2px solid transparent;
-		margin-bottom: -2px;
-		transition: all 0.2s ease;
-	}
-	.section-tab:hover { color: #505050; }
-	.section-tab.active {
-		color: #404040;
-		border-bottom-color: #505050;
-	}
-
 	/* Timeline */
 	.timeline-card {
 		background: #fff;
@@ -504,13 +479,7 @@
 
 	<!-- Search + Episodes tabs -->
 	<div class="content-section" id="search-episodes-section">
-		<div class="section-tabs" role="tablist" aria-label="Episode navigation">
-			<button class="section-tab active" id="tab-search" role="tab" aria-selected="true" aria-controls="panel-search" onclick="switchTab('search')">🔍 Search Episodes</button>
-			<button class="section-tab" id="tab-browse" role="tab" aria-selected="false" aria-controls="panel-browse" onclick="switchTab('browse')">🎧 Browse All Episodes</button>
-		</div>
-
-		<!-- Search panel -->
-		<div id="panel-search" role="tabpanel" aria-labelledby="tab-search">
+		<div id="panel-search">
 			<div class="search-box">
 				<label for="search-input" class="sr-only">Search episodes</label>
 				<input type="text" id="search-input" placeholder="Search through the fog...">
@@ -529,11 +498,6 @@
 			<button id="load-more" class="load-more hidden">Load more results</button>
 		</div>
 
-		<!-- Browse panel -->
-		<div id="panel-browse" role="tabpanel" aria-labelledby="tab-browse" class="hidden">
-			<div id="episodes-status" class="status"></div>
-			<div id="episodes-list"></div>
-		</div>
 	</div>
 
 	<div class="content-section">
@@ -590,15 +554,11 @@ const audioPlayer = document.getElementById('audio-player');
 
 const timelineEl = document.getElementById('timeline');
 
-const episodesStatusEl = document.getElementById('episodes-status');
-const episodesListEl = document.getElementById('episodes-list');
-
 let currentQuery = '';
 let currentPage = 1;
 let hasMore = false;
 let currentAudioSrc = '';
 let pendingSeek = null;
-let episodesLoaded = false;
 let searchMode = 'keyword';
 
 function setSearchMode(mode) {
@@ -607,20 +567,6 @@ function setSearchMode(mode) {
 	document.getElementById('mode-semantic').classList.toggle('active', mode === 'semantic');
 	// Re-run search if there's a current query
 	if (currentQuery) doSearch();
-}
-
-// Tab switching
-function switchTab(tab) {
-	document.getElementById('tab-search').classList.toggle('active', tab === 'search');
-	document.getElementById('tab-browse').classList.toggle('active', tab === 'browse');
-	document.getElementById('tab-search').setAttribute('aria-selected', tab === 'search');
-	document.getElementById('tab-browse').setAttribute('aria-selected', tab === 'browse');
-	document.getElementById('panel-search').classList.toggle('hidden', tab !== 'search');
-	document.getElementById('panel-browse').classList.toggle('hidden', tab !== 'browse');
-
-	if (tab === 'browse' && !episodesLoaded) {
-		loadEpisodes();
-	}
 }
 
 // Seek once the browser has enough data
@@ -646,10 +592,6 @@ if (params.get('q')) {
 	searchInput.value = params.get('q');
 	doSearch();
 }
-if (params.get('tab') === 'episodes') {
-	switchTab('browse');
-}
-
 function playAt(audioUrl, startMs, title) {
 	const startSeconds = startMs / 1000;
 	playerBar.classList.add('active');
@@ -991,51 +933,6 @@ function renderTimeline(data) {
 
 	timelineEl.innerHTML = '';
 	timelineEl.appendChild(card);
-}
-
-// Episodes browsing
-async function loadEpisodes() {
-	episodesStatusEl.textContent = 'Loading episodes...';
-	try {
-		const res = await fetch('/api/episodes');
-		const data = await res.json();
-
-		if (!data.episodes || data.episodes.length === 0) {
-			episodesStatusEl.textContent = 'No episodes found.';
-			return;
-		}
-
-		data.episodes.sort((a, b) => {
-			const dateA = parseEpisodeDate(a.id) || '';
-			const dateB = parseEpisodeDate(b.id) || '';
-			return dateB.localeCompare(dateA);
-		});
-
-		episodesStatusEl.textContent = data.episodes.length + ' episode' + (data.episodes.length !== 1 ? 's' : '');
-
-		for (const ep of data.episodes) {
-			const div = document.createElement('div');
-			div.className = 'episode';
-			const dateStr = parseEpisodeDate(ep.id);
-
-			let html = '<div class="episode-title">' + escapeHtml(ep.title) + '</div>';
-			html += '<div class="episode-meta">';
-			if (dateStr) html += formatDate(dateStr);
-			if (ep.duration_ms) html += (dateStr ? ' &middot; ' : '') + formatDuration(ep.duration_ms);
-			html += '</div>';
-
-			if (ep.summary) {
-				html += '<div class="episode-summary">' + escapeHtml(ep.summary) + '</div>';
-			}
-
-			div.innerHTML = html;
-			episodesListEl.appendChild(div);
-		}
-
-		episodesLoaded = true;
-	} catch (err) {
-		episodesStatusEl.textContent = 'Error loading episodes: ' + err.message;
-	}
 }
 
 function parseEpisodeDate(id) {
