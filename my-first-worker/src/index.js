@@ -32,16 +32,32 @@ export default {
 	},
 };
 
+function sanitizeFtsQuery(input) {
+	const terms = input
+		.replace(/["\*\(\)\{\}\[\]:^~]/g, ' ')
+		.split(/\s+/)
+		.filter(t => t.length > 0)
+		.map(t => '"' + t.replace(/"/g, '') + '"');
+	if (terms.length === 0) return null;
+	return terms.join(' ');
+}
+
 async function handleSearch(url, env) {
 	const query = url.searchParams.get('q')?.trim();
 	if (!query) {
 		return json({ error: 'Missing ?q= parameter' }, 400);
 	}
 
+	const sanitized = sanitizeFtsQuery(query);
+	if (!sanitized) {
+		return json({ error: 'Invalid search query' }, 400);
+	}
+
 	const page = Math.max(1, parseInt(url.searchParams.get('page') || '1', 10));
 	const pageSize = 20;
 	const offset = (page - 1) * pageSize;
 
+	try {
 	// Paginate by episodes, not segments — avoids duplicate episode cards
 	const { results } = await env.DB.prepare(`
 		WITH matched_episodes AS (
@@ -73,7 +89,7 @@ async function handleSearch(url, env) {
 		WHERE transcript_fts MATCH ?1
 		ORDER BY me.best_rank, s.start_ms
 	`)
-		.bind(query, pageSize, offset)
+		.bind(sanitized, pageSize, offset)
 		.all();
 
 	// Group results by episode
@@ -107,6 +123,9 @@ async function handleSearch(url, env) {
 		results: Array.from(episodeMap.values()),
 		has_more: episodeMap.size === pageSize,
 	});
+	} catch (err) {
+		return json({ error: 'Search failed. Try simplifying your query.' }, 400);
+	}
 }
 
 async function handleSemanticSearch(url, env) {
@@ -185,6 +204,12 @@ async function handleTimeline(url, env) {
 		return json({ error: 'Missing ?q= parameter' }, 400);
 	}
 
+	const sanitized = sanitizeFtsQuery(query);
+	if (!sanitized) {
+		return json({ error: 'Invalid search query' }, 400);
+	}
+
+	try {
 	const [timelineResult, rangeResult] = await Promise.all([
 		env.DB.prepare(`
 			SELECT
@@ -197,7 +222,7 @@ async function handleTimeline(url, env) {
 			WHERE transcript_fts MATCH ?1
 			GROUP BY SUBSTR(e.id, 16, 7)
 			ORDER BY month
-		`).bind(query).all(),
+		`).bind(sanitized).all(),
 		env.DB.prepare(`
 			SELECT
 				MIN(SUBSTR(id, 16, 7)) AS first_month,
@@ -222,6 +247,9 @@ async function handleTimeline(url, env) {
 		first_month: range.first_month,
 		last_month: range.last_month,
 	});
+	} catch (err) {
+		return json({ error: 'Search failed. Try simplifying your query.' }, 400);
+	}
 }
 
 async function handleEpisodes(env) {
