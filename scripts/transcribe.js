@@ -59,6 +59,44 @@ async function transcribeChunk(chunkPath, offsetMs) {
 		file,
 		response_format: 'verbose_json',
 		timestamp_granularities: ['segment'],
+		prompt: [
+			// Show context & proper nouns
+			'Roll Over Easy, BFF.fm, San Francisco, the Bay Area,',
+			// Neighborhoods
+			'the Mission, the Castro, the Haight, Haight-Ashbury, SoMa, the Tenderloin,',
+			'Noe Valley, Potrero Hill, Dogpatch, Bernal Heights, the Sunset, the Richmond,',
+			'the Outer Sunset, the Inner Richmond, North Beach, Chinatown, Japantown,',
+			'the Marina, Pac Heights, Pacific Heights, Russian Hill, Nob Hill, Telegraph Hill,',
+			'the Fillmore, Hayes Valley, Cole Valley, Glen Park, Excelsior, Bayview,',
+			'Hunters Point, Visitacion Valley, the Outer Richmond, Sea Cliff, the Presidio,',
+			// Landmarks & places
+			'the Ferry Building, Coit Tower, Golden Gate Bridge, Golden Gate Park,',
+			'Alcatraz, Fishermans Wharf, Pier 39, AT&T Park, Oracle Park,',
+			'Dolores Park, Alamo Square, the Painted Ladies, Twin Peaks,',
+			'Sutro Baths, Lands End, Ocean Beach, Baker Beach, Fort Mason,',
+			'the de Young Museum, Cal Academy, California Academy of Sciences,',
+			'SFMOMA, the Exploratorium, Palace of Fine Arts, City Lights Bookstore,',
+			'Tartine, Bi-Rite, Humphry Slocombe, Mitchell\'s Ice Cream,',
+			'Anchor Brewing, Toronado, Zeitgeist, the Knockout, El Rio,',
+			'Hamburger Haven, the San Francisco Botanical Garden,',
+			// Transit & infrastructure
+			'Muni, BART, Caltrain, the N-Judah, the L-Taraval, the K-Ingleside,',
+			'the F-Market, cable cars, the 38 Geary, the Transbay Terminal,',
+			'Salesforce Transit Center, SFO, Oakland,',
+			// Institutions & culture
+			'the San Francisco Chronicle, the SF Examiner, KQED, KALW,',
+			'SF State, UCSF, USF, City College, the Board of Supervisors,',
+			'the Giants, the 49ers, the Warriors, Chase Center,',
+			// Food & drink culture
+			'sourdough, cioppino, Mission burrito, Irish coffee, Dungeness crab,',
+			'dim sum, boba, the Ferry Plaza Farmers Market,',
+			// Weather & geography
+			'Karl the Fog, fog, microclimates, the Bay, the Pacific,',
+			'Marin, the East Bay, the Peninsula, Silicon Valley,',
+			// Common SF topics
+			'tech, gentrification, rent control, the housing crisis, NIMBYism, YIMBYism,',
+			'the Summer of Love, the Beat Generation, Burning Man,',
+		].join(' '),
 	});
 
 	return (response.segments || []).map((seg) => ({

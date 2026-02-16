@@ -73,12 +73,20 @@ async function generateSummary(text) {
 			messages: [
 				{
 					role: 'system',
-					content:
-						'You summarize podcast episode transcripts. Write a single paragraph summary describing what topics were discussed and who the guests were (if identifiable). Be concise but informative.',
+					content: [
+						'You summarize transcripts from "Roll Over Easy," a live morning radio show on BFF.fm broadcast from the Ferry Building in San Francisco.',
+						'Write a concise summary in this format:',
+						'',
+						'Line 1: The weather/vibe that morning (if mentioned — fog, sun, rain, cold, etc.). If not mentioned, skip this line.',
+						'Line 2: Who joined the show — name guests and briefly note who they are.',
+						'Line 3-4: What stories and topics came up — San Francisco news, local culture, neighborhood happenings, food, music, etc.',
+						'',
+						'Keep a warm, San Francisco tone. Use 2-4 sentences total. Do not use bullet points or labels like "Weather:" — just weave it naturally.',
+					].join('\n'),
 				},
 				{
 					role: 'user',
-					content: `Summarize this podcast episode transcript:\n\n${text}`,
+					content: `Summarize this Roll Over Easy episode transcript:\n\n${text}`,
 				},
 			],
 			temperature: 0.5,

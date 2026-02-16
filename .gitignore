@@ -6,6 +6,9 @@ node_modules/
 # Transcripts are generated data (large), not source code
 transcripts/
 
+# Downloaded/converted audio files (large)
+audio/
+
 # Temp files from audio conversion
 /tmp/
 
