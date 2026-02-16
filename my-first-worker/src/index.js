@@ -101,7 +101,7 @@ async function handleEpisodes(env) {
 
 async function handleAudio(request, url, env) {
 	const key = url.pathname.slice('/audio/'.length);
-	if (!key) {
+	if (!key || !/^[\w-]+\.m4a$/.test(key)) {
 		return new Response('Not found', { status: 404 });
 	}
 

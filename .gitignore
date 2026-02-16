@@ -15,3 +15,6 @@ transcripts/
 
 # R2 CORS config (has account-specific data)
 r2-cors.json
+
+# Claude Code local config (may contain API keys)
+.claude/
