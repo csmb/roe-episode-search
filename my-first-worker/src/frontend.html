@@ -152,12 +152,8 @@
 		gap: 10px;
 		margin-bottom: 24px;
 	}
-	.search-input-wrap {
-		flex: 1;
-		position: relative;
-	}
 	.search-box input {
-		width: 100%;
+		flex: 1;
 		padding: 14px 24px;
 		font-size: 1.1rem;
 		border: 1px solid #d0d0d0;
@@ -167,18 +163,7 @@
 		transition: border-color 0.2s ease;
 	}
 	.search-box input:focus { border-color: #505050; }
-	.rotating-placeholder {
-		position: absolute;
-		left: 25px;
-		top: 50%;
-		transform: translateY(-50%);
-		font-size: 1.1rem;
-		color: #999;
-		pointer-events: none;
-		transition: opacity 0.8s ease;
-	}
-	.rotating-placeholder.hidden { opacity: 0; }
-	.search-box button {
+.search-box button {
 		padding: 14px 32px;
 		font-size: 1.1rem;
 		font-weight: 600;
@@ -424,10 +409,7 @@
 		<!-- Search panel -->
 		<div id="panel-search">
 			<div class="search-box">
-				<div class="search-input-wrap">
-					<input type="text" id="search-input" autofocus>
-					<span id="rotating-placeholder" class="rotating-placeholder">coffee</span>
-				</div>
+				<input type="text" id="search-input" placeholder="Search through the fog..." autofocus>
 				<button id="search-btn">Search</button>
 			</div>
 			<div class="search-mode">
@@ -770,47 +752,6 @@ function highlightQuery(text, query) {
 function escapeHtml(str) {
 	return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
-
-// Rotating placeholder examples
-const placeholderExamples = [
-	'coffee',
-	'North Beach',
-	'Golden Gate Park',
-	'fog',
-	'sunrise',
-	'burritos',
-	'Ferry Building',
-	'jazz',
-];
-const placeholderEl = document.getElementById('rotating-placeholder');
-let placeholderIdx = 0;
-let placeholderTimer = null;
-
-function updatePlaceholderVisibility() {
-	if (searchInput.value.length > 0 || document.activeElement === searchInput) {
-		placeholderEl.classList.add('hidden');
-	} else {
-		placeholderEl.classList.remove('hidden');
-	}
-}
-
-function rotatePlaceholder() {
-	placeholderEl.classList.add('hidden');
-	setTimeout(() => {
-		placeholderIdx = (placeholderIdx + 1) % placeholderExamples.length;
-		placeholderEl.textContent = placeholderExamples[placeholderIdx];
-		// Force a reflow before removing hidden so the browser sees the opacity change
-		placeholderEl.offsetWidth;
-		updatePlaceholderVisibility();
-	}, 800);
-}
-
-searchInput.addEventListener('focus', updatePlaceholderVisibility);
-searchInput.addEventListener('blur', updatePlaceholderVisibility);
-searchInput.addEventListener('input', updatePlaceholderVisibility);
-placeholderEl.addEventListener('click', () => searchInput.focus());
-
-placeholderTimer = setInterval(rotatePlaceholder, 3000);
 </script>
 
 </body>
