@@ -42,6 +42,8 @@ const WHISPER_MODEL_CANDIDATES = [
 ];
 const WHISPER_MODEL_PATH = WHISPER_MODEL_CANDIDATES.find((p) => fs.existsSync(p)) || WHISPER_MODEL_CANDIDATES[0];
 
+const VAD_MODEL_PATH = path.join(os.homedir(), '.cache', 'whisper-cpp', 'ggml-silero-v6.2.0.bin');
+
 // Whisper prompt: ~224 token limit. Prioritize proper nouns whisper would mishear.
 const SF_VOCAB_PROMPT = [
 	// Show & station
@@ -144,6 +146,13 @@ function checkPrerequisites() {
 		missing.push(
 			`Whisper model not found at ${WHISPER_MODEL_PATH}\n` +
 			'  Download with: whisper-cli --model large-v3 --download-model'
+		);
+	}
+
+	if (!fs.existsSync(VAD_MODEL_PATH)) {
+		missing.push(
+			`Silero VAD model not found at ${VAD_MODEL_PATH}\n` +
+			'  Download with: curl -L https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v6.2.0.bin -o ' + VAD_MODEL_PATH
 		);
 	}
 
@@ -268,8 +277,15 @@ function transcribe(mp3Path, episodeId, force) {
 		const whisperOutput = path.join(tmpDir, 'output');
 		console.log('  Running whisper.cpp (this will take a while)...');
 		execFileSync('whisper-cli', [
-			'-m', WHISPER_MODEL_PATH, '--language', 'en', '--output-json-full',
-			'--output-file', whisperOutput, '--prompt', SF_VOCAB_PROMPT, wavPath,
+			'-m', WHISPER_MODEL_PATH,
+			'--language', 'en',
+			'--output-json-full',
+			'--output-file', whisperOutput,
+			'--prompt', SF_VOCAB_PROMPT,
+			'--vad',
+			'--vad-model', VAD_MODEL_PATH,
+			'--suppress-nst',
+			wavPath,
 		], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'inherit'], timeout: 0, maxBuffer: 50 * 1024 * 1024 });
 
 		// Parse whisper.cpp JSON
@@ -340,13 +356,9 @@ function seedDB(episodeId, force) {
 	const { segments } = transcript;
 
 	if (force) {
-		// Delete existing data to re-insert
-		try {
-			runSQL(`DELETE FROM transcript_segments WHERE episode_id = '${escapeSQL(episodeId)}'`);
-			runSQL(`DELETE FROM episodes WHERE id = '${escapeSQL(episodeId)}'`);
-		} catch {
-			// Might not exist
-		}
+		// Delete existing data to re-insert (DELETE is a no-op if rows don't exist)
+		runSQL(`DELETE FROM transcript_segments WHERE episode_id = '${escapeSQL(episodeId)}'`);
+		runSQL(`DELETE FROM episodes WHERE id = '${escapeSQL(episodeId)}'`);
 	}
 
 	// Insert episode record
