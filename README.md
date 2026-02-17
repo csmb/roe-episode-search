@@ -59,12 +59,12 @@ All scripts are in `scripts/` and run locally with Node.js:
 | `process-episode.js` | **Primary pipeline.** Process a single episode end-to-end: transcribe with whisper.cpp + VAD, seed D1, generate embeddings, generate AI summary, upload audio to R2. |
 | `discover-episodes.js` | Scan an audio directory, parse all filename formats, deduplicate by date, and output an episode manifest. |
 | `process-all.js` | Batch runner — processes all discovered episodes sequentially with checkpoint/resume, cooldown, retries, and quality gates. |
-| `transcribe.js` | (Legacy) Transcribe via OpenAI Whisper API. |
-| `transcribe-all.js` | (Legacy) Batch-transcribe via API. |
-| `seed-db.js` | (Legacy) Push transcript JSON files into D1. |
-| `generate-summaries.js` | (Legacy) Generate episode summaries. |
-| `generate-embeddings.js` | (Legacy) Embed transcripts into Vectorize. |
-| `upload-audio.js` | (Legacy) Convert + upload audio to R2. |
+| `transcribe.js` | Transcribe a single audio file via OpenAI Whisper API. |
+| `transcribe-all.js` | Batch-transcribe a directory via Whisper API. Skips already-done files, retries failures. |
+| `seed-db.js` | Push transcript JSON files into D1. Incremental — skips existing episodes. |
+| `generate-summaries.js` | Generate episode summaries using an LLM and update D1. |
+| `generate-embeddings.js` | Chunk transcripts into 45s windows, embed via Workers AI REST API, upsert to Vectorize. |
+| `upload-audio.js` | Convert audio to M4A and upload to R2. Updates episode records with audio URLs. |
 
 ### Data flow for a single episode
 
@@ -109,12 +109,12 @@ roe-episode-search/
 │   ├── process-episode.js        # Single-episode pipeline (transcribe → deploy)
 │   ├── discover-episodes.js      # Scan + deduplicate audio files
 │   ├── process-all.js            # Batch runner with checkpoint/resume
-│   ├── transcribe.js             # (Legacy) API-based transcription
-│   ├── transcribe-all.js         # (Legacy) Batch API transcription
-│   ├── seed-db.js                # (Legacy) Load transcripts into D1
-│   ├── generate-summaries.js     # (Legacy) Generate summaries
-│   ├── generate-embeddings.js    # (Legacy) Embed into Vectorize
-│   └── upload-audio.js           # (Legacy) Upload audio to R2
+│   ├── transcribe.js             # Transcribe via Whisper API
+│   ├── transcribe-all.js         # Batch transcribe via Whisper API
+│   ├── seed-db.js                # Load transcripts into D1
+│   ├── generate-summaries.js     # Generate episode summaries
+│   ├── generate-embeddings.js    # Embed transcripts into Vectorize
+│   └── upload-audio.js           # Convert + upload audio to R2
 ├── transcripts/                  # Generated JSON transcripts (gitignored)
 └── my-first-worker/              # Cloudflare Worker
     ├── wrangler.jsonc            # Worker config (D1, R2, Vectorize, AI bindings)
