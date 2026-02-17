@@ -404,10 +404,19 @@
 	.timeline-bar.active {
 		fill: #FF4F00;
 	}
+	.timeline-labels {
+		display: flex;
+		position: relative;
+		height: 20px;
+		margin-top: 2px;
+	}
 	.timeline-year-label {
-		fill: #767676;
+		position: absolute;
+		color: #767676;
 		font-size: 11px;
 		font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+		transform: translateX(-50%);
+		white-space: nowrap;
 	}
 	.timeline-tooltip {
 		position: absolute;
@@ -440,13 +449,13 @@
 		.contact-section p { font-size: 1.1rem; }
 		.search-box { flex-direction: column; }
 		.search-box button { width: 100%; }
-		.timeline-year-label { font-size: 9px; }
+		.timeline-year-label { font-size: 10px; }
 	}
 	@media (max-width: 480px) {
 		.hero h1 { font-size: 2rem; }
 		.hero .tagline { font-size: 1rem; }
 		.content-section h2 { font-size: 1.5rem; }
-		.timeline-year-label { font-size: 8px; }
+		.timeline-year-label { font-size: 9px; }
 	}
 </style>
 </head>
@@ -778,7 +787,7 @@ function renderTimeline(data) {
 	card.appendChild(container);
 
 	// SVG dimensions
-	const padding = { top: 4, bottom: 28, left: 0, right: 0 };
+	const padding = { top: 4, bottom: 4, left: 0, right: 0 };
 	const barMaxHeight = 72;
 	const svgHeight = barMaxHeight + padding.top + padding.bottom;
 	const maxMentions = Math.max(...allMonths.map(m => (mentionMap[m]?.mentions || 0)));
@@ -829,7 +838,12 @@ function renderTimeline(data) {
 		svg.appendChild(rect);
 	}
 
-	// Year labels - adaptive interval based on container width
+	container.appendChild(svg);
+
+	// Year labels as HTML elements (outside SVG to avoid distortion)
+	const labelsDiv = document.createElement('div');
+	labelsDiv.className = 'timeline-labels';
+
 	const containerWidth = timelineEl.offsetWidth || 760;
 	const labelInterval = containerWidth < 480 ? 4 : 2;
 
@@ -849,16 +863,15 @@ function renderTimeline(data) {
 		const isLast = j === yearsInRange.length - 1;
 		if (!isFirst && !isLast && yearNum % labelInterval !== 0) continue;
 
-		const x = padding.left + index * barWidth;
-		const label = document.createElementNS(svgNs, 'text');
-		label.setAttribute('class', 'timeline-year-label');
-		label.setAttribute('x', x);
-		label.setAttribute('y', svgHeight - 4);
+		const pct = ((index + 0.5) / allMonths.length) * 100;
+		const label = document.createElement('span');
+		label.className = 'timeline-year-label';
+		label.style.left = pct + '%';
 		label.textContent = "'" + year.substring(2);
-		svg.appendChild(label);
+		labelsDiv.appendChild(label);
 	}
 
-	container.appendChild(svg);
+	container.appendChild(labelsDiv);
 
 	// Tooltip
 	const tooltip = document.createElement('div');
