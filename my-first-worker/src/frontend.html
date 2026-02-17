@@ -398,11 +398,11 @@
 		display: block;
 	}
 	.timeline-bar {
-		fill: #b0b0b0;
+		fill: #c0c0c0;
 		transition: fill 0.1s ease;
 	}
 	.timeline-bar.active {
-		fill: #505050;
+		fill: #FF4F00;
 	}
 	.timeline-year-label {
 		fill: #767676;
@@ -415,6 +415,7 @@
 		color: #fff;
 		padding: 6px 10px;
 		border-radius: 6px;
+		border-left: 3px solid #FF4F00;
 		font-size: 0.8rem;
 		white-space: nowrap;
 		pointer-events: none;
@@ -439,11 +440,13 @@
 		.contact-section p { font-size: 1.1rem; }
 		.search-box { flex-direction: column; }
 		.search-box button { width: 100%; }
+		.timeline-year-label { font-size: 9px; }
 	}
 	@media (max-width: 480px) {
 		.hero h1 { font-size: 2rem; }
 		.hero .tagline { font-size: 1rem; }
 		.content-section h2 { font-size: 1.5rem; }
+		.timeline-year-label { font-size: 8px; }
 	}
 </style>
 </head>
@@ -754,7 +757,8 @@ function generateMonthRange(first, last) {
 }
 
 function renderTimeline(data) {
-	const allMonths = generateMonthRange(data.first_month, data.last_month);
+	// Fixed range: full show history 2012-2026 regardless of query results
+	const allMonths = generateMonthRange('2012-01', '2026-02');
 	const mentionMap = {};
 	for (const t of data.timeline) {
 		mentionMap[t.month] = t;
@@ -774,8 +778,8 @@ function renderTimeline(data) {
 	card.appendChild(container);
 
 	// SVG dimensions
-	const padding = { top: 4, bottom: 24, left: 0, right: 0 };
-	const barMaxHeight = 60;
+	const padding = { top: 4, bottom: 28, left: 0, right: 0 };
+	const barMaxHeight = 72;
 	const svgHeight = barMaxHeight + padding.top + padding.bottom;
 	const maxMentions = Math.max(...allMonths.map(m => (mentionMap[m]?.mentions || 0)));
 
@@ -783,21 +787,35 @@ function renderTimeline(data) {
 	const svg = document.createElementNS(svgNs, 'svg');
 	svg.setAttribute('class', 'timeline-svg');
 	svg.setAttribute('role', 'img');
-	svg.setAttribute('aria-label', 'Timeline showing mentions of \u201c' + data.query + '\u201d across ' + allMonths.length + ' months');
+	svg.setAttribute('aria-label', 'Timeline showing mentions of \u201c' + data.query + '\u201d from 2012 to 2026');
 	svg.setAttribute('viewBox', '0 0 1000 ' + svgHeight);
 	svg.setAttribute('preserveAspectRatio', 'none');
-	svg.style.height = (svgHeight) + 'px';
+	svg.style.height = svgHeight + 'px';
 
 	const chartWidth = 1000 - padding.left - padding.right;
 	const barWidth = chartWidth / allMonths.length;
-	const gap = Math.max(0.5, barWidth * 0.15);
+	const gap = Math.max(0.3, barWidth * 0.1);
+
+	// Year-boundary grid lines
+	for (let i = 0; i < allMonths.length; i++) {
+		if (allMonths[i].substring(5, 7) !== '01') continue;
+		const x = padding.left + i * barWidth;
+		const line = document.createElementNS(svgNs, 'line');
+		line.setAttribute('x1', x);
+		line.setAttribute('y1', padding.top);
+		line.setAttribute('x2', x);
+		line.setAttribute('y2', padding.top + barMaxHeight);
+		line.setAttribute('stroke', '#e8e8e8');
+		line.setAttribute('stroke-width', '0.5');
+		svg.appendChild(line);
+	}
 
 	// Draw bars
 	for (let i = 0; i < allMonths.length; i++) {
 		const m = allMonths[i];
 		const count = mentionMap[m]?.mentions || 0;
 		if (count === 0) continue;
-		const h = (count / maxMentions) * barMaxHeight;
+		const h = Math.max(3, (count / maxMentions) * barMaxHeight);
 		const x = padding.left + i * barWidth + gap / 2;
 		const y = padding.top + barMaxHeight - h;
 		const rect = document.createElementNS(svgNs, 'rect');
@@ -811,19 +829,32 @@ function renderTimeline(data) {
 		svg.appendChild(rect);
 	}
 
-	// Year labels
-	const yearsShown = new Set();
+	// Year labels - adaptive interval based on container width
+	const containerWidth = timelineEl.offsetWidth || 760;
+	const labelInterval = containerWidth < 480 ? 4 : 2;
+
+	const yearsInRange = [];
 	for (let i = 0; i < allMonths.length; i++) {
 		const year = allMonths[i].substring(0, 4);
-		if (yearsShown.has(year)) continue;
-		// Place label at january (or first month of that year in range)
-		yearsShown.add(year);
-		const x = padding.left + i * barWidth;
+		const month = allMonths[i].substring(5, 7);
+		if (month === '01') {
+			yearsInRange.push({ year, index: i });
+		}
+	}
+
+	for (let j = 0; j < yearsInRange.length; j++) {
+		const { year, index } = yearsInRange[j];
+		const yearNum = parseInt(year, 10);
+		const isFirst = j === 0;
+		const isLast = j === yearsInRange.length - 1;
+		if (!isFirst && !isLast && yearNum % labelInterval !== 0) continue;
+
+		const x = padding.left + index * barWidth;
 		const label = document.createElementNS(svgNs, 'text');
 		label.setAttribute('class', 'timeline-year-label');
 		label.setAttribute('x', x);
-		label.setAttribute('y', svgHeight - 2);
-		label.textContent = year;
+		label.setAttribute('y', svgHeight - 4);
+		label.textContent = "'" + year.substring(2);
 		svg.appendChild(label);
 	}
 
@@ -855,15 +886,12 @@ function renderTimeline(data) {
 		tooltip.textContent = mName + ' ' + yr + ' \u2014 ' + info.mentions + ' mention' + (info.mentions !== 1 ? 's' : '') + ' in ' + info.episodes + ' episode' + (info.episodes !== 1 ? 's' : '');
 		tooltip.classList.add('visible');
 
-		// Highlight bar
 		const bar = svg.querySelector('.timeline-bar[data-index="' + monthIndex + '"]');
 		if (bar) bar.classList.add('active');
 
-		// Position tooltip
 		const containerRect = container.getBoundingClientRect();
 		let left = clientX - containerRect.left;
 		const tooltipWidth = tooltip.offsetWidth;
-		// Keep tooltip within bounds
 		if (left + tooltipWidth / 2 > containerRect.width) left = containerRect.width - tooltipWidth / 2;
 		if (left - tooltipWidth / 2 < 0) left = tooltipWidth / 2;
 		tooltip.style.left = left + 'px';
@@ -885,14 +913,12 @@ function renderTimeline(data) {
 		activeBar = null;
 	}
 
-	// Desktop
 	svg.addEventListener('mousemove', (e) => {
 		const idx = getMonthIndex(e.clientX);
 		showTooltip(e.clientX, e.clientY, idx);
 	});
 	svg.addEventListener('mouseleave', hideTooltip);
 
-	// Mobile
 	svg.addEventListener('touchstart', (e) => {
 		const touch = e.touches[0];
 		const idx = getMonthIndex(touch.clientX);
