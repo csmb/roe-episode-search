@@ -168,19 +168,111 @@ function checkPrerequisites() {
 
 // ── Step 2: Episode ID parsing ─────────────────────────────────────────
 
-function parseEpisodeId(mp3Path) {
+// Month-day-only files from 2014 — hardcoded lookup
+const MONTH_DAY_2014 = {
+	'jan 30': '2014-01-30',
+	'feb 6': '2014-02-06',
+	'march 6': '2014-03-06',
+	'march 13': '2014-03-13',
+	'march 20': '2014-03-20',
+	'april 17': '2014-04-17',
+	'april 24': '2014-04-24',
+};
+
+export function parseEpisodeId(mp3Path) {
 	const stem = path.basename(mp3Path, path.extname(mp3Path));
 
-	// Already in canonical format: roll-over-easy_2026-02-16_07-30-00
-	if (/^roll-over-easy_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}$/.test(stem)) {
-		return stem;
+	// Already in canonical format: roll-over-easy_2026-02-16_07-30-00 (with optional " copy" suffix)
+	const canonicalMatch = stem.match(/^(roll-over-easy_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})(\s+copy)?$/);
+	if (canonicalMatch) {
+		return canonicalMatch[1];
 	}
 
-	// App Recording format: "App Recording 20260216 0730"
-	const appMatch = stem.match(/App Recording\s+(\d{4})(\d{2})(\d{2})\s+(\d{2})(\d{2})/i);
+	// App Recording format: "App Recording 20260216 0730" or "App_Recording_20200730_0730"
+	const appMatch = stem.match(/App[_ ]Recording[_ ]+(\d{4})(\d{2})(\d{2})[_ ]+(\d{2})(\d{2})/i);
 	if (appMatch) {
 		const [, y, m, d, hh, mm] = appMatch;
 		return `roll-over-easy_${y}-${m}-${d}_${hh}-${mm}-00`;
+	}
+
+	// Input Device Recording format: "Input Device Recording 20220815 2051"
+	const inputMatch = stem.match(/Input Device Recording\s+(\d{4})(\d{2})(\d{2})\s+(\d{2})(\d{2})/i);
+	if (inputMatch) {
+		const [, y, m, d, hh, mm] = inputMatch;
+		return `roll-over-easy_${y}-${m}-${d}_${hh}-${mm}-00`;
+	}
+
+	// Podcast Roll Over Easy YYYYMMDD
+	const podcastMatch = stem.match(/Podcast Roll Over Easy\s+(\d{4})(\d{2})(\d{2})/i);
+	if (podcastMatch) {
+		const [, y, m, d] = podcastMatch;
+		return `roll-over-easy_${y}-${m}-${d}_07-30-00`;
+	}
+
+	// Roll Over Easy YYYYMMDD (with optional suffix like "final", "2", "_full")
+	const roeYMDMatch = stem.match(/^Roll Over Easy\s+(\d{4})(\d{2})(\d{2})/i);
+	if (roeYMDMatch) {
+		const [, y, m, d] = roeYMDMatch;
+		return `roll-over-easy_${y}-${m}-${d}_07-30-00`;
+	}
+
+	// Roll Over Easy - YYYY-MM-DD (with optional "(1)" duplicate suffix)
+	const roeDashMatch = stem.match(/^Roll Over Easy\s*-\s*(\d{4})-(\d{2})-(\d{2})/i);
+	if (roeDashMatch) {
+		const [, y, m, d] = roeDashMatch;
+		return `roll-over-easy_${y}-${m}-${d}_07-30-00`;
+	}
+
+	// Roll_Over_Easy_-_YYYY-MM-DD
+	const roeUnderscoreDashMatch = stem.match(/^Roll_Over_Easy_-_(\d{4})-(\d{2})-(\d{2})/i);
+	if (roeUnderscoreDashMatch) {
+		const [, y, m, d] = roeUnderscoreDashMatch;
+		return `roll-over-easy_${y}-${m}-${d}_07-30-00`;
+	}
+
+	// roll_over_easy-YYYY-MM-DD
+	const roeUnderscoreMatch = stem.match(/^roll_over_easy-(\d{4})-(\d{2})-(\d{2})/i);
+	if (roeUnderscoreMatch) {
+		const [, y, m, d] = roeUnderscoreMatch;
+		return `roll-over-easy_${y}-${m}-${d}_07-30-00`;
+	}
+
+	// roll-over-easy YYYY-MM-DD (space instead of underscore)
+	const roeSpaceMatch = stem.match(/^roll-over-easy\s+(\d{4})-(\d{2})-(\d{2})/i);
+	if (roeSpaceMatch) {
+		const [, y, m, d] = roeSpaceMatch;
+		return `roll-over-easy_${y}-${m}-${d}_07-30-00`;
+	}
+
+	// rec_(YYYY_MM_DD)_N
+	const recYMDMatch = stem.match(/^rec_\((\d{4})_(\d{2})_(\d{2})\)_/);
+	if (recYMDMatch) {
+		const [, y, m, d] = recYMDMatch;
+		return `roll-over-easy_${y}-${m}-${d}_07-30-00`;
+	}
+
+	// rec_(MM_DD_YYYY)_N
+	const recMDYMatch = stem.match(/^rec_\((\d{2})_(\d{2})_(\d{4})\)_/);
+	if (recMDYMatch) {
+		const [, m, d, y] = recMDYMatch;
+		return `roll-over-easy_${y}-${m}-${d}_07-30-00`;
+	}
+
+	// Month-day-only files: "Feb 6 - Roll Over Easy", "Roll Over Easy March 20", etc.
+	const monthDayPrefix = stem.match(/^(Jan|Feb|March|April)\s+(\d{1,2})\s*-\s*Roll Over Easy/i);
+	if (monthDayPrefix) {
+		const key = `${monthDayPrefix[1].toLowerCase()} ${monthDayPrefix[2]}`;
+		if (MONTH_DAY_2014[key]) {
+			return `roll-over-easy_${MONTH_DAY_2014[key]}_07-30-00`;
+		}
+	}
+
+	const monthDaySuffix = stem.match(/^Roll Over Easy\s+(Jan|Feb|March|April)\s+(\d{1,2})/i);
+	if (monthDaySuffix) {
+		const key = `${monthDaySuffix[1].toLowerCase()} ${monthDaySuffix[2]}`;
+		if (MONTH_DAY_2014[key]) {
+			return `roll-over-easy_${MONTH_DAY_2014[key]}_07-30-00`;
+		}
 	}
 
 	// Fallback: use filename stem, warn user
@@ -774,7 +866,11 @@ async function main() {
 	console.log(`  Episode "${episodeId}" is now live.`);
 }
 
-main().catch((err) => {
-	console.error(`\nFATAL: ${err.message}`);
-	process.exit(1);
-});
+// Only run main() when executed directly (not when imported)
+const isMainModule = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(decodeURIComponent(new URL(import.meta.url).pathname));
+if (isMainModule) {
+	main().catch((err) => {
+		console.error(`\nFATAL: ${err.message}`);
+		process.exit(1);
+	});
+}

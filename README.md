@@ -6,7 +6,7 @@ A searchable archive of the Roll Over Easy podcast. Search for any keyword or co
 
 ## How it works
 
-Audio files are transcribed into timestamped segments using OpenAI's Whisper API, stored in a SQLite database with full-text search (FTS5), and served via a Cloudflare Worker. Two search modes are available: **Keyword** finds exact word matches via FTS5, while **Semantic** finds conceptually related segments via vector embeddings (Cloudflare Vectorize + Workers AI). Click any result to play the audio from that exact moment.
+Audio files are transcribed locally using whisper.cpp (large-v3 model with Silero VAD), stored in a SQLite database with full-text search (FTS5), and served via a Cloudflare Worker. Two search modes are available: **Keyword** finds exact word matches via FTS5, while **Semantic** finds conceptually related segments via vector embeddings (Cloudflare Vectorize + Workers AI). Click any result to play the audio from that exact moment.
 
 ## Architecture
 
@@ -14,18 +14,17 @@ Audio files are transcribed into timestamped segments using OpenAI's Whisper API
 ┌──────────────────────────────────────────────────────────────────┐
 │                          Pipeline                                │
 │                                                                  │
-│  Local MP3s ──► Whisper API ──► JSON transcripts                 │
-│       │           (scripts/transcribe.js)                        │
+│  Local MP3s ──► whisper.cpp ──► JSON transcripts                 │
+│       │        (process-episode.js)                               │
 │       │                           │                              │
 │       │                    ┌──────┴──────┐                       │
 │       │                    ▼             ▼                        │
 │       │             Cloudflare D1   Cloudflare Vectorize         │
-│       │           (seed-db.js)    (generate-embeddings.js)       │
+│       │             (+ summaries)   (embeddings)                  │
 │       │                    │             │                        │
 │       ▼                    ▼             ▼                        │
 │  Cloudflare R2            Cloudflare Worker                      │
 │  (audio storage)      (search API + frontend)                    │
-│  (upload-audio.js)      (my-first-worker/)                       │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -57,26 +56,48 @@ All scripts are in `scripts/` and run locally with Node.js:
 
 | Script | Purpose |
 |---|---|
-| `transcribe.js` | Transcribe a single audio file. Splits into 10-min chunks via ffmpeg, sends to Whisper API, stitches timestamps, outputs JSON. |
-| `transcribe-all.js` | Batch-transcribe an entire directory. Skips already-done files, retries failures. |
-| `seed-db.js` | Push transcript JSON files into D1. Incremental — skips existing episodes. |
-| `generate-summaries.js` | Generate episode summaries using an LLM and update D1. |
-| `generate-embeddings.js` | Chunk transcripts into 45s windows, embed via Workers AI REST API, upsert to Vectorize. Deterministic IDs — safe to re-run. |
-| `upload-audio.js` | Convert audio to M4A and upload to R2. Updates episode records with audio URLs. |
+| `process-episode.js` | **Primary pipeline.** Process a single episode end-to-end: transcribe with whisper.cpp + VAD, seed D1, generate embeddings, generate AI summary, upload audio to R2. |
+| `discover-episodes.js` | Scan an audio directory, parse all filename formats, deduplicate by date, and output an episode manifest. |
+| `process-all.js` | Batch runner — processes all discovered episodes sequentially with checkpoint/resume, cooldown, retries, and quality gates. |
+| `transcribe.js` | (Legacy) Transcribe via OpenAI Whisper API. |
+| `transcribe-all.js` | (Legacy) Batch-transcribe via API. |
+| `seed-db.js` | (Legacy) Push transcript JSON files into D1. |
+| `generate-summaries.js` | (Legacy) Generate episode summaries. |
+| `generate-embeddings.js` | (Legacy) Embed transcripts into Vectorize. |
+| `upload-audio.js` | (Legacy) Convert + upload audio to R2. |
 
 ### Data flow for a single episode
 
 ```
 episode.mp3
     │
-    ├──► transcribe.js ──► transcripts/episode.json
-    │                              │
-    │                              ├──► seed-db.js ──► D1 (episodes + transcript_segments + FTS index)
-    │                              │
-    │                              └──► generate-embeddings.js ──► Vectorize (vector chunks)
-    │
-    └──► upload-audio.js ──► ffmpeg (MP3 → M4A) ──► R2 (audio/episode.m4a)
+    └──► process-episode.js
+              │
+              ├── 1. whisper.cpp + VAD ──► transcripts/episode.json
+              ├── 2. seed-db ──► D1 (episodes + transcript_segments + FTS index)
+              ├── 3. embeddings ──► Vectorize (45s vector chunks)
+              ├── 4. summary ──► D1 (AI-generated episode summary)
+              └── 5. upload ──► ffmpeg (MP3 → M4A) ──► R2
 ```
+
+### Batch processing
+
+```bash
+# Preview what will be processed
+node scripts/discover-episodes.js "/path/to/All episodes/"
+
+# Process everything (with checkpoint/resume)
+CLOUDFLARE_ACCOUNT_ID=... CLOUDFLARE_API_TOKEN=... OPENAI_API_KEY=... \
+  node scripts/process-all.js "/path/to/All episodes/" --cooldown 120
+
+# Process a specific date range
+node scripts/process-all.js "/path/to/All episodes/" --start-from 2025-01-01 --max 10
+
+# Dry run
+node scripts/process-all.js "/path/to/All episodes/" --dry-run
+```
+
+The batch runner supports checkpoint/resume via `scripts/batch-progress.json`, so it can be stopped and restarted at any time.
 
 ## Project structure
 
@@ -85,12 +106,15 @@ roe-episode-search/
 ├── schema.sql                    # D1 database schema
 ├── package.json                  # Root deps (openai, wrangler)
 ├── scripts/
-│   ├── transcribe.js             # Single-file transcription
-│   ├── transcribe-all.js         # Batch transcription
-│   ├── seed-db.js                # Load transcripts into D1
-│   ├── generate-summaries.js     # Generate episode summaries
-│   ├── generate-embeddings.js    # Embed transcripts into Vectorize
-│   └── upload-audio.js           # Convert + upload audio to R2
+│   ├── process-episode.js        # Single-episode pipeline (transcribe → deploy)
+│   ├── discover-episodes.js      # Scan + deduplicate audio files
+│   ├── process-all.js            # Batch runner with checkpoint/resume
+│   ├── transcribe.js             # (Legacy) API-based transcription
+│   ├── transcribe-all.js         # (Legacy) Batch API transcription
+│   ├── seed-db.js                # (Legacy) Load transcripts into D1
+│   ├── generate-summaries.js     # (Legacy) Generate summaries
+│   ├── generate-embeddings.js    # (Legacy) Embed into Vectorize
+│   └── upload-audio.js           # (Legacy) Upload audio to R2
 ├── transcripts/                  # Generated JSON transcripts (gitignored)
 └── my-first-worker/              # Cloudflare Worker
     ├── wrangler.jsonc            # Worker config (D1, R2, Vectorize, AI bindings)
@@ -105,9 +129,11 @@ roe-episode-search/
 
 - Node.js >= 18
 - ffmpeg installed (`brew install ffmpeg`)
-- OpenAI API key
+- whisper-cli installed (`brew install whisper-cpp`) with large-v3 model
+- Silero VAD model (`~/.cache/whisper-cpp/ggml-silero-v6.2.0.bin`)
+- OpenAI API key (for summaries)
 - Cloudflare account with Wrangler authenticated (`npx wrangler login`)
-- Cloudflare API token and account ID (for `generate-embeddings.js`)
+- Cloudflare API token and account ID (for embeddings)
 
 ### First-time setup
 
@@ -131,23 +157,19 @@ cd ..
 ### Processing episodes
 
 ```bash
-# 1. Transcribe (costs ~$0.72 per 2-hour episode)
-OPENAI_API_KEY=sk-... node scripts/transcribe-all.js /path/to/audio/
+# Process a single episode (transcribe → D1 → embeddings → summary → R2)
+CLOUDFLARE_ACCOUNT_ID=... CLOUDFLARE_API_TOKEN=... OPENAI_API_KEY=... \
+  node scripts/process-episode.js /path/to/episode.mp3
 
-# 2. Load into database
-node scripts/seed-db.js
+# Process all episodes in batch
+CLOUDFLARE_ACCOUNT_ID=... CLOUDFLARE_API_TOKEN=... OPENAI_API_KEY=... \
+  node scripts/process-all.js "/path/to/All episodes/" --cooldown 120
 
-# 3. Generate vector embeddings for semantic search
-CLOUDFLARE_ACCOUNT_ID=... CLOUDFLARE_API_TOKEN=... node scripts/generate-embeddings.js
-
-# 4. Convert and upload audio
-node scripts/upload-audio.js /path/to/audio/
-
-# 5. Deploy
+# Deploy
 cd my-first-worker && npx wrangler deploy
 ```
 
-Each script is incremental — safe to re-run, skips already-processed episodes.
+Each step is idempotent — safe to re-run, skips already-processed episodes.
 
 ### Local development
 

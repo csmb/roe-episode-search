@@ -19,5 +19,8 @@ audio/
 # R2 CORS config (has account-specific data)
 r2-cors.json
 
+# Batch processing checkpoint
+scripts/batch-progress.json
+
 # Claude Code local config (may contain API keys)
 .claude/
