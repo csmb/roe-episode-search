@@ -23,6 +23,14 @@ CREATE VIRTUAL TABLE transcript_fts USING fts5(
     content_rowid='rowid'
 );
 
+CREATE TABLE episode_guests (
+    episode_id TEXT NOT NULL REFERENCES episodes(id),
+    guest_name TEXT NOT NULL,
+    PRIMARY KEY (episode_id, guest_name)
+);
+
+CREATE INDEX idx_guests_name ON episode_guests(guest_name);
+
 -- Keep FTS index in sync with transcript_segments
 CREATE TRIGGER segments_ai AFTER INSERT ON transcript_segments BEGIN
     INSERT INTO transcript_fts(rowid, text) VALUES (new.rowid, new.text);

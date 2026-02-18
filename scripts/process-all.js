@@ -323,7 +323,11 @@ function main() {
 	if (totalFailed > 0) {
 		console.log(`\n  Failed episodes:`);
 		for (const [id, info] of Object.entries(progress.failed)) {
-			console.log(`    - ${id} (${info.file}): ${info.error.slice(0, 100)}`);
+			if (typeof info === 'string') {
+				console.log(`    - ${id}: ${info}`);
+			} else {
+				console.log(`    - ${id} (${info.file}): ${(info.error || 'unknown error').slice(0, 100)}`);
+			}
 		}
 	}
 

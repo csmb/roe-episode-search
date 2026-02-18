@@ -36,7 +36,7 @@ function runSQL(dbName, sql, isLocal) {
 	const flag = isLocal ? '--local' : '--remote';
 	const cmd = `npx wrangler d1 execute ${dbName} ${flag} --command="${sql.replace(/"/g, '\\"')}"`;
 	execSync(cmd, {
-		cwd: path.resolve(path.dirname(decodeURIComponent(new URL(import.meta.url).pathname)), '..', 'my-first-worker'),
+		cwd: path.resolve(path.dirname(decodeURIComponent(new URL(import.meta.url).pathname)), '..', 'roe-search'),
 		encoding: 'utf-8',
 		stdio: 'pipe',
 	});
@@ -70,7 +70,7 @@ async function main() {
 		const result = execSync(
 			`npx wrangler d1 execute ${dbName} ${isLocal ? '--local' : '--remote'} --json --command="SELECT id FROM episodes"`,
 			{
-				cwd: path.resolve(path.dirname(decodeURIComponent(new URL(import.meta.url).pathname)), '..', 'my-first-worker'),
+				cwd: path.resolve(path.dirname(decodeURIComponent(new URL(import.meta.url).pathname)), '..', 'roe-search'),
 				encoding: 'utf-8',
 				stdio: 'pipe',
 			}

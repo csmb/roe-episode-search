@@ -1,5 +1,6 @@
 import FRONTEND_HTML from './frontend.html';
 import EPISODES_HTML from './episodes.html';
+import GUESTS_HTML from './guests.html';
 
 export default {
 	async fetch(request, env) {
@@ -17,8 +18,23 @@ export default {
 		if (url.pathname === '/api/episodes') {
 			return handleEpisodes(env);
 		}
+		if (url.pathname === '/api/on-this-day') {
+			return handleOnThisDay(url, env);
+		}
+		if (url.pathname === '/api/guests') {
+			return handleGuests(env);
+		}
+		if (url.pathname.startsWith('/api/episode/')) {
+			const episodeId = decodeURIComponent(url.pathname.slice('/api/episode/'.length));
+			return handleEpisodeById(episodeId, env);
+		}
 		if (url.pathname === '/episodes') {
 			return new Response(EPISODES_HTML, {
+				headers: { 'Content-Type': 'text/html; charset=utf-8' },
+			});
+		}
+		if (url.pathname === '/guests') {
+			return new Response(GUESTS_HTML, {
 				headers: { 'Content-Type': 'text/html; charset=utf-8' },
 			});
 		}
@@ -303,6 +319,94 @@ async function handleAudio(request, url, env) {
 
 	headers.set('Content-Length', object.size);
 	return new Response(object.body, { status: 200, headers });
+}
+
+async function handleEpisodeById(episodeId, env) {
+	try {
+		const { results } = await env.DB.prepare(
+			'SELECT id, title, duration_ms, summary FROM episodes WHERE id = ?1'
+		)
+			.bind(episodeId)
+			.all();
+
+		if (results.length === 0) {
+			return json({ error: 'Episode not found' }, 404);
+		}
+
+		const ep = results[0];
+		return json({
+			episode: {
+				id: ep.id,
+				title: ep.title,
+				duration_ms: ep.duration_ms,
+				summary: ep.summary,
+				audio_file: `/audio/${ep.id}.m4a`,
+			},
+		});
+	} catch (err) {
+		return json({ error: 'Failed to fetch episode' }, 500);
+	}
+}
+
+async function handleOnThisDay(url, env) {
+	// Use Pacific time for "today"
+	const now = new Date();
+	const pacificDate = new Date(now.toLocaleString('en-US', { timeZone: 'America/Los_Angeles' }));
+	const month = String(pacificDate.getMonth() + 1).padStart(2, '0');
+	const day = String(pacificDate.getDate()).padStart(2, '0');
+	const todayMmDd = url.searchParams.get('date') || `${month}-${day}`;
+
+	try {
+		const { results } = await env.DB.prepare(`
+			SELECT id, title, duration_ms, summary
+			FROM episodes
+			WHERE SUBSTR(id, 21, 5) = ?1
+			ORDER BY id DESC
+		`)
+			.bind(todayMmDd)
+			.all();
+
+		return json({
+			date: todayMmDd,
+			episodes: results.map(ep => ({
+				id: ep.id,
+				title: ep.title,
+				duration_ms: ep.duration_ms,
+				summary: ep.summary,
+				audio_file: `/audio/${ep.id}.m4a`,
+			})),
+		});
+	} catch (err) {
+		return json({ error: 'Failed to fetch episodes' }, 500);
+	}
+}
+
+async function handleGuests(env) {
+	try {
+		const { results } = await env.DB.prepare(`
+			SELECT g.guest_name, e.id, e.title, e.duration_ms
+			FROM episode_guests g
+			JOIN episodes e ON e.id = g.episode_id
+			ORDER BY g.guest_name COLLATE NOCASE, e.id DESC
+		`).all();
+
+		const guestMap = new Map();
+		for (const row of results) {
+			if (!guestMap.has(row.guest_name)) {
+				guestMap.set(row.guest_name, { name: row.guest_name, episodes: [] });
+			}
+			guestMap.get(row.guest_name).episodes.push({
+				id: row.id,
+				title: row.title,
+				duration_ms: row.duration_ms,
+			});
+		}
+
+		const guests = Array.from(guestMap.values());
+		return json({ guests, total_guests: guests.length });
+	} catch (err) {
+		return json({ guests: [], total_guests: 0 });
+	}
 }
 
 function json(data, status = 200) {

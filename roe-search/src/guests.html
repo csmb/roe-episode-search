@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ROE Guests</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>☕</text></svg>">
+<style>
+	* { box-sizing: border-box; margin: 0; padding: 0; }
+	body {
+		font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+		background: #f5f5f5;
+		color: #2c2c2c;
+		line-height: 1.6;
+	}
+	.hero {
+		background: linear-gradient(135deg, #808080 0%, #a0a0a0 50%, #606060 100%);
+		color: #fff;
+		text-align: center;
+		padding: 2.5rem 2rem;
+	}
+	.hero h1 {
+		font-size: 2rem;
+		font-weight: 700;
+		letter-spacing: -0.5px;
+		text-shadow: 2px 2px 8px rgba(0,0,0,0.3);
+		margin-bottom: 0.25rem;
+	}
+	.hero .tagline {
+		font-size: 1.05rem;
+		font-weight: 300;
+		font-style: italic;
+		opacity: 0.9;
+		margin-bottom: 0.75rem;
+	}
+	.hero nav a {
+		color: rgba(255,255,255,0.7);
+		text-decoration: none;
+		font-size: 0.9rem;
+		transition: color 0.2s ease;
+	}
+	.hero nav a:hover { color: #fff; }
+	.container {
+		max-width: 800px;
+		margin: 0 auto;
+		padding: 2rem;
+	}
+	.status { color: #666; margin-bottom: 16px; font-size: 0.95rem; }
+	.alpha-bar {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 4px;
+		margin-bottom: 24px;
+		padding: 12px 0;
+		border-bottom: 1px solid #e0e0e0;
+	}
+	.alpha-bar a {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 32px;
+		height: 32px;
+		font-size: 0.85rem;
+		font-weight: 600;
+		color: #505050;
+		text-decoration: none;
+		border-radius: 6px;
+		transition: all 0.2s ease;
+	}
+	.alpha-bar a:hover { background: #e8e8e8; color: #303030; }
+	.alpha-bar a.disabled { color: #ccc; pointer-events: none; }
+	.letter-heading {
+		font-size: 1.5rem;
+		font-weight: 700;
+		color: #404040;
+		margin-top: 2rem;
+		margin-bottom: 12px;
+		padding-top: 1rem;
+		border-top: 1px solid #e0e0e0;
+	}
+	.letter-heading:first-of-type { margin-top: 0; border-top: none; padding-top: 0; }
+	.guest-card {
+		background: #fff;
+		border-radius: 12px;
+		box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+		margin-bottom: 12px;
+		padding: 16px 20px;
+	}
+	.guest-name {
+		font-weight: 600;
+		font-size: 1.05rem;
+		color: #404040;
+		margin-bottom: 2px;
+	}
+	.guest-count {
+		font-size: 0.85rem;
+		color: #999;
+		margin-bottom: 8px;
+	}
+	.guest-episodes {
+		list-style: none;
+	}
+	.guest-episodes li {
+		padding: 4px 0;
+		border-top: 1px solid #f0f0f0;
+	}
+	.guest-episodes li:first-child { border-top: none; }
+	.guest-episodes a {
+		color: #505050;
+		text-decoration: none;
+		font-size: 0.9rem;
+		border-bottom: 1px solid transparent;
+		transition: all 0.2s ease;
+	}
+	.guest-episodes a:hover {
+		color: #303030;
+		border-bottom-color: #505050;
+	}
+	.guest-ep-date {
+		color: #999;
+		font-size: 0.8rem;
+		margin-left: 8px;
+	}
+
+	@media (max-width: 768px) {
+		.hero { padding: 2rem 1.5rem; }
+		.hero h1 { font-size: 1.6rem; }
+		.container { padding: 1.5rem; }
+		.alpha-bar a { width: 28px; height: 28px; font-size: 0.8rem; }
+	}
+</style>
+</head>
+<body>
+
+<div class="hero">
+	<h1>Roll Over Easy</h1>
+	<div class="tagline">Guest Directory</div>
+	<nav><a href="/">Search</a> &middot; <a href="/episodes">Episodes</a></nav>
+</div>
+
+<div class="container">
+	<div id="status" class="status">Loading guests...</div>
+	<div id="alpha-bar" class="alpha-bar" style="display:none;"></div>
+	<div id="guests"></div>
+</div>
+
+<script>
+const statusEl = document.getElementById('status');
+const guestsEl = document.getElementById('guests');
+const alphaBarEl = document.getElementById('alpha-bar');
+
+function parseEpisodeDate(id) {
+	const match = id.match(/(\d{4}-\d{2}-\d{2})/);
+	if (!match) return null;
+	return match[1];
+}
+
+function formatDate(dateStr) {
+	if (!dateStr) return '';
+	const [y, m, d] = dateStr.split('-');
+	const date = new Date(y, m - 1, d);
+	return date.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+}
+
+function escapeHtml(str) {
+	return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+async function loadGuests() {
+	try {
+		const res = await fetch('/api/guests');
+		const data = await res.json();
+
+		if (!data.guests || data.guests.length === 0) {
+			statusEl.textContent = 'No guests found yet.';
+			return;
+		}
+
+		statusEl.textContent = data.total_guests + ' guest' + (data.total_guests !== 1 ? 's' : '');
+
+		// Group by first letter
+		const letterGroups = {};
+		const letters = new Set();
+		for (const guest of data.guests) {
+			const letter = guest.name.charAt(0).toUpperCase();
+			letters.add(letter);
+			if (!letterGroups[letter]) letterGroups[letter] = [];
+			letterGroups[letter].push(guest);
+		}
+
+		// Alphabet bar
+		const allLetters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
+		let barHtml = '';
+		for (const l of allLetters) {
+			if (letters.has(l)) {
+				barHtml += '<a href="#letter-' + l + '">' + l + '</a>';
+			} else {
+				barHtml += '<a class="disabled">' + l + '</a>';
+			}
+		}
+		alphaBarEl.innerHTML = barHtml;
+		alphaBarEl.style.display = 'flex';
+
+		// Render guest cards by letter
+		const sortedLetters = Array.from(letters).sort();
+		for (const letter of sortedLetters) {
+			const heading = document.createElement('h2');
+			heading.className = 'letter-heading';
+			heading.id = 'letter-' + letter;
+			heading.textContent = letter;
+			guestsEl.appendChild(heading);
+
+			for (const guest of letterGroups[letter]) {
+				const card = document.createElement('div');
+				card.className = 'guest-card';
+
+				let html = '<div class="guest-name">' + escapeHtml(guest.name) + '</div>';
+				html += '<div class="guest-count">' + guest.episodes.length + ' episode' + (guest.episodes.length !== 1 ? 's' : '') + '</div>';
+				html += '<ul class="guest-episodes">';
+				for (const ep of guest.episodes) {
+					const dateStr = parseEpisodeDate(ep.id);
+					html += '<li><a href="/?episode=' + encodeURIComponent(ep.id) + '&t=0">' + escapeHtml(ep.title) + '</a>';
+					if (dateStr) html += '<span class="guest-ep-date">' + formatDate(dateStr) + '</span>';
+					html += '</li>';
+				}
+				html += '</ul>';
+
+				card.innerHTML = html;
+				guestsEl.appendChild(card);
+			}
+		}
+	} catch (err) {
+		statusEl.textContent = 'Error loading guests: ' + err.message;
+	}
+}
+
+loadGuests();
+</script>
+
+</body>
+</html>

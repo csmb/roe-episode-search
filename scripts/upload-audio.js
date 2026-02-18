@@ -24,7 +24,7 @@ const DB_NAME = 'roe-episodes';
 const AUDIO_EXTENSIONS = ['.mp3', '.m4a', '.wav', '.ogg', '.flac', '.aac', '.wma'];
 
 const projectRoot = path.resolve(path.dirname(decodeURIComponent(new URL(import.meta.url).pathname)), '..');
-const workerDir = path.join(projectRoot, 'my-first-worker');
+const workerDir = path.join(projectRoot, 'roe-search');
 const transcriptsDir = path.join(projectRoot, 'transcripts');
 
 function escapeSQL(str) {

@@ -351,6 +351,68 @@
 		filter: invert(1);
 	}
 
+	/* Share button */
+	.share-btn {
+		background: none;
+		border: none;
+		cursor: pointer;
+		color: #b0b0b0;
+		font-size: 0.8rem;
+		padding: 2px 6px;
+		border-radius: 4px;
+		transition: all 0.15s ease;
+		flex-shrink: 0;
+		margin-left: auto;
+	}
+	.share-btn:hover { color: #505050; background: #f0f0f0; }
+	.share-btn.copied { color: #FF4F00; }
+
+	/* Clip card */
+	#clip-card {
+		margin-bottom: 24px;
+	}
+	#clip-card .episode {
+		border-left: 3px solid #FF4F00;
+	}
+	#clip-card .clip-label {
+		font-size: 0.8rem;
+		font-weight: 600;
+		color: #FF4F00;
+		text-transform: uppercase;
+		letter-spacing: 0.5px;
+		margin-bottom: 8px;
+	}
+
+	/* On This Day */
+	#on-this-day { margin-bottom: 24px; }
+	.otd-header {
+		font-size: 1.2rem;
+		font-weight: 600;
+		color: #404040;
+		margin-bottom: 12px;
+	}
+	.otd-year {
+		font-size: 0.85rem;
+		font-weight: 600;
+		color: #FF4F00;
+		margin-bottom: 4px;
+	}
+	.otd-play-btn {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		background: none;
+		border: 1px solid #d0d0d0;
+		border-radius: 50px;
+		padding: 4px 12px;
+		font-size: 0.8rem;
+		color: #505050;
+		cursor: pointer;
+		margin-top: 6px;
+		transition: all 0.2s ease;
+	}
+	.otd-play-btn:hover { border-color: #505050; color: #303030; }
+
 	.hidden { display: none; }
 
 	.sr-only {
@@ -466,6 +528,7 @@
 	<div class="hero-content">
 		<h1>Roll Over Easy</h1>
 		<p class="tagline">Taking San Francisco from under the covers 'til after coffee ☕</p>
+		<nav style="margin-top: 0.75rem;"><a href="/episodes" style="color: rgba(255,255,255,0.7); text-decoration: none; font-size: 0.9rem; transition: color 0.2s ease;">Episodes</a> <span style="color: rgba(255,255,255,0.4);">&middot;</span> <a href="/guests" style="color: rgba(255,255,255,0.7); text-decoration: none; font-size: 0.9rem; transition: color 0.2s ease;">Guests</a></nav>
 	</div>
 </div>
 
@@ -486,6 +549,8 @@
 					<button id="mode-semantic" onclick="setSearchMode('semantic')">Semantic</button>
 				</div>
 			</div>
+			<div id="clip-card"></div>
+			<div id="on-this-day"></div>
 			<div id="status" class="status" aria-live="polite" aria-atomic="true"></div>
 			<div id="timeline"></div>
 			<div id="results"></div>
@@ -539,6 +604,8 @@ const playerTitle = document.getElementById('player-title');
 const audioPlayer = document.getElementById('audio-player');
 
 const timelineEl = document.getElementById('timeline');
+const clipCardEl = document.getElementById('clip-card');
+const onThisDayEl = document.getElementById('on-this-day');
 
 let currentQuery = '';
 let currentPage = 1;
@@ -569,14 +636,18 @@ searchInput.addEventListener('keydown', (e) => {
 });
 loadMoreBtn.addEventListener('click', () => loadMore());
 
-// Load query and mode from URL on page load
+// Load query, mode, and clip params from URL on page load
 const params = new URLSearchParams(window.location.search);
 if (params.get('mode') === 'semantic') {
 	setSearchMode('semantic');
 }
-if (params.get('q')) {
+if (params.get('episode')) {
+	loadClip(params.get('episode'), parseInt(params.get('t') || '0', 10));
+} else if (params.get('q')) {
 	searchInput.value = params.get('q');
 	doSearch();
+} else {
+	loadOnThisDay();
 }
 function playAt(audioUrl, startMs, title) {
 	const startSeconds = startMs / 1000;
@@ -595,6 +666,103 @@ function playAt(audioUrl, startMs, title) {
 	}
 }
 
+async function loadClip(episodeId, startMs) {
+	try {
+		const res = await fetch('/api/episode/' + encodeURIComponent(episodeId));
+		const data = await res.json();
+		if (data.error || !data.episode) return;
+
+		const ep = data.episode;
+		const dateStr = parseEpisodeDate(ep.id);
+
+		let html = '<div class="episode"><div class="clip-label">Shared Clip</div>';
+		html += '<div class="episode-title">' + escapeHtml(ep.title) + '</div>';
+		if (dateStr || ep.duration_ms) {
+			html += '<div class="episode-meta">';
+			const parts = [];
+			if (dateStr) parts.push(formatDate(dateStr));
+			if (ep.duration_ms) parts.push(formatDuration(ep.duration_ms));
+			html += parts.join(' \u00b7 ') + '</div>';
+		}
+		if (ep.summary) {
+			html += '<div class="episode-summary">' + escapeHtml(ep.summary) + '</div>';
+		}
+		html += '</div>';
+		clipCardEl.innerHTML = html;
+
+		if (ep.audio_file) {
+			playAt(ep.audio_file, startMs, ep.title);
+		}
+	} catch (err) {
+		// Silently fail
+	}
+}
+
+async function loadOnThisDay() {
+	try {
+		const res = await fetch('/api/on-this-day');
+		const data = await res.json();
+		if (!data.episodes || data.episodes.length === 0) return;
+
+		// Format header date
+		const [mm, dd] = data.date.split('-');
+		const monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+		const headerDate = monthNames[parseInt(mm, 10) - 1] + ' ' + parseInt(dd, 10);
+
+		let html = '<div class="otd-header">On This Day: ' + headerDate + '</div>';
+		const currentYear = new Date().getFullYear();
+
+		for (const ep of data.episodes) {
+			const dateStr = parseEpisodeDate(ep.id);
+			const epYear = dateStr ? parseInt(dateStr.split('-')[0], 10) : null;
+			const yearsAgo = epYear ? currentYear - epYear : null;
+
+			html += '<div class="episode">';
+			if (yearsAgo !== null) {
+				html += '<div class="otd-year">' + yearsAgo + ' year' + (yearsAgo !== 1 ? 's' : '') + ' ago (' + epYear + ')</div>';
+			}
+			html += '<div class="episode-title">' + escapeHtml(ep.title) + '</div>';
+			if (ep.summary) {
+				html += '<div class="episode-summary">' + escapeHtml(ep.summary) + '</div>';
+			}
+			if (ep.audio_file) {
+				html += '<button class="otd-play-btn" onclick="playAt(\'' + escapeHtml(ep.audio_file) + '\', 0, \'' + escapeHtml(ep.title).replace(/'/g, "\\'") + '\')">&#9654; Play episode</button>';
+			}
+			html += '</div>';
+		}
+
+		onThisDayEl.innerHTML = html;
+	} catch (err) {
+		// Silently skip
+	}
+}
+
+function shareClip(episodeId, startMs, btn) {
+	const url = window.location.origin + '/?episode=' + encodeURIComponent(episodeId) + '&t=' + startMs;
+	navigator.clipboard.writeText(url).then(() => {
+		btn.textContent = 'Copied!';
+		btn.classList.add('copied');
+		setTimeout(() => {
+			btn.textContent = '\uD83D\uDD17';
+			btn.classList.remove('copied');
+		}, 1500);
+	}).catch(() => {
+		// Fallback: select-copy
+		const input = document.createElement('input');
+		input.value = url;
+		document.body.appendChild(input);
+		input.select();
+		document.execCommand('copy');
+		document.body.removeChild(input);
+		btn.textContent = 'Copied!';
+		btn.classList.add('copied');
+		setTimeout(() => {
+			btn.textContent = '\uD83D\uDD17';
+			btn.classList.remove('copied');
+		}, 1500);
+	});
+}
+
 async function doSearch() {
 	const q = searchInput.value.trim();
 	if (!q) return;
@@ -603,6 +771,8 @@ async function doSearch() {
 	currentPage = 1;
 	resultsEl.innerHTML = '';
 	timelineEl.innerHTML = '';
+	clipCardEl.innerHTML = '';
+	onThisDayEl.innerHTML = '';
 	statusEl.textContent = 'Searching...';
 	loadMoreBtn.classList.add('hidden');
 
@@ -718,6 +888,16 @@ function renderEpisode(episode) {
 			matchDiv.addEventListener('keydown', (e) => {
 				if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handler(); }
 			});
+
+			const shareBtn = document.createElement('button');
+			shareBtn.className = 'share-btn';
+			shareBtn.textContent = '\uD83D\uDD17';
+			shareBtn.title = 'Copy link to this moment';
+			shareBtn.addEventListener('click', (e) => {
+				e.stopPropagation();
+				shareClip(episode.episode_id, match.start_ms, shareBtn);
+			});
+			matchDiv.appendChild(shareBtn);
 		}
 
 		div.appendChild(matchDiv);

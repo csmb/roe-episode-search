@@ -28,7 +28,7 @@ function usage() {
 }
 
 function workerCwd() {
-	return path.resolve(path.dirname(decodeURIComponent(new URL(import.meta.url).pathname)), '..', 'my-first-worker');
+	return path.resolve(path.dirname(decodeURIComponent(new URL(import.meta.url).pathname)), '..', 'roe-search');
 }
 
 function escapeSQL(str) {
@@ -94,13 +94,18 @@ async function generateSummary(text, { dateStr, sunData }) {
 
 	const systemLines = [
 		'You summarize transcripts from "Roll Over Easy," a live morning radio show on BFF.fm broadcast from the Ferry Building in San Francisco.',
-		'Write a concise summary in this format:',
 		'',
-		'Line 1: The weather/vibe that morning (if mentioned — fog, sun, rain, cold, etc.). If not mentioned, skip this line.',
-		'Line 2: Who joined the show — name guests and briefly note who they are.',
-		'Line 3-4: What stories and topics came up — San Francisco news, local culture, neighborhood happenings, food, music, etc.',
+		'Respond with a JSON object containing three fields:',
 		'',
-		'Keep a warm, San Francisco tone. Use 2-4 sentences total. Do not use bullet points or labels like "Weather:" — just weave it naturally.',
+		'1. "title": A short, catchy episode title (3-8 words). Highlight the main guest or topic. Use an exclamation point for energy. Examples: "Super Bowl Thursday!", "Jane Natoli\'s San Francisco!", "Tree Twins and Muni Diaries".',
+		'',
+		'2. "summary": A concise summary in this format:',
+		'   Line 1: The weather/vibe that morning (if mentioned — fog, sun, rain, cold, etc.). If not mentioned, skip this line.',
+		'   Line 2: Who joined the show — name guests and briefly note who they are.',
+		'   Line 3-4: What stories and topics came up — San Francisco news, local culture, neighborhood happenings, food, music, etc.',
+		'   Keep a warm, San Francisco tone. Use 2-4 sentences total. Do not use bullet points or labels like "Weather:" — just weave it naturally.',
+		'',
+		'3. "guests": An array of guest full names mentioned in the episode. Exclude the host Sequoia. Return an empty array if there are no guests.',
 	];
 
 	if (dateStr || sunData) {
@@ -138,7 +143,8 @@ async function generateSummary(text, { dateStr, sunData }) {
 				},
 			],
 			temperature: 0.5,
-			max_tokens: 300,
+			max_tokens: 400,
+			response_format: { type: 'json_object' },
 		}),
 	});
 
@@ -148,7 +154,17 @@ async function generateSummary(text, { dateStr, sunData }) {
 	}
 
 	const data = await res.json();
-	return data.choices[0].message.content.trim();
+	const content = data.choices[0].message.content.trim();
+	try {
+		const parsed = JSON.parse(content);
+		return {
+			title: parsed.title?.trim() || null,
+			summary: parsed.summary?.trim() || content,
+			guests: Array.isArray(parsed.guests) ? parsed.guests : [],
+		};
+	} catch {
+		return { title: null, summary: content, guests: [] };
+	}
 }
 
 async function main() {
@@ -217,15 +233,42 @@ async function main() {
 			}
 		}
 
-		console.log(`  Generating summary for ${episode_id}...`);
-		const summary = await generateSummary(transcriptText, { dateStr, sunData });
-		console.log(`    Summary: ${summary.slice(0, 80)}...`);
+		console.log(`  Generating title + summary for ${episode_id}...`);
+		const { title, summary, guests } = await generateSummary(transcriptText, { dateStr, sunData });
+		if (title) {
+			console.log(`    Title: ${title}`);
+		}
+		console.log(`    Summary: ${(summary || '').slice(0, 80)}...`);
+		if (guests.length > 0) {
+			console.log(`    Guests: ${guests.join(', ')}`);
+		}
 
 		// Update D1
-		runSQL(
-			`UPDATE episodes SET summary = '${escapeSQL(summary)}' WHERE id = '${escapeSQL(episode_id)}'`,
-			isLocal
-		);
+		if (title) {
+			runSQL(
+				`UPDATE episodes SET title = '${escapeSQL(title)}', summary = '${escapeSQL(summary)}' WHERE id = '${escapeSQL(episode_id)}'`,
+				isLocal
+			);
+		} else {
+			runSQL(
+				`UPDATE episodes SET summary = '${escapeSQL(summary)}' WHERE id = '${escapeSQL(episode_id)}'`,
+				isLocal
+			);
+		}
+
+		// Insert guests
+		if (guests.length > 0) {
+			runSQL(`DELETE FROM episode_guests WHERE episode_id = '${escapeSQL(episode_id)}'`, isLocal);
+			for (const guest of guests) {
+				const name = guest.trim();
+				if (name) {
+					runSQL(
+						`INSERT OR IGNORE INTO episode_guests (episode_id, guest_name) VALUES ('${escapeSQL(episode_id)}', '${escapeSQL(name)}')`,
+						isLocal
+					);
+				}
+			}
+		}
 
 		generated++;
 	}
