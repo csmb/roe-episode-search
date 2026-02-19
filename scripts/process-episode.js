@@ -139,6 +139,12 @@ function stepTimer(name) {
 	};
 }
 
+function logWarn(message) {
+	const line = `[${new Date().toISOString()}] ${message}`;
+	console.warn(`  ${message}`);
+	fs.appendFileSync(path.join(projectRoot, 'scripts', 'pipeline-errors.log'), line + '\n');
+}
+
 // ── Step 1: Prerequisite checks ────────────────────────────────────────
 
 function checkPrerequisites() {
@@ -470,8 +476,8 @@ function seedDB(episodeId, force) {
 				timer.done('episode already in DB, skipping');
 				return;
 			}
-		} catch {
-			// Table might not exist — proceed with insert
+		} catch (err) {
+			logWarn(`[${episodeId}] DB check failed in seedDB: ${err.message}`);
 		}
 	}
 
@@ -650,7 +656,8 @@ async function fetchSunriseSunset(dateStr) {
 			sunrise: utcToPacific(data.results.sunrise),
 			sunset: utcToPacific(data.results.sunset),
 		};
-	} catch {
+	} catch (err) {
+		logWarn(`sunrise/sunset fetch failed for ${dateStr}: ${err.message}`);
 		return null;
 	}
 }
@@ -673,8 +680,8 @@ async function generateSummary(episodeId, force) {
 				timer.done('summary already exists, skipping');
 				return;
 			}
-		} catch {
-			// Proceed
+		} catch (err) {
+			logWarn(`[${episodeId}] DB check failed in generateSummary: ${err.message}`);
 		}
 	}
 
@@ -760,9 +767,8 @@ async function generateSummary(episodeId, force) {
 		title = parsed.title?.trim();
 		summary = parsed.summary?.trim();
 		guests = Array.isArray(parsed.guests) ? parsed.guests : [];
-	} catch {
-		// Fallback: treat entire response as summary if JSON parsing fails
-		console.log('  Warning: failed to parse JSON response, using as plain summary');
+	} catch (err) {
+		logWarn(`[${episodeId}] JSON parse failed in summary: ${err.message}`);
 		title = null;
 		summary = content;
 	}
@@ -811,8 +817,8 @@ function uploadAudio(mp3Path, episodeId, force) {
 				timer.done('audio already uploaded, skipping');
 				return;
 			}
-		} catch {
-			// Proceed
+		} catch (err) {
+			logWarn(`[${episodeId}] DB check failed in uploadAudio: ${err.message}`);
 		}
 	}
 

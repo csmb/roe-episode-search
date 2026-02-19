@@ -21,6 +21,7 @@ r2-cors.json
 
 # Batch processing checkpoint
 scripts/batch-progress.json
+scripts/pipeline-errors.log
 
 # Claude Code local config (may contain API keys)
 .claude/
