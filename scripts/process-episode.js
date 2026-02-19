@@ -73,7 +73,7 @@ const SF_VOCAB_PROMPT = [
 	// Venues & businesses
 	'Hamburger Haven, Club Fugazi, Manny\'s, The Lab, Spin City, Parklab,',
 	'La Cocina, Bi-Rite, Tartine, Humphry Slocombe, Lazy Bear, Toronado,',
-	'Wesburger, Lady Falcon Coffee Club, The New Wheel, Laughing Monk,',
+	'Wesburger, The New Wheel, Laughing Monk,',
 	// People & characters
 	'Emperor Norton, Herb Caen, Cosmic Amanda, Dr. Guacamole,',
 	// Organizations & media
@@ -320,6 +320,24 @@ function cleanSegments(segments) {
 		if (hasInternalLoop(seg.text)) continue;
 
 		cleaned.push(seg);
+	}
+
+	// Remove non-consecutive repeated hallucinations (e.g. "coffee." 500+ times)
+	const freq = new Map();
+	for (const seg of cleaned) {
+		const words = seg.text.trim().split(/\s+/);
+		if (words.length <= 3) {
+			const key = seg.text.trim().toLowerCase();
+			freq.set(key, (freq.get(key) || 0) + 1);
+		}
+	}
+	const threshold = Math.max(10, Math.floor(cleaned.length * 0.02));
+	const hallucinated = new Set();
+	for (const [text, count] of freq) {
+		if (count > threshold) hallucinated.add(text);
+	}
+	if (hallucinated.size > 0) {
+		return cleaned.filter(seg => !hallucinated.has(seg.text.trim().toLowerCase()));
 	}
 
 	return cleaned;
