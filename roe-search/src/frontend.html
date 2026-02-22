@@ -1113,11 +1113,16 @@ function renderTimeline(data) {
 		showTooltip(e.clientX, e.clientY, idx);
 	});
 	svg.style.cursor = 'pointer';
-	svg.addEventListener('click', (e) => {
+	svg.addEventListener('click', async (e) => {
 		const idx = getMonthIndex(e.clientX);
 		const month = allMonths[idx];
 		if (!month) return;
-		const target = document.querySelector(`[data-month="${month}"]`);
+		let target = document.querySelector(`[data-month="${month}"]`);
+		while (!target && hasMore) {
+			currentPage++;
+			await fetchResults();
+			target = document.querySelector(`[data-month="${month}"]`);
+		}
 		if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
 	});
 	svg.addEventListener('mouseleave', hideTooltip);
