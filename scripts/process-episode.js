@@ -439,10 +439,10 @@ function transcribe(mp3Path, episodeId, force) {
 			// Filter very short segments
 			if (text.length < 3) continue;
 
-			// offsets.from and offsets.to are in centiseconds (10ms units)
+			// offsets.from and offsets.to are in milliseconds (with VAD + --output-json-full)
 			parsed.push({
-				start_ms: seg.offsets.from * 10,
-				end_ms: seg.offsets.to * 10,
+				start_ms: seg.offsets.from,
+				end_ms: seg.offsets.to,
 				text,
 			});
 		}
