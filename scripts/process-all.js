@@ -40,6 +40,7 @@ const MIN_SEGMENTS = 100;
 const MAX_SEGMENT_CHARS = 500;
 const MIN_SUMMARY_CHARS = 50;
 const MAX_SUMMARY_CHARS = 500;
+const MAX_PHRASE_REPEATS = 20;
 
 // ── Progress tracking ──────────────────────────────────────────────────
 
@@ -81,6 +82,19 @@ function checkQuality(episodeId) {
 	const longSegments = segments.filter((s) => s.text.length > MAX_SEGMENT_CHARS);
 	if (longSegments.length > 0) {
 		warnings.push(`${longSegments.length} segments exceed ${MAX_SEGMENT_CHARS} chars (possible hallucination)`);
+	}
+
+	const phraseFreq = new Map();
+	for (const seg of segments) {
+		if (seg.text.length > 20) {
+			const key = seg.text.trim().toLowerCase();
+			phraseFreq.set(key, (phraseFreq.get(key) || 0) + 1);
+		}
+	}
+	for (const [text, count] of phraseFreq) {
+		if (count > MAX_PHRASE_REPEATS) {
+			return { pass: false, errors: [`Hallucination: "${text.slice(0, 60)}..." repeated ${count}×`] };
+		}
 	}
 
 	return { pass: true, warnings, segmentCount: segments.length };

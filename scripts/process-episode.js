@@ -509,6 +509,24 @@ function seedDB(episodeId, force) {
 	}
 
 	timer.done(`${segments.length} segments inserted`);
+	purgeHallucinations(episodeId);
+}
+
+function purgeHallucinations(episodeId) {
+	const hallucinations = queryJSON(
+		`SELECT text, COUNT(*) as cnt FROM transcript_segments
+		 WHERE episode_id = '${escapeSQL(episodeId)}'
+		 GROUP BY text HAVING cnt > 20 AND length(text) > 20`
+	);
+	if (!hallucinations || hallucinations.length === 0) return;
+	const phrases = hallucinations.map((r) => `'${escapeSQL(r.text)}'`).join(', ');
+	runSQL(
+		`DELETE FROM transcript_segments
+		 WHERE episode_id = '${escapeSQL(episodeId)}'
+		   AND text IN (${phrases})`
+	);
+	const totalDeleted = hallucinations.reduce((sum, r) => sum + r.cnt, 0);
+	logWarn(`Purged ${totalDeleted} hallucinated segments (${hallucinations.length} unique phrase(s)) from ${episodeId}`);
 }
 
 // ── Step 5: Generate embeddings → Vectorize ────────────────────────────
