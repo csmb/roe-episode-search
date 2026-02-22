@@ -85,7 +85,7 @@ async function handleSearch(url, env) {
 			JOIN episodes e ON e.id = s.episode_id
 			WHERE transcript_fts MATCH ?1
 			GROUP BY e.id
-			ORDER BY best_rank
+			ORDER BY e.id DESC
 			LIMIT ?2 OFFSET ?3
 		)
 		SELECT
@@ -103,7 +103,7 @@ async function handleSearch(url, env) {
 		JOIN transcript_segments s ON e.id = s.episode_id
 		JOIN transcript_fts fts ON s.rowid = fts.rowid
 		WHERE transcript_fts MATCH ?1
-		ORDER BY me.best_rank, s.start_ms
+		ORDER BY me.episode_id DESC, s.start_ms
 	`)
 		.bind(sanitized, pageSize, offset)
 		.all();
@@ -209,7 +209,7 @@ async function handleSemanticSearch(url, env) {
 	return json({
 		query,
 		page: 1,
-		results: Array.from(episodeMap.values()),
+		results: Array.from(episodeMap.values()).sort((a, b) => b.episode_id.localeCompare(a.episode_id)),
 		has_more: false,
 	});
 }
