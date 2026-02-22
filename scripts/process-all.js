@@ -26,6 +26,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { discoverEpisodes } from './discover-episodes.js';
+import { updateManifestStatus } from './generate-manifest.js';
 
 const projectRoot = path.resolve(path.dirname(decodeURIComponent(new URL(import.meta.url).pathname)), '..');
 const transcriptsDir = path.join(projectRoot, 'transcripts');
@@ -257,6 +258,7 @@ function main() {
 				file: path.basename(episode.filePath),
 				timestamp: new Date().toISOString(),
 			};
+			updateManifestStatus(episode.episodeId, 'failed');
 			failed++;
 		} else {
 			// Quality gates
@@ -271,6 +273,7 @@ function main() {
 					file: path.basename(episode.filePath),
 					timestamp: new Date().toISOString(),
 				};
+				updateManifestStatus(episode.episodeId, 'skipped');
 			} else {
 				if (quality.warnings && quality.warnings.length > 0) {
 					quality.warnings.forEach((w) => console.warn(`  ${timestamp()} WARNING: ${w}`));
@@ -282,6 +285,7 @@ function main() {
 					file: path.basename(episode.filePath),
 					timestamp: new Date().toISOString(),
 				};
+				updateManifestStatus(episode.episodeId, 'completed');
 				progress.timings.push(durationSec);
 				succeeded++;
 			}
