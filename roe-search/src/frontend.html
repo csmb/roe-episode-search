@@ -837,7 +837,7 @@ function renderEpisode(episode) {
 	title.appendChild(count);
 	div.appendChild(title);
 
-	const dateStr = parseEpisodeDate(episode.episode_id);
+
 	if (dateStr || episode.duration_ms) {
 		const meta = document.createElement('div');
 		meta.className = 'episode-meta';
