@@ -949,7 +949,7 @@ function generateMonthRange(first, last) {
 
 function renderTimeline(data) {
 	// Fixed range: full show history 2012-2026 regardless of query results
-	const allMonths = generateMonthRange('2012-01', '2026-02');
+	const allMonths = generateMonthRange('2014-01', '2026-02');
 	const mentionMap = {};
 	for (const t of data.timeline) {
 		mentionMap[t.month] = t;
