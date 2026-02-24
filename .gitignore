@@ -8,6 +8,7 @@ transcripts/
 
 # Downloaded/converted audio files (large)
 audio/
+*.mp3
 
 # Temp files from audio conversion
 /tmp/
