@@ -11,6 +11,26 @@ Audio files are transcribed locally using whisper.cpp (large-v3 model with Siler
 ## Architecture
 
 ```
+┌──────────────────────────────────────────────────────────────────┐
+│                          Pipeline                                │
+│                                                                  │
+│  Local MP3s ──► whisper.cpp ──► JSON transcripts                 │
+│       │        (process-episode.js)                              │
+│       │                           │                              │
+│       │                    ┌──────┴──────┐                       │
+│       │                    ▼             ▼                        │
+│       │             Cloudflare D1   Cloudflare Vectorize         │
+│       │          (+ titles/summaries)  (embeddings)              │
+│       │                    │             │                        │
+│       ▼                    ▼             ▼                        │
+│  Cloudflare R2            Cloudflare Worker                      │
+│  (audio storage)      (search API + frontend)                    │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+### Data flow for a single episode
+
+```
 episode.mp3
     │
     └──► process-episode.js
@@ -20,9 +40,6 @@ episode.mp3
               ├── 3. embeddings ──► Vectorize (45s vector chunks)
               ├── 4. title + summary ──► D1 (AI-generated via GPT-4o-mini)
               └── 5. upload ──► ffmpeg (MP3 → M4A) ──► R2
-                                                         │
-                                          Cloudflare Worker
-                                       (search API + frontend)
 ```
 
 ### Components
@@ -133,12 +150,3 @@ npx wrangler dev
 # Visit http://localhost:8787
 ```
 
-## Cloudflare resources
-
-| Resource | Name | Purpose |
-|---|---|---|
-| Worker | `roe-episode-search` | Search API + frontend |
-| D1 Database | `roe-episodes` | Transcripts + FTS index |
-| Vectorize Index | `roe-transcripts` | Semantic search vectors (768-dim, cosine) |
-| Workers AI | `@cf/baai/bge-base-en-v1.5` | Query embedding at search time |
-| R2 Bucket | `roe-audio` | Audio file storage |
