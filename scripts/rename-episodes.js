@@ -6,7 +6,7 @@
  * Usage:
  *   node scripts/rename-episodes.js [--dir <path>] [--apply]
  *
- * Default dir: ./test-episodes
+ * Default dir: ./All episodes
  * Default mode: dry-run (print plan only)
  * Pass --apply to actually rename files.
  *
@@ -30,7 +30,7 @@ const SKIP_FILES = new Set([
 // ── CLI args ────────────────────────────────────────────────────────────────
 
 const args = process.argv.slice(2);
-let dir = './test-episodes';
+let dir = './All episodes';
 let apply = false;
 
 for (let i = 0; i < args.length; i++) {
