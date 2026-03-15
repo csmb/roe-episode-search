@@ -244,6 +244,13 @@ export function parseEpisodeId(mp3Path) {
 		return `roll-over-easy_${y}-${m}-${d}_07-30-00`;
 	}
 
+	// Roll Over Easy YYYY-MM-DD (space-separated, dashes in date — post-rename canonical form)
+	const roeSpaceDashMatch = stem.match(/^Roll Over Easy\s+(\d{4})-(\d{2})-(\d{2})(?:\s|$)/i);
+	if (roeSpaceDashMatch) {
+		const [, y, m, d] = roeSpaceDashMatch;
+		return `roll-over-easy_${y}-${m}-${d}_07-30-00`;
+	}
+
 	// Roll_Over_Easy_-_YYYY-MM-DD
 	const roeUnderscoreDashMatch = stem.match(/^Roll_Over_Easy_-_(\d{4})-(\d{2})-(\d{2})/i);
 	if (roeUnderscoreDashMatch) {
@@ -416,6 +423,7 @@ function transcribe(mp3Path, episodeId, force) {
 			'--vad',
 			'--vad-model', VAD_MODEL_PATH,
 			'--suppress-nst',
+			'--max-context', '0',
 			wavPath,
 		], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'inherit'], timeout: 0, maxBuffer: 50 * 1024 * 1024 });
 

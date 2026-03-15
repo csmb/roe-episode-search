@@ -20,6 +20,7 @@
  *   --start-from <date>     Start from a specific date (YYYY-MM-DD), skipping earlier
  *   --dry-run               Show what would be processed without doing anything
  *   --max <n>               Process at most n episodes then stop
+ *   --time-limit <hours>    Stop after this many hours (finishes current episode first)
  */
 
 import { execFileSync } from 'node:child_process';
@@ -118,7 +119,7 @@ function timestamp() {
 
 function parseArgs() {
 	const args = process.argv.slice(2);
-	const opts = { audioDir: null, cooldown: 120, startFrom: null, dryRun: false, max: Infinity };
+	const opts = { audioDir: null, cooldown: 120, startFrom: null, dryRun: false, max: Infinity, timeLimitMs: null, force: false };
 
 	for (let i = 0; i < args.length; i++) {
 		if (args[i] === '--cooldown' && args[i + 1]) {
@@ -132,6 +133,11 @@ function parseArgs() {
 		} else if (args[i] === '--max' && args[i + 1]) {
 			opts.max = parseInt(args[i + 1], 10);
 			i++;
+		} else if (args[i] === '--time-limit' && args[i + 1]) {
+			opts.timeLimitMs = parseFloat(args[i + 1]) * 60 * 60 * 1000;
+			i++;
+		} else if (args[i] === '--force') {
+			opts.force = true;
 		} else if (!args[i].startsWith('--')) {
 			opts.audioDir = args[i];
 		}
@@ -197,6 +203,7 @@ function main() {
 	console.log(`  ${timestamp()} To process this run: ${toProcess.length}`);
 	console.log(`  ${timestamp()} Cooldown: ${opts.cooldown}s between episodes`);
 	if (opts.startFrom) console.log(`  ${timestamp()} Starting from: ${opts.startFrom}`);
+	if (opts.timeLimitMs) console.log(`  ${timestamp()} Time limit: ${opts.timeLimitMs / 3600000}h`);
 	console.log('');
 
 	if (opts.dryRun) {
@@ -246,7 +253,9 @@ function main() {
 			}
 
 			try {
-				execFileSync('node', [processEpisodeScript, episode.filePath], {
+				const episodeArgs = [processEpisodeScript, episode.filePath];
+			if (opts.force) episodeArgs.push('--force');
+			execFileSync('node', episodeArgs, {
 					encoding: 'utf-8',
 					stdio: 'inherit',
 					timeout: 0, // no timeout — transcription can take 60+ min
@@ -307,6 +316,12 @@ function main() {
 
 		processed++;
 		saveProgress(progress);
+
+		// Stop if time limit reached (finishes current episode first)
+		if (opts.timeLimitMs && (Date.now() - batchStart) >= opts.timeLimitMs) {
+			console.log(`\n  ${timestamp()} Time limit reached — stopping after ${processed} episodes.`);
+			break;
+		}
 
 		// Running summary every 10 episodes
 		if (processed % 10 === 0) {

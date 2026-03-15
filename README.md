@@ -65,8 +65,12 @@ All scripts are in `scripts/` and run locally with Node.js:
 | Script | Purpose |
 |---|---|
 | `process-episode.js` | **Primary pipeline.** Process a single episode end-to-end: transcribe with whisper.cpp + VAD, seed D1, generate embeddings, generate AI title + summary, upload audio to R2. |
-| `discover-episodes.js` | Scan an audio directory, parse all filename formats, deduplicate by date, and output an episode manifest. |
+| `discover-episodes.js` | Scan an audio directory, parse all filename formats, deduplicate by date, and return a sorted episode list. |
 | `process-all.js` | Batch runner — processes all discovered episodes sequentially with checkpoint/resume, cooldown, retries, and quality gates. |
+| `generate-manifest.js` | Generate (or regenerate) `episode-manifest.json` from an audio directory, cross-referencing `batch-progress.json` and `transcripts/` to assign statuses (completed/pending/failed/skipped). |
+| `manifest-status.js` | Print a human-readable progress summary from `episode-manifest.json`. |
+| `rename-episodes.js` | Rename MP3 files to a uniform `Roll Over Easy YYYY-MM-DD.mp3` scheme. Dry-run by default; pass `--apply` to rename. |
+| `audit-episodes.js` | Audit episode files for date anomalies: non-Thursday dates, missing Thursdays, duplicates, and unparseable filenames. |
 | `transcribe.js` | Transcribe a single audio file via OpenAI Whisper API. |
 | `transcribe-all.js` | Batch-transcribe a directory via Whisper API. Skips already-done files, retries failures. |
 | `seed-db.js` | Push transcript JSON files into D1. Incremental — skips existing episodes. |
@@ -74,6 +78,7 @@ All scripts are in `scripts/` and run locally with Node.js:
 | `generate-embeddings.js` | Chunk transcripts into 45s windows, embed via Workers AI REST API, upsert to Vectorize. |
 | `upload-audio.js` | Convert audio to M4A and upload to R2. Updates episode records with audio URLs. |
 | `backfill-guests.js` | Extract guest names from transcripts using GPT-4o-mini and populate D1. |
+| `clean-hallucinations.js` | Delete hallucinated repeated-phrase segments from D1. Finds any phrase >20 chars appearing >20× within one episode and removes matching rows. |
 
 ### Data flow for a single episode
 
@@ -118,13 +123,20 @@ roe-episode-search/
 │   ├── process-episode.js        # Single-episode pipeline (transcribe → deploy)
 │   ├── discover-episodes.js      # Scan + deduplicate audio files
 │   ├── process-all.js            # Batch runner with checkpoint/resume
+│   ├── generate-manifest.js      # Build/refresh episode-manifest.json
+│   ├── manifest-status.js        # Print manifest progress summary
+│   ├── rename-episodes.js        # Normalize MP3 filenames
+│   ├── audit-episodes.js         # Audit for date anomalies + missing episodes
 │   ├── transcribe.js             # Transcribe via Whisper API
 │   ├── transcribe-all.js         # Batch transcribe via Whisper API
 │   ├── seed-db.js                # Load transcripts into D1
 │   ├── generate-summaries.js     # Generate episode titles + summaries
 │   ├── generate-embeddings.js    # Embed transcripts into Vectorize
 │   ├── upload-audio.js           # Convert + upload audio to R2
-│   └── backfill-guests.js       # Extract guest names into D1
+│   ├── backfill-guests.js        # Extract guest names into D1
+│   ├── clean-hallucinations.js   # Remove hallucinated segments from D1
+│   ├── episode-manifest.json     # Source-of-truth episode status list
+│   └── batch-progress.json       # Checkpoint file for process-all.js
 ├── transcripts/                  # Generated JSON transcripts (gitignored)
 └── roe-search/                   # Cloudflare Worker
     ├── wrangler.jsonc            # Worker config (D1, R2, Vectorize, AI bindings)

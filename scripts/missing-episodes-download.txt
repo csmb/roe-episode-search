@@ -1,0 +1,93 @@
+# Missing episodes download list
+# Generated 2026-03-13
+# Format: YYYY-MM-DD  URL
+#
+# 3 episodes have no audio on bff.fm (empty media):
+#   2015-09-10  (broadcast 3852 — no recording)
+#   2015-10-29  (broadcast 4360 — no recording)
+#   2024-01-11  (broadcast 40298 — no recording)
+#
+# Caveats:
+#   2017-04-05 -> audio dated 2017-04-06 (Thursday, likely correct date)
+#   2021-11-25 -> rebroadcast of a 2018 episode (Obi Kaufmann)
+#   2022-01-13 -> mislabeled upload (filename says 2022-01-27)
+
+2015-06-18	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2015-06-18_07-30-00.mp3
+2016-05-12	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2016-05-12_07-30-00.mp3
+2016-06-23	https://a.bff.fm/audio/roll-over-easy_2016-06-23_07-30-00.mp3
+2016-09-01	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2016-09-01_07-30-00.mp3
+2016-12-01	https://a.bff.fm/audio/roll-over-easy/roll-over-easy-2016-12-01.mp3
+2017-04-05	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2017-04-06_07-30-00.mp3
+2019-08-01	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2019-08-01_07-30-00.mp3
+2019-08-22	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2019-08-22_07-30-00.mp3
+2019-09-05	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2019-09-05_07-30-00.mp3
+2019-09-12	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2019-09-12_07-30-00.mp3
+2019-09-19	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2019-09-19_07-30-00.mp3
+2019-09-26	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2019-09-26_07-30-00.mp3
+2019-10-10	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2019-10-10_07-30-00.mp3
+2019-10-17	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2019-10-17_07-30-00.mp3
+2019-10-31	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2019-10-31_07-30-00.mp3
+2019-11-07	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2019-11-07_07-30-00.mp3
+2019-11-14	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2019-11-14_07-30-00.mp3
+2019-11-21	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2019-11-21_07-30-00.mp3
+2019-12-05	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2019-12-05_07-30-00.mp3
+2019-12-12	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2019-12-12_07-30-00.mp3
+2019-12-19	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2019-12-19_07-30-00.mp3
+2020-02-06	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2020-02-06_07-30-00.mp3
+2020-02-13	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2020-02-13_07-30-00.mp3
+2020-02-20	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2020-02-20_07-30-00.mp3
+2020-02-27	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2020-02-27_07-30-00.mp3
+2020-03-05	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2020-03-05_07-30-00.mp3
+2020-03-12	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2020-03-12_07-30-00.mp3
+2020-03-19	https://a.bff.fm/audio/roll-over-easy/roll-over-easy-2020-03-19.mp3
+2021-01-14	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2021-01-14_07-30-00.mp3
+2021-01-21	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2021-01-21_07-30-00.mp3
+2021-02-04	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2021-02-04_07-30-00.mp3
+2021-02-11	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2021-02-11_07-30-00.mp3
+2021-02-18	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2021-02-18_07-30-00.mp3
+2021-02-25	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2021-02-25_07-30-00.mp3
+2021-03-04	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2021-03-04_07-30-00.mp3
+2021-03-11	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2021-03-11_07-30-00.mp3
+2021-03-18	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2021-03-18_07-30-00.mp3
+2021-03-25	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2021-03-25_07-30-00.mp3
+2021-04-08	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2021-04-08_07-30-00.mp3
+2021-04-15	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2021-04-15_07-30-00.mp3
+2021-04-22	https://a.bff.fm/audio/roll-over-easy/stream_recording-2021-04-22_07-30-03.mp3
+2021-05-06	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2021-05-06_07-30-00.mp3
+2021-05-13	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2021-05-13_07-30-00.mp3
+2021-05-20	https://a.bff.fm/audio/Roll_Over_Easy-2021-05-20.mp3
+2021-05-27	https://a.bff.fm/audio/Roll_Over_Easy_-_2021-05-27.mp3
+2021-06-03	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2021-06-03_07-30-00.mp3
+2021-06-10	https://a.bff.fm/audio/roll-over-easy-2021-06-10.mp3
+2021-06-17	https://a.bff.fm/audio/1624037025ZjzZnMac-roll_over_easy_2021-06-17.mp3
+2021-06-24	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2021-06-24_07-30-00.mp3
+2021-07-01	https://a.bff.fm/audio/1625170130irqxTZvY-roll_over_easy-2021-07-01.mp3
+2021-07-08	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2021-07-08_07-30-00.mp3
+2021-07-15	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2021-07-15_07-30-00.mp3
+2021-08-05	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2021-08-05_07-30-00.mp3
+2021-08-12	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2021-08-12_07-30-00.mp3
+2021-08-26	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2021-08-26_07-30-00.mp3
+2021-09-02	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2021-09-02_07-30-00.mp3
+2021-09-09	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2021-09-09_07-30-00.mp3
+2021-09-16	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2021-09-16_07-30-00.mp3
+2021-09-30	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2021-09-30_07-30-00.mp3
+2021-10-07	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2021-10-07_07-30-00.mp3
+2021-10-21	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2021-10-21_07-30-00.mp3
+2021-10-28	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2021-10-28_07-30-00.mp3
+2021-11-04	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2021-11-04_07-30-00.mp3
+2021-11-11	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2021-11-11_07-30-00.mp3
+2021-11-18	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2021-11-18_07-30-00.mp3
+2021-11-25	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2018-08-23_07-30-00.mp3
+2021-12-02	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2021-12-02_07-30-00.mp3
+2021-12-09	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2021-12-09_07-30-00.mp3
+2021-12-16	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2021-12-16_07-30-00.mp3
+2022-01-13	https://a.bff.fm/audio/1646188968ffkSwVad-roll-over-easy_2022-01-27_07-30-00.mp3
+2022-01-20	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2022-01-20_07-30-00.mp3
+2022-01-27	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2022-01-27_07-30-00.mp3
+2022-02-17	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2022-02-17_07-30-00.mp3
+2022-02-24	https://a.bff.fm/audio/roll-over-easy/roll-over-easy_2022-02-24_07-30-00.mp3
+2022-03-10	https://a.bff.fm/audio/roll-over-easy/pBtuiKQlrBOs-roll-over-easy-20220310-0730.mp3
+2023-03-16	https://a.bff.fm/audio/roll-over-easy/HndMnGjYTOVU-roll-over-easy-20230316-0730.mp3
+2025-04-24	https://a.bff.fm/audio/1745547571rCRwxQhi-1Roll_Over_Easy_20250424.mp3
+2026-02-26	https://a.bff.fm/audio/1772170356gypHJuIg-1Roll_Over_Easy_20260226.mp3
+2026-03-05	https://a.bff.fm/audio/1772762617PgiAVLKG-1Roll_Over_Easy_20260305.mp3
