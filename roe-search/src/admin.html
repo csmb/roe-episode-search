@@ -231,102 +231,6 @@
 		font-size: 0.95rem;
 	}
 
-	/* Ingest panel */
-	.ingest-offline-msg {
-		background: #fff;
-		border-radius: 10px;
-		box-shadow: 0 2px 8px rgba(0,0,0,0.06);
-		padding: 28px 24px;
-		text-align: center;
-	}
-	.ingest-offline-msg p { color: #666; margin-bottom: 10px; }
-	.ingest-offline-msg code {
-		display: inline-block;
-		background: #f0f0f0;
-		border-radius: 4px;
-		padding: 6px 14px;
-		font-family: 'SF Mono', 'Fira Code', monospace;
-		font-size: 0.9rem;
-		color: #333;
-		user-select: all;
-	}
-	.ingest-retry-btn {
-		margin-top: 16px;
-		font-size: 0.85rem;
-		background: #4a4a4a;
-		color: #fff;
-		border: none;
-		border-radius: 6px;
-		padding: 6px 14px;
-		cursor: pointer;
-		font-family: inherit;
-		transition: background 0.15s;
-		display: inline-block;
-	}
-	.ingest-retry-btn:hover { background: #2c2c2c; }
-	.ingest-drop-zone {
-		border: 2px dashed #ccc;
-		border-radius: 12px;
-		padding: 2.5rem 2rem;
-		text-align: center;
-		cursor: pointer;
-		transition: border-color 0.2s, background 0.2s;
-		margin-bottom: 1.5rem;
-		background: #fff;
-		box-shadow: 0 2px 8px rgba(0,0,0,0.06);
-	}
-	.ingest-drop-zone.drag-over { border-color: #555; background: #f8f8f8; }
-	.ingest-drop-zone p { color: #999; }
-	.ingest-drop-zone p strong { color: #555; }
-	#ingest-file-input { display: none; }
-	.ingest-card {
-		background: #fff;
-		border: 1px solid #e0e0e0;
-		border-radius: 8px;
-		overflow: hidden;
-		margin-bottom: 12px;
-		box-shadow: 0 2px 6px rgba(0,0,0,0.04);
-	}
-	.ingest-card.success { border-color: #48bb78; }
-	.ingest-card.failed  { border-color: #e53e3e; }
-	.ingest-card-header {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		padding: 8px 14px;
-		background: #f8f8f8;
-		font-size: 0.85rem;
-		font-weight: 600;
-		color: #333;
-		border-bottom: 1px solid #eee;
-	}
-	.ingest-card.success .ingest-card-header { background: #f0fff4; border-color: #9ae6b4; color: #276749; }
-	.ingest-card.failed  .ingest-card-header { background: #fff5f5; border-color: #fed7d7; color: #c53030; }
-	.ingest-dot {
-		width: 8px; height: 8px;
-		border-radius: 50%;
-		background: #999;
-		flex-shrink: 0;
-	}
-	.ingest-card.success .ingest-dot { background: #48bb78; }
-	.ingest-card.failed  .ingest-dot { background: #e53e3e; }
-	.ingest-card:not(.success):not(.failed) .ingest-dot {
-		background: #4299e1;
-		animation: pulse 1.5s infinite;
-	}
-	.ingest-card-log {
-		font-family: 'SF Mono', 'Fira Code', monospace;
-		font-size: 0.75rem;
-		line-height: 1.5;
-		padding: 10px 14px;
-		max-height: 240px;
-		overflow-y: auto;
-		background: #1a1a2e;
-	}
-	.ingest-log-line { white-space: pre-wrap; word-break: break-all; }
-	.ingest-log-line.out { color: #cbd5e0; }
-	.ingest-log-line.err { color: #f6ad55; }
-
 	/* Error toast */
 	.error-toast {
 		position: fixed;
@@ -362,7 +266,6 @@
 	<div class="tabs">
 		<button id="tab-guests" class="tab active">All Guests</button>
 		<button id="tab-queue" class="tab">Review Queue <span id="queue-badge" class="tab-badge" style="display:none;"></span></button>
-		<button id="tab-ingest" class="tab">Ingest</button>
 	</div>
 
 	<!-- Panel: All Guests -->
@@ -377,27 +280,6 @@
 		<div id="queue-status" class="status"></div>
 		<div id="queue-list"></div>
 	</div>
-
-	<!-- Panel: Ingest -->
-	<div id="panel-ingest" style="display:none;">
-		<div id="ingest-offline" style="display:none;">
-			<div class="ingest-offline-msg">
-				<p>The local ingest server is not running.</p>
-				<p>Start it in your terminal:</p>
-				<code>node scripts/ingest-server.js</code>
-				<br>
-				<button class="ingest-retry-btn" onclick="checkIngestServer()">Retry</button>
-			</div>
-		</div>
-		<div id="ingest-online" style="display:none;">
-			<div id="ingest-drop-zone" class="ingest-drop-zone">
-				<p><strong>Drop MP3 files here</strong></p>
-				<p>or click to select files</p>
-				<input type="file" id="ingest-file-input" accept="audio/mpeg,.mp3" multiple>
-			</div>
-			<div id="ingest-cards"></div>
-		</div>
-	</div>
 </div>
 
 <script>
@@ -409,17 +291,13 @@ let activeTab = 'guests';
 
 document.getElementById('tab-guests').onclick = () => showTab('guests');
 document.getElementById('tab-queue').onclick  = () => showTab('queue');
-document.getElementById('tab-ingest').onclick = () => showTab('ingest');
 
 function showTab(tab) {
 	activeTab = tab;
 	document.getElementById('panel-guests').style.display = tab === 'guests' ? '' : 'none';
 	document.getElementById('panel-queue').style.display  = tab === 'queue'  ? '' : 'none';
-	document.getElementById('panel-ingest').style.display = tab === 'ingest' ? '' : 'none';
 	document.getElementById('tab-guests').classList.toggle('active', tab === 'guests');
 	document.getElementById('tab-queue').classList.toggle('active', tab === 'queue');
-	document.getElementById('tab-ingest').classList.toggle('active', tab === 'ingest');
-	if (tab === 'ingest') initIngestTab();
 }
 
 // ── API helpers ────────────────────────────────────────────────────────
@@ -708,121 +586,6 @@ function formatDate(dateStr) {
 	return new Date(+y, +m - 1, +d).toLocaleDateString('en-US', {
 		year: 'numeric', month: 'short', day: 'numeric',
 	});
-}
-
-// ── Ingest tab ─────────────────────────────────────────────────────────
-
-const INGEST_BASE = 'http://localhost:3001';
-let ingestReady = false;
-
-async function checkIngestServer() {
-	document.getElementById('ingest-offline').style.display = 'none';
-	document.getElementById('ingest-online').style.display = 'none';
-	try {
-		const res = await fetch(`${INGEST_BASE}/ping`, { signal: AbortSignal.timeout(2000) });
-		if (res.ok) {
-			document.getElementById('ingest-online').style.display = '';
-			ingestReady = true;
-			return;
-		}
-	} catch { /* server not running */ }
-	document.getElementById('ingest-offline').style.display = '';
-	ingestReady = false;
-}
-
-let ingestInitialized = false;
-function initIngestTab() {
-	if (ingestInitialized) { checkIngestServer(); return; }
-	ingestInitialized = true;
-
-	const dropZone = document.getElementById('ingest-drop-zone');
-	const fileInput = document.getElementById('ingest-file-input');
-	const cardsEl  = document.getElementById('ingest-cards');
-
-	dropZone.addEventListener('click', () => fileInput.click());
-	fileInput.addEventListener('change', () => { handleIngestFiles(fileInput.files); fileInput.value = ''; });
-	dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('drag-over'); });
-	dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
-	dropZone.addEventListener('drop', (e) => {
-		e.preventDefault();
-		dropZone.classList.remove('drag-over');
-		handleIngestFiles(e.dataTransfer.files);
-	});
-
-	function createIngestCard(filename) {
-		const card = document.createElement('div');
-		card.className = 'ingest-card';
-
-		const header = document.createElement('div');
-		header.className = 'ingest-card-header';
-
-		const dot = document.createElement('span');
-		dot.className = 'ingest-dot';
-
-		const name = document.createElement('span');
-		name.textContent = filename;
-
-		header.appendChild(dot);
-		header.appendChild(name);
-
-		const log = document.createElement('div');
-		log.className = 'ingest-card-log';
-
-		card.appendChild(header);
-		card.appendChild(log);
-		cardsEl.prepend(card);
-		return { card, log };
-	}
-
-	function appendIngestLog({ log }, { line, type }) {
-		const el = document.createElement('div');
-		el.className = 'ingest-log-line ' + type;
-		el.textContent = line;
-		log.appendChild(el);
-		log.scrollTop = log.scrollHeight;
-	}
-
-	async function processIngestFile(file) {
-		const { card, log } = createIngestCard(file.name);
-
-		let res;
-		try {
-			res = await fetch(`${INGEST_BASE}/upload`, {
-				method: 'POST',
-				headers: { 'X-Filename': encodeURIComponent(file.name) },
-				body: file,
-			});
-		} catch (err) {
-			card.classList.add('failed');
-			appendIngestLog({ log }, { line: 'Upload failed: ' + err.message, type: 'err' });
-			return;
-		}
-
-		if (!res.ok) {
-			card.classList.add('failed');
-			appendIngestLog({ log }, { line: 'Server error: ' + res.status, type: 'err' });
-			return;
-		}
-
-		const { jobId } = await res.json();
-
-		const es = new EventSource(`${INGEST_BASE}/stream/${jobId}`);
-		es.onmessage = (e) => appendIngestLog({ log }, JSON.parse(e.data));
-		es.addEventListener('done', () => { card.classList.add('success'); es.close(); });
-		es.addEventListener('error', (e) => {
-			if (e.type === 'error' && !e.data) return;
-			card.classList.add('failed');
-			es.close();
-		});
-	}
-
-	async function handleIngestFiles(files) {
-		for (const file of files) {
-			processIngestFile(file); // intentionally not awaited — start all, let queue handle serialization
-		}
-	}
-
-	checkIngestServer();
 }
 
 // ── Init ───────────────────────────────────────────────────────────────
