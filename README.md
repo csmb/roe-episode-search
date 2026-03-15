@@ -18,11 +18,11 @@ Audio files are transcribed locally using whisper.cpp (large-v3 model with Siler
 │       │        (process-episode.js)                              │
 │       │                           │                              │
 │       │                    ┌──────┴──────┐                       │
-│       │                    ▼             ▼                        │
+│       │                    ▼             ▼                       │
 │       │             Cloudflare D1   Cloudflare Vectorize         │
 │       │          (+ titles/summaries)  (embeddings)              │
-│       │                    │             │                        │
-│       ▼                    ▼             ▼                        │
+│       │                    │             │                       │
+│       ▼                    ▼             ▼                       │
 │  Cloudflare R2            Cloudflare Worker                      │
 │  (audio storage)      (search API + frontend)                    │
 └──────────────────────────────────────────────────────────────────┘
