@@ -471,6 +471,25 @@ function transcribe(mp3Path, episodeId, force) {
 	}
 }
 
+// ── Step 3b: Transcribe (OpenAI Whisper API) ───────────────────────────
+
+async function transcribeOpenAI(mp3Path, episodeId, force) {
+	const timer = stepTimer('TRANSCRIBE (OpenAI Whisper)');
+	const outputPath = path.join(transcriptsDir, `${episodeId}.json`);
+
+	if (!force && fs.existsSync(outputPath)) {
+		timer.done('transcript already exists, skipping');
+		return;
+	}
+
+	const { transcribeFile } = await import('./transcribe.js');
+	const transcript = await transcribeFile(mp3Path, episodeId, episodeId);
+
+	fs.mkdirSync(transcriptsDir, { recursive: true });
+	fs.writeFileSync(outputPath, JSON.stringify(transcript, null, 2));
+	timer.done(`${transcript.segments.length} segments`);
+}
+
 // ── Step 4: Seed D1 database ───────────────────────────────────────────
 
 function seedDB(episodeId, force) {
@@ -878,7 +897,7 @@ function uploadAudio(mp3Path, episodeId, force) {
 
 function parseArgs() {
 	const args = process.argv.slice(2);
-	const opts = { force: false, skip: new Set(), episodeId: null, mp3Path: null };
+	const opts = { force: false, skip: new Set(), episodeId: null, mp3Path: null, openaiWhisper: false };
 
 	for (let i = 0; i < args.length; i++) {
 		if (args[i] === '--force') {
@@ -889,6 +908,8 @@ function parseArgs() {
 		} else if (args[i] === '--episode-id' && args[i + 1]) {
 			opts.episodeId = args[i + 1];
 			i++;
+		} else if (args[i] === '--openai-whisper') {
+			opts.openaiWhisper = true;
 		} else if (!args[i].startsWith('--')) {
 			opts.mp3Path = args[i];
 		}
@@ -907,6 +928,7 @@ async function main() {
 		console.error('  --episode-id ID          Override auto-parsed episode ID');
 		console.error('  --force                  Re-run all steps even if already done');
 		console.error('  --skip step1,step2       Skip steps (transcribe, seed-db, embeddings, summary, upload-audio)');
+		console.error('  --openai-whisper         Use OpenAI Whisper API instead of local whisper.cpp');
 		process.exit(1);
 	}
 
@@ -924,16 +946,23 @@ async function main() {
 	console.log(`  File:       ${path.basename(mp3Path)}`);
 	console.log(`  Episode ID: ${episodeId}`);
 	console.log(`  Force:      ${force}`);
+	console.log(`  Transcribe: ${opts.openaiWhisper ? 'OpenAI Whisper API' : 'local whisper.cpp'}`);
 	if (skip.size > 0) console.log(`  Skipping:   ${[...skip].join(', ')}`);
 
 	const totalStart = Date.now();
 
-	// Step 1: Prerequisites
-	checkPrerequisites();
+	// Step 1: Prerequisites (only needed for local whisper)
+	if (!opts.openaiWhisper) {
+		checkPrerequisites();
+	}
 
 	// Step 2: Transcribe
 	if (!skip.has('transcribe')) {
-		transcribe(mp3Path, episodeId, force);
+		if (opts.openaiWhisper) {
+			await transcribeOpenAI(mp3Path, episodeId, force);
+		} else {
+			transcribe(mp3Path, episodeId, force);
+		}
 	} else {
 		console.log('\n[TRANSCRIBE] Skipped');
 	}
