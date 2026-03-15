@@ -1,6 +1,7 @@
 import FRONTEND_HTML from './frontend.html';
 import EPISODES_HTML from './episodes.html';
 import GUESTS_HTML from './guests.html';
+import ADMIN_HTML from './admin.html';
 
 export default {
 	async fetch(request, env) {
@@ -37,6 +38,23 @@ export default {
 			return new Response(GUESTS_HTML, {
 				headers: { 'Content-Type': 'text/html; charset=utf-8' },
 			});
+		}
+		if (url.pathname === '/admin') {
+			return new Response(ADMIN_HTML, {
+				headers: { 'Content-Type': 'text/html; charset=utf-8' },
+			});
+		}
+		if (url.pathname === '/api/admin/unreviewed') {
+			return handleAdminUnreviewed(env);
+		}
+		if (url.pathname === '/api/admin/guest/rename' && request.method === 'POST') {
+			return handleAdminGuestRename(request, env);
+		}
+		if (url.pathname === '/api/admin/guest/delete' && request.method === 'POST') {
+			return handleAdminGuestDelete(request, env);
+		}
+		if (url.pathname === '/api/admin/episode/reviewed' && request.method === 'POST') {
+			return handleAdminEpisodeReviewed(request, env);
 		}
 		if (url.pathname.startsWith('/audio/')) {
 			return handleAudio(request, url, env);
@@ -407,6 +425,83 @@ async function handleGuests(env) {
 	} catch (err) {
 		return json({ guests: [], total_guests: 0 });
 	}
+}
+
+async function handleAdminUnreviewed(env) {
+	try {
+		const { results } = await env.DB.prepare(`
+			SELECT e.id, e.title, e.published_at, g.guest_name
+			FROM episodes e
+			LEFT JOIN episode_guests g ON g.episode_id = e.id
+			WHERE e.guests_reviewed = 0
+			ORDER BY e.id DESC
+		`).all();
+
+		const episodeMap = new Map();
+		for (const row of results) {
+			if (!episodeMap.has(row.id)) {
+				episodeMap.set(row.id, {
+					id: row.id,
+					title: row.title,
+					published_at: row.published_at,
+					guests: [],
+				});
+			}
+			if (row.guest_name) {
+				episodeMap.get(row.id).guests.push(row.guest_name);
+			}
+		}
+
+		return json({ episodes: Array.from(episodeMap.values()) });
+	} catch (err) {
+		return json({ episodes: [] });
+	}
+}
+
+async function handleAdminGuestRename(request, env) {
+	let body;
+	try { body = await request.json(); } catch { return json({ error: 'Invalid JSON' }, 400); }
+
+	const { old_name, new_name } = body;
+	if (!old_name || !new_name) return json({ error: 'Missing old_name or new_name' }, 400);
+
+	await env.DB.prepare(
+		'INSERT OR IGNORE INTO episode_guests SELECT episode_id, ? FROM episode_guests WHERE guest_name = ?'
+	).bind(new_name, old_name).run();
+
+	await env.DB.prepare(
+		'DELETE FROM episode_guests WHERE guest_name = ?'
+	).bind(old_name).run();
+
+	return json({ ok: true });
+}
+
+async function handleAdminGuestDelete(request, env) {
+	let body;
+	try { body = await request.json(); } catch { return json({ error: 'Invalid JSON' }, 400); }
+
+	const { guest_name } = body;
+	if (!guest_name) return json({ error: 'Missing guest_name' }, 400);
+
+	await env.DB.prepare(
+		'DELETE FROM episode_guests WHERE guest_name = ?'
+	).bind(guest_name).run();
+
+	return json({ ok: true });
+}
+
+async function handleAdminEpisodeReviewed(request, env) {
+	let body;
+	try { body = await request.json(); } catch { return json({ error: 'Invalid JSON' }, 400); }
+
+	const { episode_id } = body;
+	if (!episode_id) return json({ error: 'Missing episode_id' }, 400);
+
+	await env.DB.prepare(
+		'UPDATE episodes SET guests_reviewed = 1 WHERE id = ?'
+	).bind(episode_id).run();
+
+	return json({ ok: true });
 }
 
 function json(data, status = 200) {

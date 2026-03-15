@@ -1,0 +1,597 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ROE Admin</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>☕</text></svg>">
+<style>
+	* { box-sizing: border-box; margin: 0; padding: 0; }
+	body {
+		font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+		background: #f5f5f5;
+		color: #2c2c2c;
+		line-height: 1.6;
+	}
+	.hero {
+		background: linear-gradient(135deg, #808080 0%, #a0a0a0 50%, #606060 100%);
+		color: #fff;
+		text-align: center;
+		padding: 2.5rem 2rem;
+	}
+	.hero h1 {
+		font-size: 2rem;
+		font-weight: 700;
+		letter-spacing: -0.5px;
+		text-shadow: 2px 2px 8px rgba(0,0,0,0.3);
+		margin-bottom: 0.25rem;
+	}
+	.hero .tagline {
+		font-size: 1.05rem;
+		font-weight: 300;
+		font-style: italic;
+		opacity: 0.9;
+		margin-bottom: 0.75rem;
+	}
+	.hero nav a {
+		color: rgba(255,255,255,0.7);
+		text-decoration: none;
+		font-size: 0.9rem;
+		transition: color 0.2s ease;
+	}
+	.hero nav a:hover { color: #fff; }
+	.container {
+		max-width: 800px;
+		margin: 0 auto;
+		padding: 2rem;
+	}
+
+	/* Tabs */
+	.tabs {
+		display: flex;
+		gap: 0;
+		margin-bottom: 24px;
+		border-bottom: 2px solid #e0e0e0;
+	}
+	.tab {
+		background: none;
+		border: none;
+		border-bottom: 2px solid transparent;
+		margin-bottom: -2px;
+		padding: 10px 20px;
+		font-size: 0.95rem;
+		cursor: pointer;
+		color: #666;
+		transition: all 0.2s;
+		font-family: inherit;
+	}
+	.tab.active { color: #2c2c2c; border-bottom-color: #505050; font-weight: 600; }
+	.tab:hover:not(.active) { color: #404040; }
+	.tab-badge {
+		display: inline-block;
+		background: #888;
+		color: #fff;
+		border-radius: 10px;
+		padding: 1px 7px;
+		font-size: 0.75rem;
+		margin-left: 5px;
+		font-weight: 400;
+		vertical-align: middle;
+	}
+
+	/* Status */
+	.status { color: #666; margin-bottom: 16px; font-size: 0.95rem; }
+
+	/* Alpha bar */
+	.alpha-bar {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 4px;
+		margin-bottom: 24px;
+		padding: 12px 0;
+		border-bottom: 1px solid #e0e0e0;
+	}
+	.alpha-bar a {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 32px;
+		height: 32px;
+		font-size: 0.85rem;
+		font-weight: 600;
+		color: #505050;
+		text-decoration: none;
+		border-radius: 6px;
+		transition: all 0.2s ease;
+	}
+	.alpha-bar a:hover { background: #e8e8e8; color: #303030; }
+	.alpha-bar a.disabled { color: #ccc; pointer-events: none; }
+
+	/* Letter headings */
+	.letter-heading {
+		font-size: 1.4rem;
+		font-weight: 700;
+		color: #404040;
+		margin-top: 1.5rem;
+		margin-bottom: 8px;
+		padding-top: 1rem;
+		border-top: 1px solid #e0e0e0;
+	}
+	.letter-heading:first-of-type { margin-top: 0; border-top: none; padding-top: 0; }
+
+	/* Guest section container */
+	.guest-section-rows {
+		background: #fff;
+		border-radius: 10px;
+		box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+		padding: 4px 16px;
+	}
+
+	/* Guest rows (shared between both tabs) */
+	.guest-row {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 9px 0;
+		border-bottom: 1px solid #f0f0f0;
+	}
+	.guest-row:last-child { border-bottom: none; }
+	.guest-label {
+		flex: 1;
+		display: flex;
+		align-items: baseline;
+		gap: 8px;
+		min-width: 0;
+	}
+	.gname {
+		font-weight: 500;
+		color: #2c2c2c;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+	.gcount {
+		font-size: 0.8rem;
+		color: #999;
+		white-space: nowrap;
+	}
+	.guest-actions {
+		display: flex;
+		gap: 4px;
+		flex-shrink: 0;
+	}
+	.btn-rename {
+		font-size: 0.8rem;
+		color: #555;
+		background: none;
+		border: 1px solid #ccc;
+		border-radius: 4px;
+		padding: 2px 8px;
+		cursor: pointer;
+		font-family: inherit;
+		transition: all 0.15s;
+	}
+	.btn-rename:hover { background: #f0f0f0; border-color: #aaa; }
+	.btn-delete {
+		font-size: 1rem;
+		color: #aaa;
+		background: none;
+		border: 1px solid #ddd;
+		border-radius: 4px;
+		padding: 1px 7px;
+		cursor: pointer;
+		line-height: 1.4;
+		font-family: inherit;
+		transition: all 0.15s;
+	}
+	.btn-delete:hover { color: #c0392b; border-color: #c0392b; }
+	.rename-input {
+		flex: 1;
+		font-size: 0.95rem;
+		font-family: inherit;
+		padding: 2px 7px;
+		border: 1px solid #555;
+		border-radius: 4px;
+		outline: none;
+		min-width: 80px;
+	}
+	.rename-input:focus { border-color: #333; }
+
+	/* Episode cards (review queue) */
+	.episode-card {
+		background: #fff;
+		border-radius: 12px;
+		box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+		margin-bottom: 16px;
+		padding: 18px 20px;
+	}
+	.ep-header { margin-bottom: 12px; }
+	.ep-title { font-weight: 600; font-size: 1rem; color: #2c2c2c; margin-bottom: 2px; }
+	.ep-date { font-size: 0.85rem; color: #999; }
+	.ep-guests { margin-bottom: 12px; }
+	.ep-no-guests { color: #aaa; font-size: 0.9rem; font-style: italic; margin-bottom: 12px; }
+	.btn-reviewed {
+		font-size: 0.85rem;
+		background: #4a4a4a;
+		color: #fff;
+		border: none;
+		border-radius: 6px;
+		padding: 6px 14px;
+		cursor: pointer;
+		font-family: inherit;
+		transition: background 0.15s;
+	}
+	.btn-reviewed:hover { background: #2c2c2c; }
+
+	/* Empty state */
+	.empty-state {
+		color: #aaa;
+		text-align: center;
+		padding: 48px 20px;
+		font-size: 0.95rem;
+	}
+
+	/* Error toast */
+	.error-toast {
+		position: fixed;
+		bottom: 24px;
+		right: 24px;
+		background: #c0392b;
+		color: #fff;
+		padding: 10px 16px;
+		border-radius: 8px;
+		font-size: 0.9rem;
+		z-index: 1000;
+		box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+	}
+
+	@media (max-width: 768px) {
+		.hero { padding: 2rem 1.5rem; }
+		.hero h1 { font-size: 1.6rem; }
+		.container { padding: 1.5rem; }
+		.alpha-bar a { width: 28px; height: 28px; font-size: 0.8rem; }
+		.tab { padding: 10px 14px; font-size: 0.9rem; }
+	}
+</style>
+</head>
+<body>
+
+<div class="hero">
+	<h1>Roll Over Easy</h1>
+	<div class="tagline">Guest Admin</div>
+	<nav><a href="/">Search</a></nav>
+</div>
+
+<div class="container">
+	<div class="tabs">
+		<button id="tab-guests" class="tab active">All Guests</button>
+		<button id="tab-queue" class="tab">Review Queue <span id="queue-badge" class="tab-badge" style="display:none;"></span></button>
+	</div>
+
+	<!-- Panel: All Guests -->
+	<div id="panel-guests">
+		<div id="guests-status" class="status">Loading...</div>
+		<div id="alpha-bar" class="alpha-bar" style="display:none;"></div>
+		<div id="guests-list"></div>
+	</div>
+
+	<!-- Panel: Review Queue -->
+	<div id="panel-queue" style="display:none;">
+		<div id="queue-status" class="status"></div>
+		<div id="queue-list"></div>
+	</div>
+</div>
+
+<script>
+let allGuests = [];      // [{ name, episodes: [{id, title}] }]
+let queueEpisodes = [];  // [{ id, title, published_at, guests: [] }]
+let activeTab = 'guests';
+
+// ── Tab switching ──────────────────────────────────────────────────────
+
+document.getElementById('tab-guests').onclick = () => showTab('guests');
+document.getElementById('tab-queue').onclick  = () => showTab('queue');
+
+function showTab(tab) {
+	activeTab = tab;
+	document.getElementById('panel-guests').style.display = tab === 'guests' ? '' : 'none';
+	document.getElementById('panel-queue').style.display  = tab === 'queue'  ? '' : 'none';
+	document.getElementById('tab-guests').classList.toggle('active', tab === 'guests');
+	document.getElementById('tab-queue').classList.toggle('active', tab === 'queue');
+}
+
+// ── API helpers ────────────────────────────────────────────────────────
+
+async function apiPost(path, body) {
+	const res = await fetch(path, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(body),
+	});
+	if (!res.ok) {
+		const err = await res.json().catch(() => ({ error: 'Request failed' }));
+		throw new Error(err.error || 'Request failed');
+	}
+	return res.json();
+}
+
+function showError(msg) {
+	const el = document.createElement('div');
+	el.className = 'error-toast';
+	el.textContent = msg;
+	document.body.appendChild(el);
+	setTimeout(() => el.remove(), 4000);
+}
+
+// ── Data loading ───────────────────────────────────────────────────────
+
+async function loadAndRender() {
+	const [g, q] = await Promise.all([
+		fetch('/api/guests').then(r => r.json()),
+		fetch('/api/admin/unreviewed').then(r => r.json()),
+	]);
+	allGuests = g.guests || [];
+	queueEpisodes = q.episodes || [];
+	renderGuests();
+	renderQueue();
+	updateBadge();
+}
+
+function updateBadge() {
+	const badge = document.getElementById('queue-badge');
+	if (queueEpisodes.length > 0) {
+		badge.textContent = queueEpisodes.length;
+		badge.style.display = '';
+	} else {
+		badge.style.display = 'none';
+	}
+}
+
+// ── Render: All Guests ─────────────────────────────────────────────────
+
+function renderGuests() {
+	const container = document.getElementById('guests-list');
+	const alphaBar  = document.getElementById('alpha-bar');
+	const status    = document.getElementById('guests-status');
+
+	if (allGuests.length === 0) {
+		status.textContent = 'No guests found.';
+		container.replaceChildren();
+		alphaBar.style.display = 'none';
+		return;
+	}
+
+	status.textContent = allGuests.length + ' guest' + (allGuests.length !== 1 ? 's' : '');
+
+	// Group by first letter
+	const letterGroups = {};
+	const letters = new Set();
+	for (const guest of allGuests) {
+		const letter = guest.name.charAt(0).toUpperCase();
+		letters.add(letter);
+		if (!letterGroups[letter]) letterGroups[letter] = [];
+		letterGroups[letter].push(guest);
+	}
+
+	// Alpha bar
+	alphaBar.innerHTML = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map(l =>
+		letters.has(l)
+			? `<a href="#ag-${l}">${l}</a>`
+			: `<a class="disabled">${l}</a>`
+	).join('');
+	alphaBar.style.display = 'flex';
+
+	// Letter sections
+	const frag = document.createDocumentFragment();
+	for (const letter of Array.from(letters).sort()) {
+		const h = document.createElement('h2');
+		h.className = 'letter-heading';
+		h.id = 'ag-' + letter;
+		h.textContent = letter;
+		frag.appendChild(h);
+
+		const rows = document.createElement('div');
+		rows.className = 'guest-section-rows';
+		for (const guest of letterGroups[letter]) {
+			rows.appendChild(makeGuestRow(guest.name, guest.episodes.length, loadAndRender));
+		}
+		frag.appendChild(rows);
+	}
+	container.replaceChildren(frag);
+}
+
+// ── Render: Review Queue ───────────────────────────────────────────────
+
+function renderQueue() {
+	const container = document.getElementById('queue-list');
+	const status    = document.getElementById('queue-status');
+
+	if (queueEpisodes.length === 0) {
+		status.textContent = '';
+		container.innerHTML = '<div class="empty-state">No episodes pending review.</div>';
+		return;
+	}
+
+	status.textContent = queueEpisodes.length + ' episode' + (queueEpisodes.length !== 1 ? 's' : '') + ' pending review';
+
+	const frag = document.createDocumentFragment();
+	for (const ep of queueEpisodes) {
+		frag.appendChild(makeEpisodeCard(ep));
+	}
+	container.replaceChildren(frag);
+}
+
+// ── Guest row component ────────────────────────────────────────────────
+
+function makeGuestRow(name, count, onSuccess) {
+	const row = document.createElement('div');
+	row.className = 'guest-row';
+
+	// Label: name + optional count
+	const label = document.createElement('span');
+	label.className = 'guest-label';
+
+	const nameSpan = document.createElement('span');
+	nameSpan.className = 'gname';
+	nameSpan.textContent = name;
+	label.appendChild(nameSpan);
+
+	if (count !== null && count !== undefined) {
+		const countSpan = document.createElement('span');
+		countSpan.className = 'gcount';
+		countSpan.textContent = count + ' ep' + (count !== 1 ? 's' : '');
+		label.appendChild(countSpan);
+	}
+
+	row.appendChild(label);
+
+	// Action buttons
+	const actions = document.createElement('span');
+	actions.className = 'guest-actions';
+
+	const renameBtn = document.createElement('button');
+	renameBtn.className = 'btn-rename';
+	renameBtn.textContent = 'rename';
+
+	const deleteBtn = document.createElement('button');
+	deleteBtn.className = 'btn-delete';
+	deleteBtn.textContent = '×';
+
+	actions.appendChild(renameBtn);
+	actions.appendChild(deleteBtn);
+	row.appendChild(actions);
+
+	// Rename handler
+	renameBtn.onclick = () => {
+		const input = document.createElement('input');
+		input.type = 'text';
+		input.className = 'rename-input';
+		input.value = name;
+		label.replaceWith(input);
+		renameBtn.style.display = 'none';
+		input.focus();
+		input.select();
+
+		let state = 'editing'; // 'editing' | 'submitting' | 'done'
+
+		async function commit() {
+			if (state !== 'editing') return;
+			const newName = input.value.trim();
+			if (!newName || newName === name) { cancel(); return; }
+			state = 'submitting';
+			try {
+				await apiPost('/api/admin/guest/rename', { old_name: name, new_name: newName });
+				state = 'done';
+				onSuccess();
+			} catch (e) {
+				state = 'editing';
+				cancel();
+				showError('Rename failed: ' + e.message);
+			}
+		}
+
+		function cancel() {
+			state = 'done'; // prevent blur from re-triggering commit
+			input.replaceWith(label);
+			renameBtn.style.display = '';
+		}
+
+		input.onkeydown = (e) => {
+			if (e.key === 'Enter')  { e.preventDefault(); commit(); }
+			if (e.key === 'Escape') { e.preventDefault(); cancel(); }
+		};
+		input.onblur = commit;
+	};
+
+	// Delete handler
+	deleteBtn.onclick = async () => {
+		try {
+			await apiPost('/api/admin/guest/delete', { guest_name: name });
+			onSuccess();
+		} catch (e) {
+			showError('Delete failed: ' + e.message);
+		}
+	};
+
+	return row;
+}
+
+// ── Episode card component ─────────────────────────────────────────────
+
+function makeEpisodeCard(ep) {
+	const card = document.createElement('div');
+	card.className = 'episode-card';
+
+	// Header
+	const header = document.createElement('div');
+	header.className = 'ep-header';
+
+	const titleEl = document.createElement('div');
+	titleEl.className = 'ep-title';
+	titleEl.textContent = ep.title;
+
+	const dateEl = document.createElement('div');
+	dateEl.className = 'ep-date';
+	const dateStr = ep.published_at || parseEpisodeDate(ep.id);
+	dateEl.textContent = dateStr ? formatDate(dateStr) : ep.id;
+
+	header.appendChild(titleEl);
+	header.appendChild(dateEl);
+	card.appendChild(header);
+
+	// Guests
+	if (ep.guests && ep.guests.length > 0) {
+		const guestList = document.createElement('div');
+		guestList.className = 'ep-guests';
+		for (const guestName of ep.guests) {
+			guestList.appendChild(makeGuestRow(guestName, null, loadAndRender));
+		}
+		card.appendChild(guestList);
+	} else {
+		const noGuests = document.createElement('div');
+		noGuests.className = 'ep-no-guests';
+		noGuests.textContent = 'No guests';
+		card.appendChild(noGuests);
+	}
+
+	// Mark reviewed button
+	const reviewBtn = document.createElement('button');
+	reviewBtn.className = 'btn-reviewed';
+	reviewBtn.textContent = 'Mark reviewed';
+	reviewBtn.onclick = async () => {
+		reviewBtn.disabled = true;
+		try {
+			await apiPost('/api/admin/episode/reviewed', { episode_id: ep.id });
+			loadAndRender();
+		} catch (e) {
+			reviewBtn.disabled = false;
+			showError('Failed: ' + e.message);
+		}
+	};
+	card.appendChild(reviewBtn);
+
+	return card;
+}
+
+// ── Date helpers ───────────────────────────────────────────────────────
+
+function parseEpisodeDate(id) {
+	const match = id.match(/(\d{4}-\d{2}-\d{2})/);
+	return match ? match[1] : null;
+}
+
+function formatDate(dateStr) {
+	if (!dateStr) return '';
+	const [y, m, d] = dateStr.split('-');
+	return new Date(+y, +m - 1, +d).toLocaleDateString('en-US', {
+		year: 'numeric', month: 'short', day: 'numeric',
+	});
+}
+
+// ── Init ───────────────────────────────────────────────────────────────
+
+loadAndRender();
+</script>
+
+</body>
+</html>
