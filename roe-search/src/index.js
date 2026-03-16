@@ -59,6 +59,11 @@ export default {
 		if (url.pathname.startsWith('/audio/')) {
 			return handleAudio(request, url, env);
 		}
+		if (url.pathname === '/robots.txt') {
+			return new Response('User-agent: *\nDisallow: /\n', {
+				headers: { 'Content-Type': 'text/plain' },
+			});
+		}
 		// Serve frontend for everything else
 		return new Response(FRONTEND_HTML, {
 			headers: { 'Content-Type': 'text/html; charset=utf-8' },
