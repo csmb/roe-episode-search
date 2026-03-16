@@ -643,7 +643,7 @@ if (params.get('mode') === 'semantic') {
 if (params.get('episode')) {
 	loadClip(params.get('episode'), parseInt(params.get('t') || '0', 10));
 } else if (params.get('q')) {
-	searchInput.value = params.get('q');
+	searchInput.value = deslugify(params.get('q'));
 	doSearch();
 } else {
 	loadOnThisDay();
@@ -762,6 +762,9 @@ function shareClip(episodeId, startMs, btn) {
 	});
 }
 
+function slugify(q) { return q.toLowerCase().replace(/-/g, '--').replace(/\s+/g, '-'); }
+function deslugify(slug) { return slug.replace(/--/g, '\x00').replace(/-/g, ' ').replace(/\x00/g, '-'); }
+
 async function doSearch() {
 	const q = searchInput.value.trim();
 	if (!q) return;
@@ -776,7 +779,7 @@ async function doSearch() {
 	loadMoreBtn.classList.add('hidden');
 
 	const modeParam = searchMode === 'semantic' ? '&mode=semantic' : '';
-	history.replaceState(null, '', '?q=' + encodeURIComponent(q) + modeParam);
+	history.replaceState(null, '', '?q=' + slugify(q) + modeParam);
 
 	if (searchMode === 'keyword') {
 		fetchTimeline(currentQuery);
