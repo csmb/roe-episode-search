@@ -642,8 +642,8 @@ if (params.get('mode') === 'semantic') {
 }
 if (params.get('episode')) {
 	loadClip(params.get('episode'), parseInt(params.get('t') || '0', 10));
-} else if (params.get('q')) {
-	searchInput.value = deslugify(params.get('q'));
+} else if (params.get('bummer-and-lazarus-fetch-me')) {
+	searchInput.value = deslugify(params.get('bummer-and-lazarus-fetch-me'));
 	doSearch();
 } else {
 	loadOnThisDay();
@@ -779,7 +779,7 @@ async function doSearch() {
 	loadMoreBtn.classList.add('hidden');
 
 	const modeParam = searchMode === 'semantic' ? '&mode=semantic' : '';
-	history.replaceState(null, '', '?q=' + slugify(q) + modeParam);
+	history.replaceState(null, '', '?bummer-and-lazarus-fetch-me=' + slugify(q) + modeParam);
 
 	if (searchMode === 'keyword') {
 		fetchTimeline(currentQuery);
