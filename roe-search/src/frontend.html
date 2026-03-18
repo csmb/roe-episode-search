@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Roll Over Easy</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>☕</text></svg>">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
 <script async src="https://www.googletagmanager.com/gtag/js?id=G-RD606EZEGG"></script>
 <script>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}gtag('js',new Date());gtag('config','G-RD606EZEGG');</script>
 <style>
@@ -498,6 +500,30 @@
 		opacity: 1;
 	}
 
+	/* Mini map */
+	.map-toggle {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		background: none;
+		border: 1px solid #d0d0d0;
+		border-radius: 50px;
+		padding: 4px 12px;
+		font-size: 0.8rem;
+		color: #505050;
+		cursor: pointer;
+		margin-top: 6px;
+		transition: all 0.2s ease;
+	}
+	.map-toggle:hover { border-color: #505050; color: #303030; }
+	.episode-mini-map {
+		height: 240px;
+		border-radius: 8px;
+		border: 1px solid #e0e0e0;
+		margin-top: 10px;
+	}
+	.episode-mini-map .leaflet-control-zoom { display: none; }
+
 	@media (max-width: 768px) {
 		.hero { height: 35vh; min-height: 250px; }
 		.hero h1 { font-size: 2.5rem; }
@@ -512,6 +538,7 @@
 		.search-box { flex-direction: column; }
 		.search-box button { width: 100%; }
 		.timeline-year-label { font-size: 10px; }
+		.episode-mini-map { height: 200px; }
 	}
 	@media (max-width: 480px) {
 		.hero h1 { font-size: 2rem; }
@@ -686,8 +713,11 @@ async function loadClip(episodeId, startMs) {
 		if (ep.summary) {
 			html += '<div class="episode-summary">' + escapeHtml(ep.summary) + '</div>';
 		}
+		html += '<button class="map-toggle hidden" id="clip-map-toggle"></button>';
+		html += '<div class="episode-mini-map hidden" id="clip-map-container"></div>';
 		html += '</div>';
 		clipCardEl.innerHTML = html;
+		checkEpisodePlaces(ep.id, document.getElementById('clip-map-toggle'), document.getElementById('clip-map-container'));
 
 		if (ep.audio_file) {
 			playAt(ep.audio_file, startMs, ep.title);
@@ -711,7 +741,8 @@ async function loadOnThisDay() {
 		let html = '<div class="otd-header">On This Day: ' + headerDate + '</div>';
 		const currentYear = new Date().getFullYear();
 
-		for (const ep of data.episodes) {
+		for (let i = 0; i < data.episodes.length; i++) {
+			const ep = data.episodes[i];
 			const dateStr = parseEpisodeDate(ep.id);
 			const epYear = dateStr ? parseInt(dateStr.split('-')[0], 10) : null;
 			const yearsAgo = epYear ? currentYear - epYear : null;
@@ -724,6 +755,8 @@ async function loadOnThisDay() {
 			if (ep.summary) {
 				html += '<div class="episode-summary">' + escapeHtml(ep.summary) + '</div>';
 			}
+			html += '<button class="map-toggle hidden" id="otd-map-toggle-' + i + '"></button>';
+			html += '<div class="episode-mini-map hidden" id="otd-map-container-' + i + '"></div>';
 			if (ep.audio_file) {
 				html += '<button class="otd-play-btn" onclick="playAt(\'' + escapeHtml(ep.audio_file) + '\', 0, \'' + escapeHtml(ep.title).replace(/'/g, "\\'") + '\')">&#9654; Play episode</button>';
 			}
@@ -731,6 +764,9 @@ async function loadOnThisDay() {
 		}
 
 		onThisDayEl.innerHTML = html;
+		for (let i = 0; i < data.episodes.length; i++) {
+			checkEpisodePlaces(data.episodes[i].id, document.getElementById('otd-map-toggle-' + i), document.getElementById('otd-map-container-' + i));
+		}
 	} catch (err) {
 		// Silently skip
 	}
@@ -856,6 +892,14 @@ function renderEpisode(episode) {
 		summary.textContent = episode.summary;
 		div.appendChild(summary);
 	}
+
+	const mapToggle = document.createElement('button');
+	mapToggle.className = 'map-toggle hidden';
+	div.appendChild(mapToggle);
+	const mapContainer = document.createElement('div');
+	mapContainer.className = 'episode-mini-map hidden';
+	div.appendChild(mapContainer);
+	checkEpisodePlaces(episode.episode_id, mapToggle, mapContainer);
 
 	const maxVisible = 10;
 	const hasOverflow = episode.matches.length > maxVisible;
@@ -1185,6 +1229,51 @@ function highlightQuery(text, query) {
 
 function escapeHtml(str) {
 	return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#x27;');
+}
+
+async function checkEpisodePlaces(episodeId, toggleBtn, mapContainer) {
+	try {
+		const res = await fetch('/api/episode/' + encodeURIComponent(episodeId) + '/places');
+		const data = await res.json();
+		if (!data.places || data.places.length === 0) return;
+
+		const places = data.places;
+		toggleBtn.textContent = places.length + ' place' + (places.length !== 1 ? 's' : '') + ' mentioned';
+		toggleBtn.classList.remove('hidden');
+		let mapInit = false;
+		toggleBtn.addEventListener('click', () => {
+			const visible = !mapContainer.classList.contains('hidden');
+			mapContainer.classList.toggle('hidden', visible);
+			if (!visible && !mapInit) {
+				mapInit = true;
+				initMiniMap(mapContainer, places);
+			}
+		});
+	} catch (err) {
+		// silently skip
+	}
+}
+
+function initMiniMap(container, places) {
+	const map = L.map(container, { scrollWheelZoom: false, zoomControl: false });
+	L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+		attribution: '&copy; OSM',
+		maxZoom: 19,
+	}).addTo(map);
+
+	const markers = places.map(p =>
+		L.circleMarker([p.lat, p.lng], {
+			radius: 7, fillColor: '#e85d04', color: '#e85d04',
+			weight: 1, opacity: 0.8, fillOpacity: 0.7,
+		}).bindTooltip(p.name).addTo(map)
+	);
+
+	if (places.length === 1) {
+		map.setView([places[0].lat, places[0].lng], 15);
+	} else {
+		const group = L.featureGroup(markers);
+		map.fitBounds(group.getBounds().pad(0.15));
+	}
 }
 </script>
 

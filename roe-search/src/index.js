@@ -2,6 +2,7 @@ import FRONTEND_HTML from './frontend.html';
 import EPISODES_HTML from './episodes.html';
 import GUESTS_HTML from './guests.html';
 import ADMIN_HTML from './admin.html';
+import MAP_HTML from './map.html';
 
 export default {
 	async fetch(request, env) {
@@ -26,7 +27,12 @@ export default {
 			return handleGuests(env);
 		}
 		if (url.pathname.startsWith('/api/episode/')) {
-			const episodeId = decodeURIComponent(url.pathname.slice('/api/episode/'.length));
+			const rest = url.pathname.slice('/api/episode/'.length);
+			if (rest.endsWith('/places')) {
+				const episodeId = decodeURIComponent(rest.slice(0, -'/places'.length));
+				return handleEpisodePlaces(episodeId, env);
+			}
+			const episodeId = decodeURIComponent(rest);
 			return handleEpisodeById(episodeId, env);
 		}
 		if (url.pathname === '/episodes') {
@@ -43,6 +49,14 @@ export default {
 			return new Response(ADMIN_HTML, {
 				headers: { 'Content-Type': 'text/html; charset=utf-8' },
 			});
+		}
+		if (url.pathname === '/map') {
+			return new Response(MAP_HTML, {
+				headers: { 'Content-Type': 'text/html; charset=utf-8' },
+			});
+		}
+		if (url.pathname === '/api/map-places') {
+			return handleMapPlaces(env);
 		}
 		if (url.pathname === '/api/admin/unreviewed') {
 			return handleAdminUnreviewed(env);
@@ -318,9 +332,14 @@ async function handleTimeline(url, env) {
 }
 
 async function handleEpisodes(env) {
-	const { results } = await env.DB.prepare(
-		'SELECT id, title, duration_ms, published_at, summary FROM episodes ORDER BY id'
-	).all();
+	const { results } = await env.DB.prepare(`
+		SELECT e.id, e.title, e.duration_ms, e.published_at, e.summary,
+		       COALESCE(pc.cnt, 0) as place_count
+		FROM episodes e
+		LEFT JOIN (SELECT episode_id, COUNT(*) as cnt FROM place_mentions GROUP BY episode_id) pc
+		  ON pc.episode_id = e.id
+		ORDER BY e.id
+	`).all();
 
 	return json({ episodes: results });
 }
@@ -394,6 +413,20 @@ async function handleEpisodeById(episodeId, env) {
 		});
 	} catch (err) {
 		return json({ error: 'Failed to fetch episode' }, 500);
+	}
+}
+
+async function handleEpisodePlaces(episodeId, env) {
+	try {
+		const { results } = await env.DB.prepare(
+			'SELECT p.name, p.lat, p.lng FROM places p JOIN place_mentions pm ON pm.place_id = p.id WHERE pm.episode_id = ?1 ORDER BY p.name'
+		)
+			.bind(episodeId)
+			.all();
+
+		return json({ episode_id: episodeId, places: results });
+	} catch (err) {
+		return json({ episode_id: episodeId, places: [] });
 	}
 }
 
@@ -533,6 +566,49 @@ async function handleAdminEpisodeReviewed(request, env) {
 	).bind(episode_id).run();
 
 	return json({ ok: true });
+}
+
+async function handleMapPlaces(env) {
+	const { results } = await env.DB.prepare(`
+		SELECT
+			p.id,
+			p.name,
+			p.lat,
+			p.lng,
+			COUNT(pm.episode_id) AS episode_count
+		FROM places p
+		JOIN place_mentions pm ON pm.place_id = p.id
+		GROUP BY p.id
+		ORDER BY episode_count DESC
+	`).all();
+
+	if (results.length === 0) {
+		return json({ places: [], total_mentions: 0 });
+	}
+
+	// Fetch all episode titles for mentioned episodes
+	const { results: mentions } = await env.DB.prepare(`
+		SELECT pm.place_id, pm.episode_id, e.title
+		FROM place_mentions pm
+		JOIN episodes e ON e.id = pm.episode_id
+	`).all();
+
+	const episodesByPlace = {};
+	for (const m of mentions) {
+		if (!episodesByPlace[m.place_id]) episodesByPlace[m.place_id] = [];
+		episodesByPlace[m.place_id].push({ id: m.episode_id, title: m.title });
+	}
+
+	const places = results.map(p => ({
+		name: p.name,
+		lat: p.lat,
+		lng: p.lng,
+		episode_count: p.episode_count,
+		episodes: episodesByPlace[p.id] || [],
+	}));
+
+	const total_mentions = places.reduce((s, p) => s + p.episode_count, 0);
+	return json({ places, total_mentions });
 }
 
 function json(data, status = 200) {
