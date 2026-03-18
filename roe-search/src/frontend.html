@@ -421,19 +421,6 @@
 		font-size: 0.7rem; font-family: monospace; color: rgba(255,255,255,0.6);
 		white-space: nowrap; flex-shrink: 0; min-width: 38px; text-align: center;
 	}
-	/* Equalizer bars */
-	.equalizer { display: flex; align-items: flex-end; gap: 2px; height: 18px; flex-shrink: 0; }
-	.eq-bar { width: 3px; background: #FF4F00; border-radius: 1.5px; height: 3px; transition: height 0.1s ease; }
-	.player-bar.playing .eq-bar { animation: eq-bounce 0.8s ease-in-out infinite; }
-	.player-bar.playing .eq-bar:nth-child(1) { animation-delay: 0s; }
-	.player-bar.playing .eq-bar:nth-child(2) { animation-delay: 0.1s; }
-	.player-bar.playing .eq-bar:nth-child(3) { animation-delay: 0.2s; }
-	.player-bar.playing .eq-bar:nth-child(4) { animation-delay: 0.15s; }
-	.player-bar.playing .eq-bar:nth-child(5) { animation-delay: 0.25s; }
-	@keyframes eq-bounce {
-		0%, 100% { height: 3px; } 25% { height: 14px; }
-		50% { height: 6px; } 75% { height: 18px; }
-	}
 	/* Speed toggle */
 	.speed-toggle {
 		background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15);
@@ -640,7 +627,6 @@
 		.hero .tagline { font-size: 1rem; }
 		.content-section h2 { font-size: 1.5rem; }
 		.timeline-year-label { font-size: 9px; }
-		.equalizer { display: none; }
 		.spinning-coffee { font-size: 1rem; }
 		.player-top { gap: 6px; }
 	}
@@ -737,9 +723,6 @@
 				</div>
 			</div>
 			<div class="player-time" id="player-time">0:00</div>
-			<div class="equalizer" id="equalizer">
-				<div class="eq-bar"></div><div class="eq-bar"></div><div class="eq-bar"></div><div class="eq-bar"></div><div class="eq-bar"></div>
-			</div>
 			<button class="speed-toggle" id="speed-toggle" title="Playback speed">🚶 1x</button>
 		</div>
 		<canvas class="waveform-canvas" id="waveform-canvas"></canvas>
