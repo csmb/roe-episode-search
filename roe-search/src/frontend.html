@@ -46,6 +46,16 @@
 		z-index: 1;
 		max-width: 800px;
 	}
+	.hero nav {
+		margin-top: 0.75rem;
+	}
+	.hero nav a {
+		color: rgba(255,255,255,0.7);
+		text-decoration: none;
+		font-size: 0.9rem;
+		transition: color 0.2s ease;
+	}
+	.hero nav a:hover { color: #fff; }
 	.hero h1 {
 		font-size: 3.5rem;
 		font-weight: 700;
@@ -328,8 +338,7 @@
 		bottom: 0;
 		left: 0;
 		right: 0;
-		background: linear-gradient(-45deg, #1a1a2e, #16213e, #0f3460, #2d1b69, #1a1a2e);
-		background-size: 400% 400%;
+		background: #303030;
 		color: #fff;
 		padding: 10px 16px 6px;
 		display: none;
@@ -338,41 +347,19 @@
 	}
 	.player-bar.active {
 		display: block;
-		animation: player-slide-up 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) forwards, gradient-shift 8s ease 0.5s infinite;
+		animation: player-slide-up 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
 	}
 	@keyframes player-slide-up {
 		from { transform: translateY(100%); }
 		to { transform: translateY(0); }
 	}
-	@keyframes gradient-shift {
-		0% { background-position: 0% 50%; }
-		50% { background-position: 100% 50%; }
-		100% { background-position: 0% 50%; }
-	}
 	.player-inner { max-width: 800px; margin: 0 auto; }
 	body:has(.player-bar.active) { padding-bottom: 110px; }
 	/* Top row: vinyl + title + coffee */
 	.player-top { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
-	.vinyl-record {
-		width: 34px; height: 34px; border-radius: 50%;
-		background: conic-gradient(from 0deg, #111 0deg, #333 30deg, #111 60deg, #222 90deg, #111 120deg, #333 150deg, #111 180deg, #222 210deg, #111 240deg, #333 270deg, #111 300deg, #222 330deg, #111 360deg);
-		border: 2px solid #444; position: relative; flex-shrink: 0;
-	}
-	.vinyl-record::after {
-		content: ''; position: absolute; top: 50%; left: 50%;
-		transform: translate(-50%, -50%); width: 10px; height: 10px;
-		border-radius: 50%; background: #FF4F00; box-shadow: 0 0 4px rgba(255,79,0,0.6);
-	}
-	.player-bar.playing .vinyl-record { animation: spin 1.5s linear infinite; }
+	.spinning-coffee { font-size: 1.5rem; flex-shrink: 0; cursor: default; display: inline-block; }
+	.player-bar.playing .spinning-coffee { animation: spin 2s linear infinite; }
 	@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-	.coffee-cup { font-size: 1.3rem; flex-shrink: 0; cursor: default; }
-	.player-bar.playing .coffee-cup { animation: wobble 0.8s ease-in-out infinite; }
-	@keyframes wobble {
-		0%, 100% { transform: rotate(-8deg) scale(1); }
-		25% { transform: rotate(8deg) scale(1.1); }
-		50% { transform: rotate(-5deg) scale(1); }
-		75% { transform: rotate(5deg) scale(1.05); }
-	}
 	/* Marquee title */
 	.player-title-marquee {
 		flex: 1; min-width: 0; overflow: hidden; white-space: nowrap;
@@ -427,8 +414,8 @@
 		transition: left 0.15s linear, transform 0.15s ease; pointer-events: none;
 	}
 	.progress-container:hover .progress-thumb { transform: translateX(-50%) scale(1.3); }
-	/* Waveform canvas */
-	.waveform-canvas { width: 100%; height: 24px; display: block; margin-top: 2px; opacity: 0.7; }
+	/* Waveform canvas - full width under controls */
+	.waveform-canvas { width: 100%; height: 28px; display: block; margin-top: 4px; opacity: 0.7; }
 	/* Time */
 	.player-time {
 		font-size: 0.7rem; font-family: monospace; color: rgba(255,255,255,0.6);
@@ -645,7 +632,7 @@
 		.episode-mini-map { height: 200px; }
 		.player-controls button { font-size: 0.9rem; padding: 3px; }
 		.play-pause-btn { width: 30px !important; height: 30px !important; font-size: 1.1rem !important; }
-		.vinyl-record { width: 28px; height: 28px; }
+		.spinning-coffee { font-size: 1.2rem; }
 		.player-time { font-size: 0.65rem; }
 	}
 	@media (max-width: 480px) {
@@ -654,8 +641,7 @@
 		.content-section h2 { font-size: 1.5rem; }
 		.timeline-year-label { font-size: 9px; }
 		.equalizer { display: none; }
-		.vinyl-record { width: 24px; height: 24px; }
-		.coffee-cup { font-size: 1rem; }
+		.spinning-coffee { font-size: 1rem; }
 		.player-top { gap: 6px; }
 	}
 </style>
@@ -667,6 +653,7 @@
 	<div class="hero-content">
 		<h1>Roll Over Easy</h1>
 		<p class="tagline">Taking San Francisco from under the covers 'til after coffee ☕</p>
+		<nav><a href="/episodes">Episodes</a> · <a href="/map">Map</a> · <a href="/">Search</a></nav>
 	</div>
 </div>
 
@@ -727,11 +714,10 @@
 <div id="player-bar" class="player-bar">
 	<div class="player-inner">
 		<div class="player-top">
-			<div class="vinyl-record" id="vinyl"></div>
+			<span class="spinning-coffee" id="spinning-coffee">☕</span>
 			<div class="player-title-marquee" id="player-title-marquee">
 				<span id="player-title"></span>
 			</div>
-			<span class="coffee-cup" id="coffee">☕</span>
 		</div>
 		<div class="player-bottom">
 			<div class="player-controls">
@@ -749,7 +735,6 @@
 					</div>
 					<div class="progress-thumb" id="progress-thumb"></div>
 				</div>
-				<canvas class="waveform-canvas" id="waveform-canvas"></canvas>
 			</div>
 			<div class="player-time" id="player-time">0:00</div>
 			<div class="equalizer" id="equalizer">
@@ -757,6 +742,7 @@
 			</div>
 			<button class="speed-toggle" id="speed-toggle" title="Playback speed">🚶 1x</button>
 		</div>
+		<canvas class="waveform-canvas" id="waveform-canvas"></canvas>
 	</div>
 	<audio id="audio-player" preload="none"></audio>
 </div>
