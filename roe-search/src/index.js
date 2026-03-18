@@ -71,6 +71,17 @@ export default {
 	},
 };
 
+const BLOCKED_WORDS = new Set([
+	'fuck', 'shit', 'ass', 'asshole', 'bitch', 'cunt', 'cock', 'dick', 'pussy',
+	'nigger', 'nigga', 'faggot', 'fag', 'whore', 'slut', 'bastard', 'motherfucker',
+	'piss', 'damn', 'crap',
+]);
+
+function containsBlockedWord(query) {
+	const tokens = query.toLowerCase().split(/\s+/);
+	return tokens.some(t => BLOCKED_WORDS.has(t));
+}
+
 function sanitizeFtsQuery(input) {
 	const terms = input
 		.replace(/["\*\(\)\{\}\[\]:^~]/g, ' ')
@@ -85,6 +96,10 @@ async function handleSearch(url, env) {
 	const query = url.searchParams.get('q')?.trim();
 	if (!query) {
 		return json({ error: 'Missing ?q= parameter' }, 400);
+	}
+
+	if (containsBlockedWord(query)) {
+		return json({ query, page: 1, results: [], has_more: false });
 	}
 
 	const sanitized = sanitizeFtsQuery(query);
@@ -173,74 +188,85 @@ async function handleSemanticSearch(url, env) {
 		return json({ error: 'Missing ?q= parameter' }, 400);
 	}
 
+	if (containsBlockedWord(query)) {
+		return json({ query, page: 1, results: [], has_more: false });
+	}
+
+	const page = Math.max(1, parseInt(url.searchParams.get('page') || '1', 10));
+	const pageSize = 20;
+
 	// Embed the query
 	const embeddingResult = await env.AI.run('@cf/baai/bge-base-en-v1.5', { text: [query] });
 	const queryVector = embeddingResult.data[0];
 
-	// Query Vectorize
+	// Query Vectorize — max topK with returnMetadata:'all' is 50
 	const vectorResults = await env.VECTORIZE.query(queryVector, {
-		topK: 20,
+		topK: 50,
 		returnMetadata: 'all',
 	});
 
-	// Collect unique episode IDs to enrich with D1 metadata
-	const episodeIds = [...new Set(vectorResults.matches.map((m) => m.metadata.episode_id))];
+	// Group all matches by episode, keeping the best score per episode
+	const episodeMatchMap = new Map();
+	for (const match of vectorResults.matches) {
+		const meta = match.metadata;
+		const epId = meta.episode_id;
+		if (!episodeMatchMap.has(epId)) {
+			episodeMatchMap.set(epId, { bestScore: match.score, matches: [] });
+		}
+		const ep = episodeMatchMap.get(epId);
+		if (match.score > ep.bestScore) ep.bestScore = match.score;
+		ep.matches.push({ start_ms: meta.start_ms, end_ms: meta.end_ms, text: meta.text, score: match.score });
+	}
 
+	// Sort episodes by best score descending, then paginate
+	const allEpisodeIds = Array.from(episodeMatchMap.entries())
+		.sort((a, b) => b[1].bestScore - a[1].bestScore)
+		.map(([id]) => id);
+
+	const offset = (page - 1) * pageSize;
+	const pageEpisodeIds = allEpisodeIds.slice(offset, offset + pageSize);
+	const has_more = allEpisodeIds.length > offset + pageSize;
+
+	// Enrich only the current page's episodes with D1 metadata
 	let episodeMeta = {};
-	if (episodeIds.length > 0) {
-		const placeholders = episodeIds.map(() => '?').join(', ');
+	if (pageEpisodeIds.length > 0) {
+		const placeholders = pageEpisodeIds.map(() => '?').join(', ');
 		const { results } = await env.DB.prepare(
 			`SELECT id, title, duration_ms, summary FROM episodes WHERE id IN (${placeholders})`
 		)
-			.bind(...episodeIds)
+			.bind(...pageEpisodeIds)
 			.all();
 		for (const row of results) {
 			episodeMeta[row.id] = row;
 		}
 	}
 
-	// Group results by episode (same pattern as handleSearch)
-	const episodeMap = new Map();
-	for (const match of vectorResults.matches) {
-		const meta = match.metadata;
-		const epId = meta.episode_id;
-
-		if (!episodeMap.has(epId)) {
-			const dbMeta = episodeMeta[epId] || {};
-			episodeMap.set(epId, {
-				episode_id: epId,
-				title: dbMeta.title || meta.title,
-				duration_ms: dbMeta.duration_ms || null,
-				summary: dbMeta.summary || null,
-				audio_file: `/audio/${epId}.m4a`,
-				matches: [],
-			});
-		}
-		episodeMap.get(epId).matches.push({
-			start_ms: meta.start_ms,
-			end_ms: meta.end_ms,
-			text: meta.text,
-			score: match.score,
-		});
-	}
-
-	// Sort matches chronologically within each episode
-	for (const ep of episodeMap.values()) {
-		ep.matches.sort((a, b) => a.start_ms - b.start_ms);
-	}
-
-	return json({
-		query,
-		page: 1,
-		results: Array.from(episodeMap.values()).sort((a, b) => b.episode_id.localeCompare(a.episode_id)),
-		has_more: false,
+	// Build result objects for this page
+	const results = pageEpisodeIds.map((epId) => {
+		const { matches } = episodeMatchMap.get(epId);
+		const dbMeta = episodeMeta[epId] || {};
+		matches.sort((a, b) => a.start_ms - b.start_ms);
+		return {
+			episode_id: epId,
+			title: dbMeta.title || null,
+			duration_ms: dbMeta.duration_ms || null,
+			summary: dbMeta.summary || null,
+			audio_file: `/audio/${epId}.m4a`,
+			matches,
+		};
 	});
+
+	return json({ query, page, results, has_more });
 }
 
 async function handleTimeline(url, env) {
 	const query = url.searchParams.get('q')?.trim();
 	if (!query) {
 		return json({ error: 'Missing ?q= parameter' }, 400);
+	}
+
+	if (containsBlockedWord(query)) {
+		return json({ query, timeline: [], total_mentions: 0 });
 	}
 
 	const sanitized = sanitizeFtsQuery(query);

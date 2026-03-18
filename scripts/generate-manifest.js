@@ -22,7 +22,7 @@ const audioDir = path.join(projectRoot, 'audio');
 
 // ── Manifest generation ─────────────────────────────────────────────────
 
-function generateManifest(sourceDir) {
+export function generateManifest(sourceDir) {
 	// 1. Discover all episodes from the iCloud source folder (no filtering)
 	const source = discoverEpisodes(sourceDir);
 

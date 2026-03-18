@@ -804,7 +804,7 @@ async function fetchResults() {
 		}
 
 		hasMore = data.has_more;
-		loadMoreBtn.classList.toggle('hidden', !hasMore || searchMode === 'semantic');
+		loadMoreBtn.classList.toggle('hidden', !hasMore);
 
 		const totalMatches = data.results.reduce((sum, ep) => sum + ep.matches.length, 0);
 
