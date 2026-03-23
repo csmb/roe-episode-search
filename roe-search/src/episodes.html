@@ -247,14 +247,14 @@ function escapeHtml(str) {
 
 function updateMapLabel(label, places) {
 	const n = places.length;
-	const examples = places.slice(0, 2).map(p => '<strong>' + escapeHtml(p.name) + '</strong>');
-	let text = n + ' place' + (n !== 1 ? 's' : '') + ' mentioned on this program';
+	const examples = places.slice(0, 3).map(p => '<strong>' + escapeHtml(p.name) + '</strong>');
+	let text = n + ' place' + (n !== 1 ? 's' : '') + ' mentioned';
 	if (examples.length === 1) {
-		text += ', including ' + examples[0];
-	} else if (examples.length === 2 && n === 2) {
-		text += ', including ' + examples[0] + ' and ' + examples[1];
+		text += ' like ' + examples[0] + '.';
 	} else if (examples.length === 2) {
-		text += ', including ' + examples[0] + ', ' + examples[1] + ', and more';
+		text += ' like ' + examples[0] + ' and ' + examples[1] + '.';
+	} else {
+		text += ' like ' + examples[0] + ', ' + examples[1] + ', and ' + examples[2] + '.';
 	}
 	label.innerHTML = text;
 }

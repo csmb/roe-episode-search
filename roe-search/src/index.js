@@ -419,7 +419,11 @@ async function handleEpisodeById(episodeId, env) {
 async function handleEpisodePlaces(episodeId, env) {
 	try {
 		const { results } = await env.DB.prepare(
-			'SELECT p.name, p.lat, p.lng FROM places p JOIN place_mentions pm ON pm.place_id = p.id WHERE pm.episode_id = ?1 ORDER BY p.name'
+			`SELECT p.name, p.lat, p.lng FROM places p
+			 JOIN place_mentions pm ON pm.place_id = p.id
+			 LEFT JOIN (SELECT place_id, COUNT(*) AS total FROM place_mentions GROUP BY place_id) pc ON pc.place_id = p.id
+			 WHERE pm.episode_id = ?1
+			 ORDER BY pc.total DESC, p.name`
 		)
 			.bind(episodeId)
 			.all();
