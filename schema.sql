@@ -45,3 +45,15 @@ CREATE TRIGGER segments_au AFTER UPDATE ON transcript_segments BEGIN
     INSERT INTO transcript_fts(transcript_fts, rowid, text) VALUES ('delete', old.rowid, old.text);
     INSERT INTO transcript_fts(rowid, text) VALUES (new.rowid, new.text);
 END;
+CREATE TABLE IF NOT EXISTS places (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    lat REAL NOT NULL,
+    lng REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS place_mentions (
+    place_id INTEGER NOT NULL REFERENCES places(id),
+    episode_id TEXT NOT NULL REFERENCES episodes(id),
+    PRIMARY KEY (place_id, episode_id)
+);

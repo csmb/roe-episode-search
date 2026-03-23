@@ -101,6 +101,7 @@
 		margin-top: 6px;
 		transition: all 0.2s ease;
 	}
+	.map-toggle.hidden { display: none; }
 	.map-toggle:hover { border-color: #505050; color: #303030; }
 	.episode-mini-map {
 		height: 240px;
@@ -108,8 +109,8 @@
 		border: 1px solid #e0e0e0;
 		margin-top: 10px;
 	}
+	.episode-mini-map.hidden { display: none; }
 	.episode-mini-map .leaflet-control-zoom { display: none; }
-	.hidden { display: none; }
 
 	@media (max-width: 768px) {
 		.hero { padding: 2rem 1.5rem; }
@@ -124,7 +125,7 @@
 <div class="hero">
 	<h1>Roll Over Easy</h1>
 	<div class="tagline">All Episodes</div>
-	<nav><a href="/">Search</a></nav>
+	<nav><a href="/episodes">Episodes</a> · <a href="/map">Map</a> · <a href="/">Search</a></nav>
 </div>
 
 <div class="container">
