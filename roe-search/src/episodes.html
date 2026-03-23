@@ -204,7 +204,7 @@ async function loadEpisodes() {
 			if (ep.place_count > 0) {
 				html += '<div>';
 				html += '<div class="episode-mini-map" id="ep-map-' + i + '"></div>';
-				html += '<div class="map-places-label">' + ep.place_count + ' place' + (ep.place_count !== 1 ? 's' : '') + ' mentioned on the show</div>';
+				html += '<div class="map-places-label" id="ep-map-label-' + i + '">' + ep.place_count + ' place' + (ep.place_count !== 1 ? 's' : '') + ' mentioned on this program</div>';
 				html += '</div>';
 			}
 
@@ -215,6 +215,7 @@ async function loadEpisodes() {
 			if (ep.place_count > 0) {
 				const epId = ep.id;
 				const container = div.querySelector('#ep-map-' + i);
+				const label = div.querySelector('#ep-map-label-' + i);
 				const observer = new IntersectionObserver((entries) => {
 					entries.forEach(async (entry) => {
 						if (entry.isIntersecting) {
@@ -224,6 +225,7 @@ async function loadEpisodes() {
 								const pdata = await res.json();
 								if (pdata.places && pdata.places.length > 0) {
 									initMiniMap(container, pdata.places);
+									updateMapLabel(label, pdata.places);
 								}
 							} catch (err) {}
 						}
@@ -241,6 +243,20 @@ async function loadEpisodes() {
 
 function escapeHtml(str) {
 	return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function updateMapLabel(label, places) {
+	const n = places.length;
+	const examples = places.slice(0, 2).map(p => '<strong>' + escapeHtml(p.name) + '</strong>');
+	let text = n + ' place' + (n !== 1 ? 's' : '') + ' mentioned on this program';
+	if (examples.length === 1) {
+		text += ', including ' + examples[0];
+	} else if (examples.length === 2 && n === 2) {
+		text += ', including ' + examples[0] + ' and ' + examples[1];
+	} else if (examples.length === 2) {
+		text += ', including ' + examples[0] + ', ' + examples[1] + ', and more';
+	}
+	label.innerHTML = text;
 }
 
 function initMiniMap(container, places) {
