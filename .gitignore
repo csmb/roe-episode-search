@@ -25,5 +25,10 @@ scripts/batch-progress.json
 scripts/pipeline-errors.log
 scripts/episode-manifest.json
 
+# Generated data artifacts from business harvester
+scripts/*.db
+scripts/business_matches.json
+scripts/places.json
+
 # Claude Code local config (may contain API keys)
 .claude/
