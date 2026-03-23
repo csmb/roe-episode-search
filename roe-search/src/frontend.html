@@ -475,21 +475,29 @@
 		color: #FF4F00;
 		margin-bottom: 4px;
 	}
-	.otd-play-btn {
+	.episode-actions {
+		display: flex;
+		gap: 6px;
+		margin-top: 10px;
+		flex-wrap: wrap;
+	}
+	.ep-btn {
 		display: inline-flex;
 		align-items: center;
-		gap: 4px;
-		background: none;
-		border: 1px solid #d0d0d0;
-		border-radius: 50px;
-		padding: 4px 12px;
+		gap: 5px;
+		background: #f7f7f7;
+		border: none;
+		border-radius: 8px;
+		padding: 7px 14px;
 		font-size: 0.8rem;
+		font-weight: 500;
 		color: #505050;
 		cursor: pointer;
-		margin-top: 6px;
-		transition: all 0.2s ease;
+		transition: all 0.15s ease;
+		text-decoration: none;
 	}
-	.otd-play-btn:hover { border-color: #505050; color: #303030; }
+	.ep-btn:hover { background: #ebebeb; color: #303030; }
+	.ep-btn:active { transform: scale(0.97); }
 
 	.hidden { display: none; }
 
@@ -824,6 +832,13 @@ async function loadClip(episodeId, startMs) {
 		if (ep.summary) {
 			html += '<div class="episode-summary">' + escapeHtml(ep.summary) + '</div>';
 		}
+		html += '<div class="episode-actions">';
+		if (ep.audio_file) {
+			html += '<button class="ep-btn" onclick="playAt(\'' + escapeHtml(ep.audio_file) + '\', 0, \'' + escapeHtml(ep.title).replace(/'/g, "\\'") + '\')">&#9654; Play</button>';
+			html += '<button class="ep-btn" onclick="playAt(\'' + escapeHtml(ep.audio_file) + '\', 250000, \'' + escapeHtml(ep.title).replace(/'/g, "\\'") + '\')">&#9193; Skip intro</button>';
+		}
+		html += '<a class="ep-btn" href="/?q=&episode=' + encodeURIComponent(ep.id) + '">&#128269; Search</a>';
+		html += '</div>';
 		html += '<button class="map-toggle hidden" id="clip-map-toggle"></button>';
 		html += '<div class="episode-mini-map hidden" id="clip-map-container"></div>';
 		html += '</div>';
@@ -866,11 +881,15 @@ async function loadOnThisDay() {
 			if (ep.summary) {
 				html += '<div class="episode-summary">' + escapeHtml(ep.summary) + '</div>';
 			}
+			html += '<div class="episode-actions">';
+			if (ep.audio_file) {
+				html += '<button class="ep-btn" onclick="playAt(\'' + escapeHtml(ep.audio_file) + '\', 0, \'' + escapeHtml(ep.title).replace(/'/g, "\\'") + '\')">&#9654; Play</button>';
+				html += '<button class="ep-btn" onclick="playAt(\'' + escapeHtml(ep.audio_file) + '\', 250000, \'' + escapeHtml(ep.title).replace(/'/g, "\\'") + '\')">&#9193; Skip intro</button>';
+			}
+			html += '<a class="ep-btn" href="/?q=&episode=' + encodeURIComponent(ep.id) + '">&#128269; Search</a>';
+			html += '</div>';
 			html += '<button class="map-toggle hidden" id="otd-map-toggle-' + i + '"></button>';
 			html += '<div class="episode-mini-map hidden" id="otd-map-container-' + i + '"></div>';
-			if (ep.audio_file) {
-				html += '<button class="otd-play-btn" onclick="playAt(\'' + escapeHtml(ep.audio_file) + '\', 0, \'' + escapeHtml(ep.title).replace(/'/g, "\\'") + '\')">&#9654; Play episode</button>';
-			}
 			html += '</div>';
 		}
 
@@ -1003,6 +1022,27 @@ function renderEpisode(episode) {
 		summary.textContent = episode.summary;
 		div.appendChild(summary);
 	}
+
+	const actions = document.createElement('div');
+	actions.className = 'episode-actions';
+	if (episode.audio_file) {
+		const playBtn = document.createElement('button');
+		playBtn.className = 'ep-btn';
+		playBtn.innerHTML = '&#9654; Play';
+		playBtn.onclick = () => playAt(episode.audio_file, 0, episode.title);
+		actions.appendChild(playBtn);
+		const skipBtn = document.createElement('button');
+		skipBtn.className = 'ep-btn';
+		skipBtn.innerHTML = '&#9193; Skip intro';
+		skipBtn.onclick = () => playAt(episode.audio_file, 250000, episode.title);
+		actions.appendChild(skipBtn);
+	}
+	const searchBtn = document.createElement('a');
+	searchBtn.className = 'ep-btn';
+	searchBtn.innerHTML = '&#128269; Search';
+	searchBtn.href = '/?q=&episode=' + encodeURIComponent(episode.episode_id);
+	actions.appendChild(searchBtn);
+	div.appendChild(actions);
 
 	const mapToggle = document.createElement('button');
 	mapToggle.className = 'map-toggle hidden';
@@ -1367,8 +1407,8 @@ async function checkEpisodePlaces(episodeId, toggleBtn, mapContainer) {
 
 function initMiniMap(container, places) {
 	const map = L.map(container, { scrollWheelZoom: false, zoomControl: false });
-	L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-		attribution: '&copy; OSM',
+	L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+		attribution: '&copy; OSM &copy; CARTO',
 		maxZoom: 19,
 	}).addTo(map);
 
