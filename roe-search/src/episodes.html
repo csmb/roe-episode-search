@@ -72,20 +72,6 @@
 		color: #4a4a4a;
 		margin-bottom: 10px;
 	}
-	.episode-link {
-		font-size: 0.9rem;
-	}
-	.episode-link a {
-		color: #505050;
-		text-decoration: none;
-		border-bottom: 1px solid transparent;
-		transition: all 0.2s ease;
-	}
-	.episode-link a:hover {
-		color: #303030;
-		border-bottom-color: #505050;
-	}
-
 	/* Episode body layout */
 	.episode-body {
 		display: flex;
@@ -118,24 +104,28 @@
 	/* Episode action buttons */
 	.episode-actions {
 		display: flex;
-		gap: 8px;
-		margin-top: 8px;
+		gap: 6px;
+		margin-top: 10px;
+		flex-wrap: wrap;
 	}
 	.ep-btn {
 		display: inline-flex;
 		align-items: center;
-		gap: 4px;
-		background: none;
-		border: 1px solid #d0d0d0;
-		border-radius: 50px;
-		padding: 5px 14px;
-		font-size: 0.82rem;
+		gap: 5px;
+		background: #f7f7f7;
+		border: none;
+		border-radius: 8px;
+		padding: 7px 14px;
+		font-size: 0.8rem;
+		font-weight: 500;
 		color: #505050;
 		cursor: pointer;
-		transition: all 0.2s ease;
+		transition: all 0.15s ease;
+		text-decoration: none;
 	}
-	.ep-btn:hover { border-color: #505050; color: #303030; }
-	.ep-btn.playing { border-color: #e85d04; color: #e85d04; }
+	.ep-btn:hover { background: #ebebeb; color: #303030; }
+	.ep-btn:active { transform: scale(0.97); }
+	.ep-btn.playing { background: #fff3eb; color: #e85d04; }
 
 	/* Player bar */
 	.player-bar {
@@ -359,8 +349,8 @@ async function loadEpisodes() {
 			html += '<div class="episode-actions">';
 			html += '<button class="ep-btn ep-play-btn" data-audio="/audio/' + encodeURIComponent(ep.id) + '.m4a" data-title="' + escapeAttr(ep.title) + '" data-start="0">&#9654; Play</button>';
 			html += '<button class="ep-btn ep-skip-btn" data-audio="/audio/' + encodeURIComponent(ep.id) + '.m4a" data-title="' + escapeAttr(ep.title) + '" data-start="250">&#9193; Skip intro</button>';
+			html += '<a class="ep-btn" href="/?q=&episode=' + encodeURIComponent(ep.id) + '">&#128269; Search</a>';
 			html += '</div>';
-			html += '<div class="episode-link"><a href="/?q=&episode=' + encodeURIComponent(ep.id) + '">Search this episode</a></div>';
 			html += '</div>';
 
 			if (ep.place_count > 0) {
