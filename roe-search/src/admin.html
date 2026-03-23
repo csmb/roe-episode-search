@@ -266,6 +266,7 @@
 	<div class="tabs">
 		<button id="tab-guests" class="tab active">All Guests</button>
 		<button id="tab-queue" class="tab">Review Queue <span id="queue-badge" class="tab-badge" style="display:none;"></span></button>
+		<button id="tab-tools" class="tab">Tools</button>
 	</div>
 
 	<!-- Panel: All Guests -->
@@ -280,6 +281,13 @@
 		<div id="queue-status" class="status"></div>
 		<div id="queue-list"></div>
 	</div>
+
+	<!-- Panel: Tools -->
+	<div id="panel-tools" style="display:none;">
+		<p style="margin-bottom:12px;">Loads each episode's audio to get the real duration from the browser, then updates D1.</p>
+		<button id="fix-durations-btn" style="padding:8px 16px;border-radius:8px;border:none;background:#505050;color:#fff;cursor:pointer;font-size:0.9rem;">Fix Durations</button>
+		<pre id="fix-durations-log" style="margin-top:12px;font-size:0.8rem;color:#666;max-height:400px;overflow:auto;white-space:pre-wrap;"></pre>
+	</div>
 </div>
 
 <script>
@@ -291,13 +299,16 @@ let activeTab = 'guests';
 
 document.getElementById('tab-guests').onclick = () => showTab('guests');
 document.getElementById('tab-queue').onclick  = () => showTab('queue');
+document.getElementById('tab-tools').onclick  = () => showTab('tools');
 
 function showTab(tab) {
 	activeTab = tab;
 	document.getElementById('panel-guests').style.display = tab === 'guests' ? '' : 'none';
 	document.getElementById('panel-queue').style.display  = tab === 'queue'  ? '' : 'none';
+	document.getElementById('panel-tools').style.display  = tab === 'tools'  ? '' : 'none';
 	document.getElementById('tab-guests').classList.toggle('active', tab === 'guests');
 	document.getElementById('tab-queue').classList.toggle('active', tab === 'queue');
+	document.getElementById('tab-tools').classList.toggle('active', tab === 'tools');
 }
 
 // ── API helpers ────────────────────────────────────────────────────────
@@ -585,6 +596,52 @@ function formatDate(dateStr) {
 	const [y, m, d] = dateStr.split('-');
 	return new Date(+y, +m - 1, +d).toLocaleDateString('en-US', {
 		year: 'numeric', month: 'short', day: 'numeric',
+	});
+}
+
+// ── Fix Durations ──────────────────────────────────────────────────────
+
+document.getElementById('fix-durations-btn').onclick = async () => {
+	const log = document.getElementById('fix-durations-log');
+	const btn = document.getElementById('fix-durations-btn');
+	btn.disabled = true;
+	log.textContent = 'Loading episodes...\n';
+
+	const res = await fetch('/api/episodes');
+	const data = await res.json();
+	if (!data.episodes) { log.textContent += 'No episodes found.\n'; btn.disabled = false; return; }
+
+	let fixed = 0;
+	for (const ep of data.episodes) {
+		const audioUrl = '/audio/' + encodeURIComponent(ep.id) + '.m4a';
+		try {
+			const realMs = await getAudioDuration(audioUrl);
+			if (Math.abs(realMs - (ep.duration_ms || 0)) > 5000) {
+				await apiPost('/api/admin/episode/duration', { episode_id: ep.id, duration_ms: realMs });
+				log.textContent += 'FIXED ' + ep.id + ': ' + Math.round((ep.duration_ms||0)/60000) + 'm -> ' + Math.round(realMs/60000) + 'm\n';
+				fixed++;
+			} else {
+				log.textContent += 'OK    ' + ep.id + '\n';
+			}
+		} catch (err) {
+			log.textContent += 'ERR   ' + ep.id + ': ' + err.message + '\n';
+		}
+		log.scrollTop = log.scrollHeight;
+	}
+	log.textContent += '\nDone. Fixed ' + fixed + ' episodes.\n';
+	btn.disabled = false;
+};
+
+function getAudioDuration(url) {
+	return new Promise((resolve, reject) => {
+		const audio = new Audio();
+		audio.preload = 'metadata';
+		audio.onloadedmetadata = () => {
+			resolve(Math.round(audio.duration * 1000));
+			audio.src = '';
+		};
+		audio.onerror = () => reject(new Error('Failed to load'));
+		audio.src = url;
 	});
 }
 

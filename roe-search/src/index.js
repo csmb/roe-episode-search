@@ -70,6 +70,9 @@ export default {
 		if (url.pathname === '/api/admin/episode/reviewed' && request.method === 'POST') {
 			return handleAdminEpisodeReviewed(request, env);
 		}
+		if (url.pathname === '/api/admin/episode/duration' && request.method === 'POST') {
+			return handleAdminUpdateDuration(request, env);
+		}
 		if (url.pathname.startsWith('/audio/')) {
 			return handleAudio(request, url, env);
 		}
@@ -568,6 +571,20 @@ async function handleAdminEpisodeReviewed(request, env) {
 	await env.DB.prepare(
 		'UPDATE episodes SET guests_reviewed = 1 WHERE id = ?'
 	).bind(episode_id).run();
+
+	return json({ ok: true });
+}
+
+async function handleAdminUpdateDuration(request, env) {
+	let body;
+	try { body = await request.json(); } catch { return json({ error: 'Invalid JSON' }, 400); }
+
+	const { episode_id, duration_ms } = body;
+	if (!episode_id || !duration_ms) return json({ error: 'Missing episode_id or duration_ms' }, 400);
+
+	await env.DB.prepare(
+		'UPDATE episodes SET duration_ms = ? WHERE id = ?'
+	).bind(Math.round(duration_ms), episode_id).run();
 
 	return json({ ok: true });
 }

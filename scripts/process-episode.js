@@ -519,9 +519,18 @@ function seedDB(episodeId, force) {
 		runSQL(`DELETE FROM episodes WHERE id = '${escapeSQL(episodeId)}'`);
 	}
 
-	// Insert episode record
-	const lastSegment = segments[segments.length - 1];
-	const durationMs = lastSegment ? lastSegment.end_ms : 0;
+	// Get actual audio duration via ffprobe
+	let durationMs = 0;
+	try {
+		const probe = execFileSync('ffprobe', [
+			'-v', 'quiet', '-show_entries', 'format=duration',
+			'-of', 'csv=p=0', mp3Path,
+		], { encoding: 'utf-8' }).trim();
+		durationMs = Math.round(parseFloat(probe) * 1000);
+	} catch {
+		const lastSegment = segments[segments.length - 1];
+		durationMs = lastSegment ? lastSegment.end_ms : 0;
+	}
 	runSQL(
 		`INSERT INTO episodes (id, title, duration_ms) VALUES ('${escapeSQL(episodeId)}', '${escapeSQL(episodeId)}', ${durationMs})`
 	);
