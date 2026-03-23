@@ -86,37 +86,38 @@
 		border-bottom-color: #505050;
 	}
 
-	/* Mini map */
-	.map-toggle {
-		display: inline-flex;
-		align-items: center;
-		gap: 4px;
-		background: none;
-		border: 1px solid #d0d0d0;
-		border-radius: 50px;
-		padding: 4px 12px;
-		font-size: 0.8rem;
-		color: #505050;
-		cursor: pointer;
-		margin-top: 6px;
-		transition: all 0.2s ease;
+	/* Episode body layout */
+	.episode-body {
+		display: flex;
+		gap: 16px;
+		align-items: flex-start;
 	}
-	.map-toggle.hidden { display: none; }
-	.map-toggle:hover { border-color: #505050; color: #303030; }
+	.episode-text {
+		flex: 1;
+		min-width: 0;
+	}
+	/* Mini map */
 	.episode-mini-map {
-		height: 240px;
+		width: 200px;
+		height: 200px;
+		flex-shrink: 0;
 		border-radius: 8px;
 		border: 1px solid #e0e0e0;
-		margin-top: 10px;
 	}
-	.episode-mini-map.hidden { display: none; }
 	.episode-mini-map .leaflet-control-zoom { display: none; }
+	.map-places-label {
+		font-size: 0.75rem;
+		color: #999;
+		text-align: center;
+		margin-top: 4px;
+	}
 
 	@media (max-width: 768px) {
 		.hero { padding: 2rem 1.5rem; }
 		.hero h1 { font-size: 1.6rem; }
 		.container { padding: 1.5rem; }
-		.episode-mini-map { height: 200px; }
+		.episode-body { flex-direction: column; }
+		.episode-mini-map { width: 100%; height: 200px; }
 	}
 </style>
 </head>
@@ -192,38 +193,43 @@ async function loadEpisodes() {
 			if (ep.duration_ms) html += (dateStr ? ' &middot; ' : '') + formatDuration(ep.duration_ms);
 			html += '</div>';
 
+			html += '<div class="episode-body">';
+			html += '<div class="episode-text">';
 			if (ep.summary) {
 				html += '<div class="episode-summary">' + escapeHtml(ep.summary) + '</div>';
 			}
+			html += '<div class="episode-link"><a href="/?q=&episode=' + encodeURIComponent(ep.id) + '">Search this episode</a></div>';
+			html += '</div>';
 
 			if (ep.place_count > 0) {
-				html += '<button class="map-toggle" id="ep-map-toggle-' + i + '">' + ep.place_count + ' place' + (ep.place_count !== 1 ? 's' : '') + ' mentioned</button>';
-				html += '<div class="episode-mini-map hidden" id="ep-map-container-' + i + '"></div>';
+				html += '<div>';
+				html += '<div class="episode-mini-map" id="ep-map-' + i + '"></div>';
+				html += '<div class="map-places-label">' + ep.place_count + ' place' + (ep.place_count !== 1 ? 's' : '') + '</div>';
+				html += '</div>';
 			}
 
-			html += '<div class="episode-link"><a href="/?q=&episode=' + encodeURIComponent(ep.id) + '">Search this episode</a></div>';
+			html += '</div>';
 
 			div.innerHTML = html;
 
 			if (ep.place_count > 0) {
 				const epId = ep.id;
-				const toggle = div.querySelector('#ep-map-toggle-' + i);
-				const container = div.querySelector('#ep-map-container-' + i);
-				let mapInit = false;
-				toggle.addEventListener('click', async () => {
-					const visible = !container.classList.contains('hidden');
-					container.classList.toggle('hidden', visible);
-					if (!visible && !mapInit) {
-						mapInit = true;
-						try {
-							const res = await fetch('/api/episode/' + encodeURIComponent(epId) + '/places');
-							const pdata = await res.json();
-							if (pdata.places && pdata.places.length > 0) {
-								initMiniMap(container, pdata.places);
-							}
-						} catch (err) {}
-					}
-				});
+				const container = div.querySelector('#ep-map-' + i);
+				const observer = new IntersectionObserver((entries) => {
+					entries.forEach(async (entry) => {
+						if (entry.isIntersecting) {
+							observer.unobserve(container);
+							try {
+								const res = await fetch('/api/episode/' + encodeURIComponent(epId) + '/places');
+								const pdata = await res.json();
+								if (pdata.places && pdata.places.length > 0) {
+									initMiniMap(container, pdata.places);
+								}
+							} catch (err) {}
+						}
+					});
+				}, { rootMargin: '200px' });
+				observer.observe(container);
 			}
 
 			episodesEl.appendChild(div);
@@ -239,8 +245,8 @@ function escapeHtml(str) {
 
 function initMiniMap(container, places) {
 	const map = L.map(container, { scrollWheelZoom: false, zoomControl: false });
-	L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-		attribution: '&copy; OSM',
+	L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+		attribution: '&copy; OSM &copy; CARTO',
 		maxZoom: 19,
 	}).addTo(map);
 
