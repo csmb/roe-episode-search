@@ -50,12 +50,13 @@
 		margin-top: 0.75rem;
 	}
 	.hero nav a {
-		color: rgba(255,255,255,0.7);
+		color: rgba(255,255,255,0.85);
 		text-decoration: none;
 		font-size: 0.9rem;
 		transition: color 0.2s ease;
 	}
 	.hero nav a:hover { color: #fff; }
+	.hero nav a[aria-current="page"] { color: #fff; border-bottom: 2px solid #FF4F00; padding-bottom: 2px; }
 	.hero h1 {
 		font-size: 3.5rem;
 		font-weight: 700;
@@ -64,6 +65,8 @@
 		margin-bottom: 1rem;
 		letter-spacing: -0.5px;
 	}
+	.hero h1 a { color: inherit; text-decoration: none; }
+	.hero h1 a:hover { opacity: 0.85; }
 	.hero .tagline {
 		font-size: 1.5rem;
 		color: #fff;
@@ -667,9 +670,9 @@
 <div class="hero">
 	<img class="hero-image" src="https://akiaiq6swxkqiixrwd6qcomhaystacksoftwarearq-us-west-1.s3.us-west-1.amazonaws.com/ferry_building.png" alt="" role="presentation">
 	<div class="hero-content">
-		<h1><a href="/" style="color:inherit;text-decoration:none">Roll Over Easy</a></h1>
+		<h1><a href="/">Roll Over Easy</a></h1>
 		<p class="tagline">Taking San Francisco from under the covers 'til after coffee ☕</p>
-		<nav><a href="/episodes">Episodes</a> · <a href="/map">Map</a> · <a href="/">Search</a></nav>
+		<nav aria-label="Main navigation"><a href="/episodes">Episodes</a> · <a href="/guests">Guests</a> · <a href="/map">Map</a> · <a href="/" aria-current="page">Search</a></nav>
 	</div>
 </div>
 
@@ -774,6 +777,13 @@ const timelineEl = document.getElementById('timeline');
 const clipCardEl = document.getElementById('clip-card');
 const onThisDayEl = document.getElementById('on-this-day');
 
+// Delegated click handler for play/skip buttons using data attributes
+document.addEventListener('click', (e) => {
+	const btn = e.target.closest('.ep-play-btn, .ep-skip-btn');
+	if (!btn || !btn.dataset.audio) return;
+	playAt(btn.dataset.audio, parseInt(btn.dataset.start, 10), btn.dataset.title);
+});
+
 let currentQuery = '';
 let currentPage = 1;
 let hasMore = false;
@@ -858,8 +868,8 @@ async function loadClip(episodeId, startMs) {
 		}
 		html += '<div class="episode-actions">';
 		if (ep.audio_file) {
-			html += '<button class="ep-btn" onclick="playAt(\'' + escapeHtml(ep.audio_file) + '\', 0, \'' + escapeHtml(ep.title).replace(/'/g, "\\'") + '\')">&#9654; Play</button>';
-			html += '<button class="ep-btn" onclick="playAt(\'' + escapeHtml(ep.audio_file) + '\', 250000, \'' + escapeHtml(ep.title).replace(/'/g, "\\'") + '\')">&#9193; Skip intro</button>';
+			html += '<button class="ep-btn ep-play-btn" data-audio="' + escapeHtml(ep.audio_file) + '" data-title="' + escapeHtml(ep.title) + '" data-start="0">&#9654; Play</button>';
+			html += '<button class="ep-btn ep-skip-btn" data-audio="' + escapeHtml(ep.audio_file) + '" data-title="' + escapeHtml(ep.title) + '" data-start="250000">&#9193; Skip intro</button>';
 		}
 		html += '<a class="ep-btn" href="/?q=&episode=' + encodeURIComponent(ep.id) + '">&#128269; Search</a>';
 		html += '</div>';
@@ -913,8 +923,8 @@ async function loadOnThisDay() {
 			}
 			html += '<div class="episode-actions">';
 			if (ep.audio_file) {
-				html += '<button class="ep-btn" onclick="playAt(\'' + escapeHtml(ep.audio_file) + '\', 0, \'' + escapeHtml(ep.title).replace(/'/g, "\\'") + '\')">&#9654; Play</button>';
-				html += '<button class="ep-btn" onclick="playAt(\'' + escapeHtml(ep.audio_file) + '\', 250000, \'' + escapeHtml(ep.title).replace(/'/g, "\\'") + '\')">&#9193; Skip intro</button>';
+				html += '<button class="ep-btn ep-play-btn" data-audio="' + escapeHtml(ep.audio_file) + '" data-title="' + escapeHtml(ep.title) + '" data-start="0">&#9654; Play</button>';
+				html += '<button class="ep-btn ep-skip-btn" data-audio="' + escapeHtml(ep.audio_file) + '" data-title="' + escapeHtml(ep.title) + '" data-start="250000">&#9193; Skip intro</button>';
 			}
 			html += '<a class="ep-btn" href="/?q=&episode=' + encodeURIComponent(ep.id) + '">&#128269; Search</a>';
 			html += '</div>';
@@ -1469,7 +1479,7 @@ function initMiniMap(container, places) {
 		L.circleMarker([p.lat, p.lng], {
 			radius: 7, fillColor: '#e85d04', color: '#e85d04',
 			weight: 1, opacity: 0.8, fillOpacity: 0.7,
-		}).bindTooltip(p.name).addTo(map)
+		}).bindTooltip(escapeHtml(p.name)).addTo(map)
 	);
 
 	if (places.length === 1) {
