@@ -672,7 +672,7 @@
 	<div class="hero-content">
 		<h1><a href="/">Roll Over Easy</a></h1>
 		<p class="tagline">Taking San Francisco from under the covers 'til after coffee ☕</p>
-		<nav aria-label="Main navigation"><a href="/episodes">Episodes</a> · <a href="/guests">Guests</a> · <a href="/map">Map</a> · <a href="/" aria-current="page">Search</a></nav>
+		<nav aria-label="Main navigation"><a href="/episodes">Episodes</a> · <a href="/map">Map</a> · <a href="/" aria-current="page">Search</a></nav>
 	</div>
 </div>
 
@@ -1438,7 +1438,15 @@ async function loadEpisodeMap(episodeId, index, prefix) {
 		if (!wrap || !container) return;
 
 		wrap.style.display = '';
-		if (label) label.textContent = data.places.length + ' place' + (data.places.length !== 1 ? 's' : '') + ' mentioned';
+		if (label) {
+			const n = data.places.length;
+			const names = data.places.slice(0, 3).map(p => p.name);
+			let text = n + ' place' + (n !== 1 ? 's' : '') + ' mentioned';
+			if (names.length > 0) {
+				text += ' like ' + (names.length <= 2 ? names.join(' and ') : names.slice(0, -1).join(', ') + ', and ' + names[names.length - 1]);
+			}
+			label.textContent = text;
+		}
 		initMiniMap(container, data.places);
 	} catch (err) {
 		// silently skip
