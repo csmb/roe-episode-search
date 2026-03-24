@@ -601,14 +601,34 @@
 	}
 	.map-toggle.hidden { display: none; }
 	.map-toggle:hover { border-color: #505050; color: #303030; }
+	/* Episode body layout (side-by-side map) */
+	.episode-body {
+		display: flex;
+		gap: 16px;
+		align-items: flex-start;
+	}
+	.episode-text {
+		flex: 1;
+		min-width: 0;
+	}
+	.episode-map-wrap {
+		flex-shrink: 0;
+		width: 200px;
+	}
 	.episode-mini-map {
-		height: 240px;
+		width: 200px;
+		height: 200px;
 		border-radius: 8px;
 		border: 1px solid #e0e0e0;
-		margin-top: 10px;
 	}
 	.episode-mini-map.hidden { display: none; }
 	.episode-mini-map .leaflet-control-zoom { display: none; }
+	.map-places-label {
+		font-size: 0.75rem;
+		color: #999;
+		text-align: center;
+		margin-top: 4px;
+	}
 
 	@media (max-width: 768px) {
 		.hero { height: 35vh; min-height: 250px; }
@@ -624,7 +644,9 @@
 		.search-box { flex-direction: column; }
 		.search-box button { width: 100%; }
 		.timeline-year-label { font-size: 10px; }
-		.episode-mini-map { height: 200px; }
+		.episode-body { flex-direction: column; align-items: stretch; }
+		.episode-map-wrap { width: 100%; }
+		.episode-mini-map { width: 100%; height: 200px; }
 		.player-controls button { font-size: 0.9rem; padding: 3px; }
 		.play-pause-btn { width: 30px !important; height: 30px !important; font-size: 1.1rem !important; }
 		.spinning-coffee { font-size: 1.2rem; }
@@ -829,6 +851,8 @@ async function loadClip(episodeId, startMs) {
 			if (ep.duration_ms) parts.push(formatDuration(ep.duration_ms));
 			html += parts.join(' \u00b7 ') + '</div>';
 		}
+		html += '<div class="episode-body">';
+		html += '<div class="episode-text">';
 		if (ep.summary) {
 			html += '<div class="episode-summary">' + escapeHtml(ep.summary) + '</div>';
 		}
@@ -839,11 +863,15 @@ async function loadClip(episodeId, startMs) {
 		}
 		html += '<a class="ep-btn" href="/?q=&episode=' + encodeURIComponent(ep.id) + '">&#128269; Search</a>';
 		html += '</div>';
-		html += '<button class="map-toggle hidden" id="clip-map-toggle"></button>';
-		html += '<div class="episode-mini-map hidden" id="clip-map-container"></div>';
+		html += '</div>';
+		html += '<div class="episode-map-wrap" id="clip-map-wrap-0" style="display:none">';
+		html += '<div class="episode-mini-map" id="clip-map-0"></div>';
+		html += '<div class="map-places-label" id="clip-map-label-0"></div>';
+		html += '</div>';
+		html += '</div>';
 		html += '</div>';
 		clipCardEl.innerHTML = html;
-		checkEpisodePlaces(ep.id, document.getElementById('clip-map-toggle'), document.getElementById('clip-map-container'));
+		loadEpisodeMap(ep.id, 0, 'clip');
 
 		if (ep.audio_file) {
 			playAt(ep.audio_file, startMs, ep.title);
@@ -878,6 +906,8 @@ async function loadOnThisDay() {
 				html += '<div class="otd-year">' + yearsAgo + ' year' + (yearsAgo !== 1 ? 's' : '') + ' ago (' + epYear + ')</div>';
 			}
 			html += '<div class="episode-title">' + escapeHtml(ep.title) + '</div>';
+			html += '<div class="episode-body">';
+			html += '<div class="episode-text">';
 			if (ep.summary) {
 				html += '<div class="episode-summary">' + escapeHtml(ep.summary) + '</div>';
 			}
@@ -888,14 +918,18 @@ async function loadOnThisDay() {
 			}
 			html += '<a class="ep-btn" href="/?q=&episode=' + encodeURIComponent(ep.id) + '">&#128269; Search</a>';
 			html += '</div>';
-			html += '<button class="map-toggle hidden" id="otd-map-toggle-' + i + '"></button>';
-			html += '<div class="episode-mini-map hidden" id="otd-map-container-' + i + '"></div>';
+			html += '</div>';
+			html += '<div class="episode-map-wrap" id="otd-map-wrap-' + i + '" style="display:none">';
+			html += '<div class="episode-mini-map" id="otd-map-' + i + '"></div>';
+			html += '<div class="map-places-label" id="otd-map-label-' + i + '"></div>';
+			html += '</div>';
+			html += '</div>';
 			html += '</div>';
 		}
 
 		onThisDayEl.innerHTML = html;
 		for (let i = 0; i < data.episodes.length; i++) {
-			checkEpisodePlaces(data.episodes[i].id, document.getElementById('otd-map-toggle-' + i), document.getElementById('otd-map-container-' + i));
+			loadEpisodeMap(data.episodes[i].id, i, 'otd');
 		}
 	} catch (err) {
 		// Silently skip
@@ -1380,6 +1414,25 @@ function highlightQuery(text, query) {
 
 function escapeHtml(str) {
 	return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#x27;');
+}
+
+async function loadEpisodeMap(episodeId, index, prefix) {
+	try {
+		const res = await fetch('/api/episode/' + encodeURIComponent(episodeId) + '/places');
+		const data = await res.json();
+		if (!data.places || data.places.length === 0) return;
+
+		const wrap = document.getElementById(prefix + '-map-wrap-' + index);
+		const container = document.getElementById(prefix + '-map-' + index);
+		const label = document.getElementById(prefix + '-map-label-' + index);
+		if (!wrap || !container) return;
+
+		wrap.style.display = '';
+		if (label) label.textContent = data.places.length + ' place' + (data.places.length !== 1 ? 's' : '') + ' mentioned';
+		initMiniMap(container, data.places);
+	} catch (err) {
+		// silently skip
+	}
 }
 
 async function checkEpisodePlaces(episodeId, toggleBtn, mapContainer) {
