@@ -1440,12 +1440,12 @@ async function loadEpisodeMap(episodeId, index, prefix) {
 		wrap.style.display = '';
 		if (label) {
 			const n = data.places.length;
-			const names = data.places.slice(0, 3).map(p => p.name);
+			const names = data.places.slice(0, 3).map(p => '<strong>' + escapeHtml(p.name) + '</strong>');
 			let text = n + ' place' + (n !== 1 ? 's' : '') + ' mentioned';
 			if (names.length > 0) {
 				text += ' like ' + (names.length <= 2 ? names.join(' and ') : names.slice(0, -1).join(', ') + ', and ' + names[names.length - 1]);
 			}
-			label.textContent = text;
+			label.innerHTML = text;
 		}
 		initMiniMap(container, data.places);
 	} catch (err) {
