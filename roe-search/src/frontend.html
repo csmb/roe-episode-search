@@ -1478,9 +1478,9 @@ async function checkEpisodePlaces(episodeId, toggleBtn, mapContainer) {
 
 function initMiniMap(container, places) {
 	const map = L.map(container, { scrollWheelZoom: false, zoomControl: false });
-	L.tileLayer('https://tiles.stadiamaps.com/tiles/alidade_satellite/{z}/{x}/{y}{r}.png', {
-		attribution: '&copy; Stadia Maps',
-		maxZoom: 20,
+	L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+		attribution: '&copy; Esri',
+		maxZoom: 19,
 	}).addTo(map);
 
 	const markers = places.map(p =>
