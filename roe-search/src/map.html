@@ -146,9 +146,9 @@
 
 		const map = L.map('map').setView([37.7749, -122.4194], 13);
 
-		L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-			attribution: '&copy; Esri, Maxar, Earthstar Geographics',
-			maxZoom: 19,
+		L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+			attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>',
+			maxZoom: 20,
 		}).addTo(map);
 
 		function episodeDate(episodeId) {
@@ -179,10 +179,10 @@
 				const radius = circleRadius(place.episode_count, maxCount);
 				const circle = L.circleMarker([place.lat, place.lng], {
 					radius,
-					fillColor: '#ff6b1a',
-					fillOpacity: 0.8,
-					color: '#fff',
-					weight: 2,
+					fillColor: '#e85d04',
+					fillOpacity: 0.7,
+					color: '#c44d02',
+					weight: 1.5,
 				}).addTo(map);
 
 				const episodeItems = place.episodes
