@@ -431,15 +431,15 @@ function updateMapLabel(label, places) {
 
 function initMiniMap(container, places) {
 	const map = L.map(container, { scrollWheelZoom: false, zoomControl: false });
-	L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-		attribution: '&copy; OSM &copy; CARTO',
-		maxZoom: 19,
+	L.tileLayer('https://tiles.stadiamaps.com/tiles/alidade_satellite/{z}/{x}/{y}{r}.png', {
+		attribution: '&copy; Stadia Maps',
+		maxZoom: 20,
 	}).addTo(map);
 
 	const markers = places.map(p =>
 		L.circleMarker([p.lat, p.lng], {
-			radius: 7, fillColor: '#e85d04', color: '#e85d04',
-			weight: 1, opacity: 0.8, fillOpacity: 0.7,
+			radius: 7, fillColor: '#ff6b1a', color: '#fff',
+			weight: 2, opacity: 1, fillOpacity: 0.85,
 		}).bindTooltip(escapeHtml(p.name)).addTo(map)
 	);
 

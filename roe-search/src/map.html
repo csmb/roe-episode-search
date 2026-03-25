@@ -146,9 +146,9 @@
 
 		const map = L.map('map').setView([37.7749, -122.4194], 13);
 
-		L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-			attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-			maxZoom: 19,
+		L.tileLayer('https://tiles.stadiamaps.com/tiles/alidade_satellite/{z}/{x}/{y}{r}.png', {
+			attribution: '&copy; CNES, Distribution Airbus DS, © Airbus DS, © PlanetObserver (Contains Copernicus Data) | &copy; <a href="https://www.stadiamaps.com/">Stadia Maps</a>',
+			maxZoom: 20,
 		}).addTo(map);
 
 		function episodeDate(episodeId) {
@@ -179,10 +179,10 @@
 				const radius = circleRadius(place.episode_count, maxCount);
 				const circle = L.circleMarker([place.lat, place.lng], {
 					radius,
-					fillColor: '#e85d04',
-					fillOpacity: 0.65,
-					color: '#c44d02',
-					weight: 1.5,
+					fillColor: '#ff6b1a',
+					fillOpacity: 0.8,
+					color: '#fff',
+					weight: 2,
 				}).addTo(map);
 
 				const episodeItems = place.episodes
