@@ -10,6 +10,8 @@ import { seedDatabase } from './seed-db.js';
 import { generateEmbeddings } from './embeddings.js';
 import { generateSummary } from './summary.js';
 
+const SEGMENTS_PER_KEY = 500;
+
 export class EpisodePipeline {
   constructor(state, env) {
     this.state = state;
@@ -20,7 +22,7 @@ export class EpisodePipeline {
     const url = new URL(request.url);
 
     // Status check
-    if (request.method === 'GET' || url.pathname === '/status') {
+    if (url.pathname === '/status') {
       const status = await this.state.storage.get('status') || 'idle';
       const step = await this.state.storage.get('step');
       const episodeId = await this.state.storage.get('episodeId');
@@ -78,7 +80,7 @@ export class EpisodePipeline {
             this.env.AUDIO_BUCKET, key, this.env.OPENAI_API_KEY, resume
           );
 
-          await this.state.storage.put('segments', segments);
+          await this.storeSegments(segments);
           await this.state.storage.put('durationMs', durationMs);
           await this.state.storage.delete('transcribeResume');
           await this.advanceStep('seed-db');
@@ -86,7 +88,7 @@ export class EpisodePipeline {
         }
 
         case 'seed-db': {
-          const segments = await this.state.storage.get('segments');
+          const segments = await this.loadSegments();
           const durationMs = await this.state.storage.get('durationMs');
           await seedDatabase(this.env.DB, episodeId, durationMs, segments);
           await this.advanceStep('embeddings');
@@ -94,7 +96,7 @@ export class EpisodePipeline {
         }
 
         case 'embeddings': {
-          const segments = await this.state.storage.get('segments');
+          const segments = await this.loadSegments();
           const durationMs = await this.state.storage.get('durationMs');
           const vectorCount = await generateEmbeddings(
             this.env.AI, this.env.VECTORIZE, episodeId, segments, durationMs
@@ -105,7 +107,7 @@ export class EpisodePipeline {
         }
 
         case 'summary': {
-          const segments = await this.state.storage.get('segments');
+          const segments = await this.loadSegments();
           await generateSummary(this.env.DB, episodeId, segments, this.env.OPENAI_API_KEY);
           await this.advanceStep('set-audio-url');
           break;
@@ -130,6 +132,26 @@ export class EpisodePipeline {
       await this.state.storage.put('error', err.message);
       await this.state.storage.put('failedAt', new Date().toISOString());
     }
+  }
+
+  /** Store segments split across multiple keys to stay under DO's 128KB per-key limit. */
+  async storeSegments(segments) {
+    for (let i = 0; i < segments.length; i += SEGMENTS_PER_KEY) {
+      const chunk = segments.slice(i, i + SEGMENTS_PER_KEY);
+      await this.state.storage.put(`segments:${i / SEGMENTS_PER_KEY}`, chunk);
+    }
+    await this.state.storage.put('segmentChunks', Math.ceil(segments.length / SEGMENTS_PER_KEY));
+  }
+
+  /** Reassemble segments from split storage keys. */
+  async loadSegments() {
+    const count = await this.state.storage.get('segmentChunks') || 0;
+    const segments = [];
+    for (let i = 0; i < count; i++) {
+      const chunk = await this.state.storage.get(`segments:${i}`);
+      if (chunk) segments.push(...chunk);
+    }
+    return segments;
   }
 
   /** Advance to next step and set alarm for immediate execution. */

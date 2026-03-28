@@ -12,9 +12,13 @@ const DB_BATCH_SIZE = 50;
  * @param {Array<{start_ms: number, end_ms: number, text: string}>} segments
  */
 export async function seedDatabase(db, episodeId, durationMs, segments) {
+  // Extract date from episode ID (format: roll-over-easy_YYYY-MM-DD_HH-MM-SS)
+  const dateMatch = episodeId.match(/(\d{4}-\d{2}-\d{2})/);
+  const publishedAt = dateMatch ? dateMatch[1] : null;
+
   // Insert episode row (title defaults to episodeId, updated later by summary step)
-  await db.prepare('INSERT INTO episodes (id, title, duration_ms) VALUES (?, ?, ?)')
-    .bind(episodeId, episodeId, durationMs)
+  await db.prepare('INSERT INTO episodes (id, title, duration_ms, published_at) VALUES (?, ?, ?, ?)')
+    .bind(episodeId, episodeId, durationMs, publishedAt)
     .run();
 
   // Insert transcript segments in batches

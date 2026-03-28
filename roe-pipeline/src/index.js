@@ -32,7 +32,7 @@ export default {
         continue;
       }
 
-      console.log(`Processing R2 event: ${key} (${event.object.size} bytes)`);
+      console.log(`Processing R2 event: ${key} (${event.object?.size ?? 'unknown'} bytes)`);
 
       try {
         // Dispatch to Durable Object keyed by filename (dedup by file)
