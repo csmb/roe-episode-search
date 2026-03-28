@@ -286,7 +286,7 @@ async function launchVisualization() {
 
         if (isMobile) {
             document.getElementById('compass').style.display = 'block';
-            const { initMobile } = await import('https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js/+esm')
+            const { initMobile } = await import('https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js')
                 .then(THREE => {
                     window.THREE = THREE;
                     return { initMobile: () => startMobile(THREE, data) };
@@ -300,8 +300,11 @@ async function launchVisualization() {
             });
         }
     } catch (err) {
+        document.getElementById('sky').style.display = 'none';
+        document.getElementById('compass').style.display = 'none';
         const loading = document.getElementById('loading');
-        loading.innerHTML = '<div style="text-align:center;"><div style="color:rgba(255,200,80,0.7);">Failed to load star data</div><button id="retryBtn" style="margin-top:16px;padding:10px 28px;border:1px solid rgba(255,230,150,0.3);border-radius:20px;background:rgba(255,230,150,0.04);color:rgba(255,245,210,0.8);font-size:14px;cursor:pointer;">Try again</button></div>';
+        loading.style.display = 'flex';
+        loading.innerHTML = '<div style="text-align:center;"><div style="color:rgba(255,200,80,0.7);">Failed to load — please try again</div><button id="retryBtn" style="margin-top:16px;padding:10px 28px;border:1px solid rgba(255,230,150,0.3);border-radius:20px;background:rgba(255,230,150,0.04);color:rgba(255,245,210,0.8);font-size:14px;cursor:pointer;">Try again</button></div>';
         document.getElementById('retryBtn').addEventListener('click', launchVisualization);
         console.error(err);
     }
