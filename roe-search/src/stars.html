@@ -171,7 +171,7 @@ const observer = new Astronomy.Observer(SF_LAT, SF_LON, 0);
 
 const PLANET_BODIES = ['Sun', 'Moon', 'Mercury', 'Venus', 'Mars', 'Jupiter', 'Saturn', 'Uranus', 'Neptune'];
 const PLANET_COLORS = {
-    Sun: '#fff4c0', Moon: '#fef9e7', Mercury: '#bbb', Venus: '#ffeaa7',
+    Sun: '#fff4c0', Moon: '#fef9e7', Mercury: '#bbbbbb', Venus: '#ffeaa7',
     Mars: '#e17055', Jupiter: '#ffeaa7', Saturn: '#fad390', Uranus: '#74b9ff', Neptune: '#a29bfe',
 };
 const PLANET_SIZES = {
@@ -304,7 +304,7 @@ async function launchVisualization() {
         document.getElementById('compass').style.display = 'none';
         const loading = document.getElementById('loading');
         loading.style.display = 'flex';
-        loading.innerHTML = '<div style="text-align:center;"><div style="color:rgba(255,200,80,0.7);">Failed to load</div><div style="color:rgba(255,255,255,0.3);font-size:11px;margin-top:8px;max-width:300px;word-break:break-all;">' + (err.message || err) + '</div><button id="retryBtn" style="margin-top:16px;padding:10px 28px;border:1px solid rgba(255,230,150,0.3);border-radius:20px;background:rgba(255,230,150,0.04);color:rgba(255,245,210,0.8);font-size:14px;cursor:pointer;">Try again</button></div>';
+        loading.innerHTML = '<div style="text-align:center;"><div style="color:rgba(255,200,80,0.7);">Failed to load</div><button id="retryBtn" style="margin-top:16px;padding:10px 28px;border:1px solid rgba(255,230,150,0.3);border-radius:20px;background:rgba(255,230,150,0.04);color:rgba(255,245,210,0.8);font-size:14px;cursor:pointer;">Try again</button></div>';
         document.getElementById('retryBtn').addEventListener('click', launchVisualization);
         console.error(err);
     }
