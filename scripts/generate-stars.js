@@ -128,7 +128,8 @@ while (true) {
 
     for (const row of rows) {
         const words = row.text.toLowerCase().replace(/[^a-z'-]/g, ' ').split(/\s+/);
-        for (const word of words) {
+        for (let word of words) {
+            word = word.replace(/^['-]+|['-]+$/g, ''); // strip leading/trailing punctuation
             if (word.length >= 3 && !STOP_WORDS.has(word)) {
                 wordCounts.set(word, (wordCounts.get(word) || 0) + 1);
             }

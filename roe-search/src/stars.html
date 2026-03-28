@@ -197,10 +197,6 @@ function getStarHorizontalCoords(stars, date) {
     return coords;
 }
 
-function getMoonPhase(date) {
-    return Astronomy.MoonPhase(date);  // 0-360 degrees
-}
-
 // Convert azimuth/altitude to 3D cartesian (Y=up, -Z=north)
 function skyToXYZ(azDeg, altDeg, r) {
     const az = azDeg * Math.PI / 180;
@@ -297,7 +293,7 @@ document.getElementById('beginBtn').addEventListener('click', async () => {
         } else {
             document.getElementById('legend').style.display = 'block';
             document.getElementById('bottom-bar').style.display = 'flex';
-            await import('https://cdn.jsdelivr.net/npm/d3@7/+esm').then(d3 => {
+            await import('https://cdn.jsdelivr.net/npm/d3@7.9.0/+esm').then(d3 => {
                 startDesktop(d3, data);
             });
         }
@@ -424,8 +420,12 @@ function startMobile(THREE, data) {
     const bodyMeshes = [];
 
     function updateBodies(date) {
-        // Remove old
-        for (const m of bodyMeshes) scene.remove(m);
+        // Remove old — dispose GPU resources to prevent memory leak
+        for (const m of bodyMeshes) {
+            m.material.map.dispose();
+            m.material.dispose();
+            scene.remove(m);
+        }
         bodyMeshes.length = 0;
 
         const bodies = getCelestialBodies(date);
@@ -466,7 +466,11 @@ function startMobile(THREE, data) {
     // --- Ecliptic Arc ---
     function updateEcliptic(date) {
         const old = scene.getObjectByName('ecliptic');
-        if (old) scene.remove(old);
+        if (old) {
+            old.geometry.dispose();
+            old.material.dispose();
+            scene.remove(old);
+        }
 
         const points = [];
         for (let lon = 0; lon < 360; lon += 2) {
@@ -658,9 +662,9 @@ function startDesktop(d3, data) {
     resize();
 
     // --- Projection: Zenithal equidistant ---
-    const chartRadius = Math.min(width, height) * 0.42;
-    const cx = width / 2;
-    const cy = height / 2;
+    let chartRadius = Math.min(width, height) * 0.42;
+    let cx = width / 2;
+    let cy = height / 2;
 
     function project(az, alt) {
         const r = ((90 - alt) / 90) * chartRadius;
@@ -895,6 +899,9 @@ function startDesktop(d3, data) {
     // --- Resize ---
     window.addEventListener('resize', () => {
         resize();
+        chartRadius = Math.min(width, height) * 0.42;
+        cx = width / 2;
+        cy = height / 2;
         updatePositions();
         render();
     });
