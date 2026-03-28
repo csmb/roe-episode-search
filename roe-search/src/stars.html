@@ -636,8 +636,274 @@ function startMobile(THREE, data) {
 // ============================================================
 
 function startDesktop(d3, data) {
-    console.log('Desktop renderer: loaded', data.stars.length, 'stars');
-    // Task 5 fills this in
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const maxCount = data.stars[0].c;
+    const labelLimit = Math.min(500, data.stars.length);
+
+    let width = window.innerWidth;
+    let height = window.innerHeight;
+    let dpr = Math.min(window.devicePixelRatio, 2);
+
+    function resize() {
+        width = window.innerWidth;
+        height = window.innerHeight;
+        dpr = Math.min(window.devicePixelRatio, 2);
+        canvas.width = width * dpr;
+        canvas.height = height * dpr;
+        canvas.style.width = width + 'px';
+        canvas.style.height = height + 'px';
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+    resize();
+
+    // --- Projection: Zenithal equidistant ---
+    const chartRadius = Math.min(width, height) * 0.42;
+    const cx = width / 2;
+    const cy = height / 2;
+
+    function project(az, alt) {
+        const r = ((90 - alt) / 90) * chartRadius;
+        const theta = az * Math.PI / 180;
+        const x = cx + r * Math.sin(theta);
+        const y = cy - r * Math.cos(theta);
+        return { x, y, r };
+    }
+
+    // --- Zoom/Pan State ---
+    let transform = d3.zoomIdentity;
+
+    // --- Compute star screen positions ---
+    let starScreenPos = [];
+    let bodyScreenPos = [];
+
+    function updatePositions() {
+        const now = new Date();
+        const horizCoords = getStarHorizontalCoords(data.stars, now);
+        starScreenPos = [];
+        for (let i = 0; i < data.stars.length; i++) {
+            const az = horizCoords[i * 2];
+            const alt = horizCoords[i * 2 + 1];
+            const { x, y } = project(az, alt);
+            const { size, opacity } = starVisuals(data.stars[i].c, maxCount);
+            starScreenPos.push({ x, y, size, opacity, word: data.stars[i].w, count: data.stars[i].c, alt });
+        }
+
+        const bodies = getCelestialBodies(now);
+        bodyScreenPos = [];
+        for (const b of bodies) {
+            const { x, y } = project(b.azimuth, b.altitude);
+            bodyScreenPos.push({ ...b, x, y });
+        }
+    }
+
+    updatePositions();
+
+    // --- Draw ---
+    function render() {
+        ctx.save();
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = '#080c18';
+        ctx.fillRect(0, 0, width, height);
+
+        // Apply zoom transform
+        ctx.translate(transform.x, transform.y);
+        ctx.scale(transform.k, transform.k);
+
+        // Milky way hint
+        ctx.save();
+        ctx.translate(cx, cy);
+        ctx.rotate(-15 * Math.PI / 180);
+        const mwGrad = ctx.createLinearGradient(-chartRadius, -chartRadius * 0.3, chartRadius, chartRadius * 0.3);
+        mwGrad.addColorStop(0, 'transparent');
+        mwGrad.addColorStop(0.35, 'rgba(200,210,255,0.02)');
+        mwGrad.addColorStop(0.5, 'rgba(200,210,255,0.04)');
+        mwGrad.addColorStop(0.65, 'rgba(200,210,255,0.02)');
+        mwGrad.addColorStop(1, 'transparent');
+        ctx.fillStyle = mwGrad;
+        ctx.fillRect(-chartRadius * 1.2, -chartRadius * 0.3, chartRadius * 2.4, chartRadius * 0.6);
+        ctx.restore();
+
+        // Grid circles (declination)
+        ctx.strokeStyle = 'rgba(100,120,180,0.06)';
+        ctx.lineWidth = 0.5;
+        for (const frac of [0.33, 0.66, 1.0]) {
+            ctx.beginPath();
+            ctx.arc(cx, cy, chartRadius * frac, 0, Math.PI * 2);
+            ctx.stroke();
+        }
+
+        // Grid lines (RA)
+        for (let angle = 0; angle < 180; angle += 45) {
+            const rad = angle * Math.PI / 180;
+            ctx.beginPath();
+            ctx.moveTo(cx + chartRadius * Math.cos(rad), cy + chartRadius * Math.sin(rad));
+            ctx.lineTo(cx - chartRadius * Math.cos(rad), cy - chartRadius * Math.sin(rad));
+            ctx.stroke();
+        }
+
+        // Horizon circle
+        ctx.strokeStyle = 'rgba(100,120,180,0.15)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(cx, cy, chartRadius, 0, Math.PI * 2);
+        ctx.stroke();
+
+        // Cardinal directions
+        ctx.fillStyle = 'rgba(100,120,180,0.4)';
+        ctx.font = '11px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('N', cx, cy - chartRadius - 8);
+        ctx.fillText('S', cx, cy + chartRadius + 16);
+        ctx.fillText('E', cx + chartRadius + 12, cy + 4);
+        ctx.fillText('W', cx - chartRadius - 12, cy + 4);
+
+        // Ecliptic (approximate dashed ellipse)
+        ctx.save();
+        ctx.strokeStyle = 'rgba(255,200,80,0.12)';
+        ctx.setLineDash([4, 4]);
+        ctx.lineWidth = 0.8;
+        ctx.beginPath();
+        ctx.translate(cx, cy);
+        ctx.rotate(-23.4 * Math.PI / 180);
+        ctx.ellipse(0, 0, chartRadius * 0.9, chartRadius * 0.75, 0, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+
+        // Stars (below horizon = skip)
+        const zoomLevel = transform.k;
+        const dynLabelLimit = Math.min(data.stars.length, Math.round(labelLimit * Math.min(zoomLevel, 3)));
+
+        for (let i = starScreenPos.length - 1; i >= 0; i--) {
+            const s = starScreenPos[i];
+            if (s.alt < -5) continue;
+
+            const r = Math.max(0.5, s.size * 0.5);
+            ctx.globalAlpha = s.opacity;
+            ctx.fillStyle = starColor(s.word);
+            ctx.beginPath();
+            ctx.arc(s.x, s.y, r, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Glow for larger stars
+            if (r > 2) {
+                const glow = ctx.createRadialGradient(s.x, s.y, 0, s.x, s.y, r * 3);
+                glow.addColorStop(0, starColor(s.word));
+                glow.addColorStop(1, 'transparent');
+                ctx.globalAlpha = s.opacity * 0.15;
+                ctx.fillStyle = glow;
+                ctx.beginPath();
+                ctx.arc(s.x, s.y, r * 3, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // Labels
+            if (i < dynLabelLimit) {
+                ctx.globalAlpha = s.opacity * 0.7;
+                ctx.fillStyle = starColor(s.word);
+                ctx.font = `${Math.max(8, Math.round(s.size * 0.9))}px Georgia`;
+                ctx.textAlign = 'left';
+                ctx.fillText(s.word, s.x + r + 3, s.y + 3);
+            }
+        }
+        ctx.globalAlpha = 1;
+
+        // Celestial bodies
+        for (const b of bodyScreenPos) {
+            if (b.altitude < -5) continue;
+            const r = b.size * 0.5;
+
+            // Glow
+            const glow = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, r * 2.5);
+            glow.addColorStop(0, b.color);
+            glow.addColorStop(0.4, b.color + '44');
+            glow.addColorStop(1, 'transparent');
+            ctx.fillStyle = glow;
+            ctx.beginPath();
+            ctx.arc(b.x, b.y, r * 2.5, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Dot
+            ctx.fillStyle = b.color;
+            ctx.beginPath();
+            ctx.arc(b.x, b.y, Math.max(1.5, r * 0.4), 0, Math.PI * 2);
+            ctx.fill();
+
+            // Label
+            ctx.globalAlpha = 0.4;
+            ctx.fillStyle = b.color;
+            ctx.font = '9px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText(b.name, b.x, b.y + r + 10);
+            ctx.globalAlpha = 1;
+        }
+
+        ctx.restore();
+    }
+
+    render();
+
+    // --- D3 Zoom ---
+    const zoom = d3.zoom()
+        .scaleExtent([0.5, 10])
+        .on('zoom', (event) => {
+            transform = event.transform;
+            render();
+        });
+
+    d3.select(canvas).call(zoom);
+
+    // --- Hover Tooltip ---
+    let hoveredStar = null;
+
+    canvas.addEventListener('mousemove', (e) => {
+        const mx = (e.clientX - transform.x) / transform.k;
+        const my = (e.clientY - transform.y) / transform.k;
+
+        let nearest = null;
+        let minDist = 20 / transform.k;
+
+        for (const s of starScreenPos) {
+            if (s.alt < -5) continue;
+            const dx = mx - s.x;
+            const dy = my - s.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            if (dist < minDist) {
+                minDist = dist;
+                nearest = s;
+            }
+        }
+
+        if (nearest) {
+            showTooltip(nearest.word, nearest.count, e.clientX, e.clientY);
+            canvas.style.cursor = 'pointer';
+            hoveredStar = nearest;
+        } else if (hoveredStar) {
+            hideTooltip();
+            canvas.style.cursor = 'grab';
+            hoveredStar = null;
+        }
+    });
+
+    canvas.addEventListener('mouseleave', () => {
+        hideTooltip();
+        hoveredStar = null;
+    });
+
+    canvas.style.cursor = 'grab';
+
+    // --- Resize ---
+    window.addEventListener('resize', () => {
+        resize();
+        updatePositions();
+        render();
+    });
+
+    // --- Periodic position update (Earth rotation) ---
+    setInterval(() => {
+        updatePositions();
+        render();
+    }, 30000);
 }
 </script>
 </body>
