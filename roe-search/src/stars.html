@@ -598,7 +598,7 @@ function startMobile(THREE, data) {
             if (linePoints.length > 0) {
                 const lineGeom = new THREE.BufferGeometry().setFromPoints(linePoints);
                 const lineMat = new THREE.LineBasicMaterial({
-                    color: 0x4466aa, transparent: true, opacity: 0.25,
+                    color: 0x88aadd, transparent: true, opacity: 0.6,
                 });
                 const lineObj = new THREE.LineSegments(lineGeom, lineMat);
                 constellationGroup.add(lineObj);
@@ -610,19 +610,19 @@ function startMobile(THREE, data) {
                 const cp = skyToXYZ(centerHor.azimuth, centerHor.altitude, SKY_RADIUS * 0.97);
                 const nameCnv = document.createElement('canvas');
                 const nameCtx = nameCnv.getContext('2d');
-                nameCtx.font = '18px Georgia';
-                const tw = nameCtx.measureText(c.name).width + 8;
-                nameCnv.width = tw; nameCnv.height = 28;
-                nameCtx.font = '18px Georgia';
-                nameCtx.fillStyle = '#6688bb';
-                nameCtx.globalAlpha = 0.35;
+                nameCtx.font = '28px Georgia';
+                const tw = nameCtx.measureText(c.name).width + 12;
+                nameCnv.width = tw; nameCnv.height = 40;
+                nameCtx.font = '28px Georgia';
+                nameCtx.fillStyle = '#99bbee';
+                nameCtx.globalAlpha = 0.7;
                 nameCtx.textAlign = 'center';
-                nameCtx.fillText(c.name, tw / 2, 20);
+                nameCtx.fillText(c.name, tw / 2, 30);
                 const nameTex = new THREE.CanvasTexture(nameCnv);
                 nameTex.minFilter = THREE.LinearFilter;
                 const nameMat = new THREE.SpriteMaterial({ map: nameTex, transparent: true, depthWrite: false });
                 const nameSprite = new THREE.Sprite(nameMat);
-                nameSprite.scale.set(tw / 8, 28 / 8, 1);
+                nameSprite.scale.set(tw / 6, 40 / 6, 1);
                 nameSprite.position.set(cp.x, cp.y - 5, cp.z);
                 constellationGroup.add(nameSprite);
             }
@@ -1033,8 +1033,8 @@ function startDesktop(d3, data) {
 
         // Constellation lines & names
         for (const c of constellations) {
-            ctx.strokeStyle = 'rgba(68,102,170,0.25)';
-            ctx.lineWidth = 0.8;
+            ctx.strokeStyle = 'rgba(136,170,221,0.6)';
+            ctx.lineWidth = 1.2;
             ctx.setLineDash([]);
             for (const [a, b] of c.lines) {
                 const sa = starScreenPos[a];
@@ -1051,9 +1051,9 @@ function startDesktop(d3, data) {
                 const centerHor = Astronomy.Horizon(now, observer, c.center.ra, c.center.dec, 'normal');
                 if (centerHor.altitude > -5) {
                     const { x, y } = project(centerHor.azimuth, centerHor.altitude);
-                    ctx.globalAlpha = 0.35;
-                    ctx.fillStyle = '#6688bb';
-                    ctx.font = '12px Georgia';
+                    ctx.globalAlpha = 0.7;
+                    ctx.fillStyle = '#99bbee';
+                    ctx.font = '13px Georgia';
                     ctx.textAlign = 'center';
                     ctx.fillText(c.name, x, y - 12);
                     ctx.globalAlpha = 1;
