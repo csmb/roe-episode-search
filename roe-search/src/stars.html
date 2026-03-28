@@ -8,13 +8,13 @@
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>☕</text></svg>">
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
-html, body { width: 100%; height: 100%; overflow: hidden; background: #06080f; color: #fff; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0e2a; color: #fff; }
 
 /* --- Splash / Permission Screen --- */
 #splash {
     position: fixed; inset: 0; z-index: 100;
     display: flex; flex-direction: column; align-items: center; justify-content: center;
-    background: #06080f; text-align: center; padding: 30px;
+    background: #0a0e2a; text-align: center; padding: 30px;
 }
 #splash .title {
     font-family: Georgia, 'Times New Roman', serif;
@@ -97,7 +97,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #06080f; c
 #loading {
     position: fixed; inset: 0; z-index: 90;
     display: none; align-items: center; justify-content: center;
-    background: #06080f; color: rgba(255,255,255,0.3); font-size: 14px;
+    background: #0a0e2a; color: rgba(255,255,255,0.3); font-size: 14px;
 }
 </style>
 </head>
@@ -168,6 +168,113 @@ const SF_LAT = 37.7749;
 const SF_LON = -122.4194;
 const SKY_RADIUS = 500;
 const observer = new Astronomy.Observer(SF_LAT, SF_LON, 0);
+
+// ============================================================
+// SF Constellation Definitions
+// ============================================================
+// Each constellation: name, center (RA hours, Dec degrees),
+// words (matched to stars), shape points (degree offsets from center),
+// and lines connecting point indices.
+
+const SF_CONSTELLATIONS = [
+    {
+        name: 'Coffee Cup',
+        center: { ra: 2, dec: 30 },
+        words: ['morning', 'coffee', 'drink', 'cup', 'cafe', 'beans', 'espresso'],
+        points: [{x:-3,y:4},{x:3,y:4},{x:-3,y:-3},{x:3,y:-3},{x:5,y:2},{x:5,y:-1},{x:0,y:7}],
+        lines: [[0,1],[0,2],[1,3],[2,3],[1,4],[4,5],[5,3]],
+    },
+    {
+        name: 'Golden Gate Bridge',
+        center: { ra: 5, dec: -10 },
+        words: ['golden', 'gate', 'fog', 'bridge', 'tower', 'red', 'orange'],
+        points: [{x:-7,y:-1},{x:-3,y:6},{x:-3,y:-1},{x:0,y:2},{x:3,y:6},{x:3,y:-1},{x:7,y:-1}],
+        lines: [[0,2],[2,5],[5,6],[1,2],[4,5],[0,1],[1,3],[3,4],[4,6]],
+    },
+    {
+        name: 'Golden Gate Park',
+        center: { ra: 8, dec: 45 },
+        words: ['park', 'walk', 'green', 'trees', 'garden', 'museum', 'nature'],
+        points: [{x:0,y:7},{x:-4,y:3},{x:4,y:3},{x:0,y:0},{x:-6,y:-3},{x:0,y:-3},{x:6,y:-3}],
+        lines: [[0,1],[0,2],[1,3],[2,3],[3,5],[4,5],[5,6]],
+    },
+    {
+        name: 'Music Note',
+        center: { ra: 11, dec: 5 },
+        words: ['song', 'play', 'music', 'listen', 'sound', 'album', 'band'],
+        points: [{x:0,y:8},{x:0,y:4},{x:0,y:0},{x:-3,y:-2},{x:-5,y:-4},{x:0,y:-4},{x:5,y:-4}],
+        lines: [[0,1],[1,2],[2,3],[4,5],[5,6],[3,5]],
+    },
+    {
+        name: 'Cable Car',
+        center: { ra: 14, dec: 35 },
+        words: ['car', 'ride', 'hill', 'cable', 'bell', 'track'],
+        points: [{x:-3,y:5},{x:3,y:5},{x:-3,y:0},{x:3,y:0},{x:-2,y:-3},{x:2,y:-3}],
+        lines: [[0,1],[0,2],[1,3],[2,3],[2,4],[3,5]],
+    },
+    {
+        name: 'Sea Lion',
+        center: { ra: 17, dec: -20 },
+        words: ['ocean', 'sea', 'pier', 'fish', 'lion', 'water'],
+        points: [{x:-5,y:4},{x:-2,y:2},{x:3,y:2},{x:3,y:-2},{x:-2,y:-2},{x:-5,y:-4}],
+        lines: [[0,1],[1,2],[2,3],[3,4],[4,5],[4,1]],
+    },
+    {
+        name: 'Dungeness Crab',
+        center: { ra: 19.5, dec: 20 },
+        words: ['market', 'season', 'catch', 'fresh', 'dinner', 'crab'],
+        points: [{x:-6,y:5},{x:-3,y:2},{x:-2,y:-1},{x:2,y:-1},{x:3,y:2},{x:6,y:5}],
+        lines: [[0,1],[1,2],[2,3],[3,4],[4,5]],
+    },
+    {
+        name: 'Bay Bridge',
+        center: { ra: 22, dec: -5 },
+        words: ['bay', 'east', 'oakland', 'traffic', 'boat', 'wind'],
+        points: [{x:-7,y:0},{x:-3,y:0},{x:0,y:5},{x:0,y:0},{x:3,y:0},{x:7,y:0}],
+        lines: [[0,1],[1,3],[3,4],[4,5],[2,3],[1,2],[2,4]],
+    },
+    {
+        name: 'Fog Bank',
+        center: { ra: 0.5, dec: -35 },
+        words: ['roll', 'weather', 'rain', 'cold', 'gray', 'cover'],
+        points: [{x:-6,y:-1},{x:-3,y:3},{x:0,y:-1},{x:3,y:3},{x:6,y:-1},{x:8,y:2}],
+        lines: [[0,1],[1,2],[2,3],[3,4],[4,5]],
+    },
+    {
+        name: 'Transamerica Pyramid',
+        center: { ra: 3.5, dec: 60 },
+        words: ['city', 'building', 'point', 'downtown', 'tall'],
+        points: [{x:0,y:7},{x:-2,y:2},{x:2,y:2},{x:-4,y:-3},{x:4,y:-3}],
+        lines: [[0,1],[0,2],[1,3],[2,4],[3,4]],
+    },
+];
+
+// Apply constellation positions to star data, returns constellation metadata for rendering
+function applyConstellations(stars) {
+    const wordMap = new Map();
+    stars.forEach((s, i) => wordMap.set(s.w, i));
+    const result = [];
+
+    for (const c of SF_CONSTELLATIONS) {
+        const indices = [];
+        const pointMap = [];
+        for (let pi = 0; pi < c.points.length && pi < c.words.length; pi++) {
+            const idx = wordMap.get(c.words[pi]);
+            if (idx === undefined) continue;
+            const p = c.points[pi];
+            const cosD = Math.cos(c.center.dec * Math.PI / 180);
+            stars[idx].ra = ((c.center.ra + p.x / (15 * cosD)) + 24) % 24;
+            stars[idx].dec = c.center.dec + p.y;
+            indices.push(idx);
+            pointMap.push(pi);
+        }
+        const lines = c.lines
+            .filter(([a, b]) => pointMap.includes(a) && pointMap.includes(b))
+            .map(([a, b]) => [indices[pointMap.indexOf(a)], indices[pointMap.indexOf(b)]]);
+        result.push({ name: c.name, stars: indices, lines, center: c.center });
+    }
+    return result;
+}
 
 const PLANET_BODIES = ['Sun', 'Moon', 'Mercury', 'Venus', 'Mars', 'Jupiter', 'Saturn', 'Uranus', 'Neptune'];
 const PLANET_COLORS = {
@@ -340,16 +447,20 @@ function startMobile(THREE, data) {
     const canvas = document.getElementById('canvas');
     const maxCount = data.stars[0].c;
 
+    // --- Apply SF Constellations (override star positions) ---
+    const constellations = applyConstellations(data.stars);
+
     // --- Scene Setup ---
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
     const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    renderer.setClearColor(0x06080f);
+    renderer.setClearColor(0x0a0e2a);
 
-    // --- Star Geometry (top 100 for mobile performance + visibility) ---
-    const starCount = Math.min(100, data.stars.length);
+    // --- Star Geometry (all stars as points, labels limited) ---
+    const starCount = data.stars.length;
+    const constellationStarSet = new Set(constellations.flatMap(c => c.stars));
     const positions = new Float32Array(starCount * 3);
     const colors = new Float32Array(starCount * 3);
     const sizes = new Float32Array(starCount);
@@ -395,10 +506,16 @@ function startMobile(THREE, data) {
         fragmentShader: `
             varying vec3 vColor;
             void main() {
-                float d = length(gl_PointCoord - vec2(0.5));
+                vec2 p = gl_PointCoord - vec2(0.5);
+                float d = length(p);
                 if (d > 0.5) discard;
-                float glow = 1.0 - smoothstep(0.0, 0.5, d);
-                gl_FragColor = vec4(vColor * glow, glow);
+                float core = 1.0 - smoothstep(0.0, 0.12, d);
+                float glow = (1.0 - smoothstep(0.0, 0.5, d)) * 0.4;
+                float spikeH = exp(-abs(p.y) * 20.0) * exp(-abs(p.x) * 4.0);
+                float spikeV = exp(-abs(p.x) * 20.0) * exp(-abs(p.y) * 4.0);
+                float spikes = (spikeH + spikeV) * 0.5;
+                float brightness = core + spikes + glow;
+                gl_FragColor = vec4(vColor * brightness, brightness);
             }
         `,
         vertexColors: true,
@@ -409,8 +526,10 @@ function startMobile(THREE, data) {
     const starPoints = new THREE.Points(starGeom, starMat);
     scene.add(starPoints);
 
-    // --- Star Labels ---
-    const labelLimit = starCount;
+    // --- Star Labels (constellation stars + top 30 by frequency) ---
+    const labelIndices = new Set(constellationStarSet);
+    for (let i = 0; i < Math.min(30, starCount); i++) labelIndices.add(i);
+    const labelLimit = labelIndices.size;
     const labelSprites = [];
 
     function makeLabel(text, fontSize) {
@@ -431,7 +550,8 @@ function startMobile(THREE, data) {
         return sprite;
     }
 
-    for (let i = 0; i < labelLimit; i++) {
+    const labelIndexArray = [...labelIndices];
+    for (const i of labelIndexArray) {
         const { size } = starVisuals(data.stars[i].c, maxCount);
         const fontSize = Math.max(12, Math.round(size * 2.5));
         const sprite = makeLabel(data.stars[i].w, fontSize);
@@ -441,9 +561,74 @@ function startMobile(THREE, data) {
             positions[idx + 1] * 1.01 - size / 8,
             positions[idx + 2] * 1.01
         );
+        sprite.userData = { starIndex: i };
         scene.add(sprite);
         labelSprites.push(sprite);
     }
+
+    // --- Constellation Lines & Names ---
+    const constellationGroup = new THREE.Group();
+    constellationGroup.name = 'constellations';
+    scene.add(constellationGroup);
+
+    function updateConstellationLines(date) {
+        while (constellationGroup.children.length > 0) {
+            const child = constellationGroup.children[0];
+            if (child.geometry) child.geometry.dispose();
+            if (child.material) {
+                if (child.material.map) child.material.map.dispose();
+                child.material.dispose();
+            }
+            constellationGroup.remove(child);
+        }
+
+        const allCoords = getStarHorizontalCoords(data.stars, date);
+
+        for (const c of constellations) {
+            // Draw lines
+            const linePoints = [];
+            for (const [a, b] of c.lines) {
+                const azA = allCoords[a * 2], altA = allCoords[a * 2 + 1];
+                const azB = allCoords[b * 2], altB = allCoords[b * 2 + 1];
+                const pA = skyToXYZ(azA, altA, SKY_RADIUS * 0.995);
+                const pB = skyToXYZ(azB, altB, SKY_RADIUS * 0.995);
+                linePoints.push(new THREE.Vector3(pA.x, pA.y, pA.z));
+                linePoints.push(new THREE.Vector3(pB.x, pB.y, pB.z));
+            }
+            if (linePoints.length > 0) {
+                const lineGeom = new THREE.BufferGeometry().setFromPoints(linePoints);
+                const lineMat = new THREE.LineBasicMaterial({
+                    color: 0x4466aa, transparent: true, opacity: 0.25,
+                });
+                const lineObj = new THREE.LineSegments(lineGeom, lineMat);
+                constellationGroup.add(lineObj);
+            }
+
+            // Constellation name at center
+            if (c.stars.length > 0) {
+                const centerHor = Astronomy.Horizon(date, observer, c.center.ra, c.center.dec, 'normal');
+                const cp = skyToXYZ(centerHor.azimuth, centerHor.altitude, SKY_RADIUS * 0.97);
+                const nameCnv = document.createElement('canvas');
+                const nameCtx = nameCnv.getContext('2d');
+                nameCtx.font = '18px Georgia';
+                const tw = nameCtx.measureText(c.name).width + 8;
+                nameCnv.width = tw; nameCnv.height = 28;
+                nameCtx.font = '18px Georgia';
+                nameCtx.fillStyle = '#6688bb';
+                nameCtx.globalAlpha = 0.35;
+                nameCtx.textAlign = 'center';
+                nameCtx.fillText(c.name, tw / 2, 20);
+                const nameTex = new THREE.CanvasTexture(nameCnv);
+                nameTex.minFilter = THREE.LinearFilter;
+                const nameMat = new THREE.SpriteMaterial({ map: nameTex, transparent: true, depthWrite: false });
+                const nameSprite = new THREE.Sprite(nameMat);
+                nameSprite.scale.set(tw / 8, 28 / 8, 1);
+                nameSprite.position.set(cp.x, cp.y - 5, cp.z);
+                constellationGroup.add(nameSprite);
+            }
+        }
+    }
+    updateConstellationLines(now);
 
     // --- Celestial Bodies ---
     const bodyMeshes = [];
@@ -639,6 +824,7 @@ function startMobile(THREE, data) {
             const d = new Date();
             updateBodies(d);
             updateEcliptic(d);
+            updateConstellationLines(d);
             const coords = getStarHorizontalCoords(data.stars, d);
             for (let i = 0; i < starCount; i++) {
                 const pos = skyToXYZ(coords[i * 2], coords[i * 2 + 1], SKY_RADIUS);
@@ -647,11 +833,12 @@ function startMobile(THREE, data) {
                 positions[i * 3 + 2] = pos.z;
             }
             starGeom.attributes.position.needsUpdate = true;
-            for (let i = 0; i < labelLimit; i++) {
-                const idx = i * 3;
-                labelSprites[i].position.set(
+            for (let li = 0; li < labelSprites.length; li++) {
+                const si = labelSprites[li].userData.starIndex;
+                const idx = si * 3;
+                labelSprites[li].position.set(
                     positions[idx] * 1.01,
-                    positions[idx + 1] * 1.01 - sizes[i] / 24,
+                    positions[idx + 1] * 1.01 - sizes[si] / 24,
                     positions[idx + 2] * 1.01
                 );
             }
@@ -673,6 +860,9 @@ function startDesktop(d3, data) {
     const ctx = canvas.getContext('2d');
     const maxCount = data.stars[0].c;
     const labelLimit = Math.min(500, data.stars.length);
+
+    // --- Apply SF Constellations (override star positions) ---
+    const constellations = applyConstellations(data.stars);
 
     let width = window.innerWidth;
     let height = window.innerHeight;
@@ -736,7 +926,7 @@ function startDesktop(d3, data) {
     function render() {
         ctx.save();
         ctx.clearRect(0, 0, width, height);
-        ctx.fillStyle = '#080c18';
+        ctx.fillStyle = '#0a0e2a';
         ctx.fillRect(0, 0, width, height);
 
         // Apply zoom transform
@@ -840,6 +1030,36 @@ function startDesktop(d3, data) {
             }
         }
         ctx.globalAlpha = 1;
+
+        // Constellation lines & names
+        for (const c of constellations) {
+            ctx.strokeStyle = 'rgba(68,102,170,0.25)';
+            ctx.lineWidth = 0.8;
+            ctx.setLineDash([]);
+            for (const [a, b] of c.lines) {
+                const sa = starScreenPos[a];
+                const sb = starScreenPos[b];
+                if (!sa || !sb || sa.alt < -5 || sb.alt < -5) continue;
+                ctx.beginPath();
+                ctx.moveTo(sa.x, sa.y);
+                ctx.lineTo(sb.x, sb.y);
+                ctx.stroke();
+            }
+            // Name at center
+            if (c.stars.length > 0) {
+                const now = new Date();
+                const centerHor = Astronomy.Horizon(now, observer, c.center.ra, c.center.dec, 'normal');
+                if (centerHor.altitude > -5) {
+                    const { x, y } = project(centerHor.azimuth, centerHor.altitude);
+                    ctx.globalAlpha = 0.35;
+                    ctx.fillStyle = '#6688bb';
+                    ctx.font = '12px Georgia';
+                    ctx.textAlign = 'center';
+                    ctx.fillText(c.name, x, y - 12);
+                    ctx.globalAlpha = 1;
+                }
+            }
+        }
 
         // Celestial bodies
         for (const b of bodyScreenPos) {
