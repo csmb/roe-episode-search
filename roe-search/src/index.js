@@ -61,7 +61,12 @@ export default {
 		}
 		if (url.pathname === '/stars') {
 			return new Response(STARS_HTML, {
-				headers: { 'Content-Type': 'text/html; charset=utf-8' },
+				headers: {
+					'Content-Type': 'text/html; charset=utf-8',
+					'X-Frame-Options': 'DENY',
+					'X-Content-Type-Options': 'nosniff',
+					'Content-Security-Policy': "default-src 'self'; script-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'",
+				},
 			});
 		}
 		if (url.pathname === '/api/map-places') {
@@ -647,9 +652,13 @@ async function handleStars(env) {
 		if (!obj) {
 			return json({ error: 'Star data not generated yet' }, 404);
 		}
+		if (obj.size > 2 * 1024 * 1024) {
+			return json({ error: 'Star data too large' }, 500);
+		}
 		return new Response(obj.body, {
 			headers: {
 				'Content-Type': 'application/json',
+				'Content-Length': obj.size,
 				'Access-Control-Allow-Origin': '*',
 				'Cache-Control': 'public, max-age=86400',
 			},
