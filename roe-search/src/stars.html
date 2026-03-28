@@ -2,8 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Stars - Roll Over Easy</title>
+<meta name="description" content="Every word spoken on Roll Over Easy, scattered as stars in the night sky above San Francisco">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>☕</text></svg>">
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -20,7 +21,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #06080f; c
     font-size: 28px; color: rgba(255,245,210,0.9); letter-spacing: 1px;
 }
 #splash .desc {
-    font-size: 14px; color: rgba(255,255,255,0.35);
+    font-size: 14px; color: rgba(255,245,210,0.6);
     margin-top: 10px; max-width: 280px; line-height: 1.5;
 }
 #splash .begin-btn {
@@ -31,12 +32,20 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #06080f; c
     transition: background 0.2s, border-color 0.2s;
 }
 #splash .begin-btn:active { background: rgba(255,230,150,0.1); border-color: rgba(255,230,150,0.5); }
-#splash .note { font-size: 11px; color: rgba(255,255,255,0.18); margin-top: 14px; }
+#splash .begin-btn:focus-visible { outline: 2px solid rgba(255,230,150,0.7); outline-offset: 3px; }
+#splash .note { font-size: 11px; color: rgba(255,255,255,0.45); margin-top: 14px; }
 #splash .back-link {
     position: absolute; top: 16px; left: 16px;
-    font-size: 13px; color: rgba(255,255,255,0.25); text-decoration: none;
+    font-size: 13px; color: rgba(255,255,255,0.55); text-decoration: none;
 }
-#splash .back-link:hover { color: rgba(255,255,255,0.5); }
+#splash .back-link:hover { color: rgba(255,255,255,0.7); }
+
+/* --- Persistent Nav (visible after splash) --- */
+#nav-home {
+    display: none; position: fixed; top: 14px; left: 14px; z-index: 45;
+    color: rgba(255,255,255,0.45); text-decoration: none; font-size: 13px;
+}
+#nav-home:hover { color: rgba(255,255,255,0.7); }
 
 /* --- Sky Container --- */
 #sky { position: fixed; inset: 0; }
@@ -60,15 +69,15 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #06080f; c
 /* --- Compass --- */
 #compass {
     position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%); z-index: 40;
-    color: rgba(255,255,255,0.2); font-size: 10px; letter-spacing: 2px;
+    color: rgba(255,255,255,0.35); font-size: 12px; letter-spacing: 2px;
     pointer-events: none;
 }
-#compass .active { color: rgba(255,255,255,0.4); }
+#compass .active { color: rgba(255,230,150,0.7); }
 
 /* --- Desktop Legend --- */
 #legend {
     display: none; position: fixed; top: 20px; right: 20px; z-index: 40;
-    color: rgba(255,255,255,0.3); font-size: 11px; line-height: 2;
+    color: rgba(255,255,255,0.55); font-size: 11px; line-height: 2;
 }
 #legend .swatch {
     display: inline-block; border-radius: 50%; vertical-align: middle; margin-right: 6px;
@@ -79,10 +88,10 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #06080f; c
     display: none; position: fixed; bottom: 0; left: 0; right: 0; z-index: 40;
     padding: 10px 20px;
     background: rgba(8,12,24,0.8); border-top: 1px solid rgba(100,120,180,0.08);
-    font-size: 11px; color: rgba(255,255,255,0.25);
+    font-size: 12px; color: rgba(255,255,255,0.5);
     justify-content: space-between; align-items: center;
 }
-#bottom-bar .mobile-hint { color: rgba(255,200,80,0.4); }
+#bottom-bar .mobile-hint { color: rgba(255,200,80,0.55); }
 
 /* --- Loading --- */
 #loading {
@@ -94,31 +103,34 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #06080f; c
 </head>
 <body>
 
+<!-- Persistent nav (shown after splash dismisses) -->
+<a href="/" id="nav-home" aria-label="Back to Roll Over Easy homepage">&larr; Roll Over Easy</a>
+
 <!-- Splash / Permission Screen -->
-<div id="splash">
-    <a href="/" class="back-link">&larr; Roll Over Easy</a>
-    <div class="title">Stellar Lexicon</div>
-    <div class="desc">Every word ever spoken on Roll Over Easy, scattered across the night sky above San Francisco</div>
-    <button class="begin-btn" id="beginBtn">Tap to look up</button>
+<div id="splash" role="dialog" aria-labelledby="splashTitle" aria-describedby="splashDesc">
+    <a href="/" class="back-link" aria-label="Back to Roll Over Easy homepage">&larr; Roll Over Easy</a>
+    <div class="title" id="splashTitle">Stellar Lexicon</div>
+    <div class="desc" id="splashDesc">Every word ever spoken on Roll Over Easy, scattered across the night sky above San Francisco</div>
+    <button class="begin-btn" id="beginBtn" aria-label="Enter the Stellar Lexicon star visualization">Tap to look up</button>
     <div class="note" id="splashNote"></div>
 </div>
 
 <!-- Loading -->
-<div id="loading">Loading stars...</div>
+<div id="loading" role="status" aria-live="polite">Loading stars...</div>
 
 <!-- Sky Canvas -->
 <div id="sky" style="display:none;">
-    <canvas id="canvas"></canvas>
+    <canvas id="canvas" role="img" aria-label="Interactive star chart showing the most frequently spoken words on Roll Over Easy as stars in the night sky" tabindex="0"></canvas>
 </div>
 
 <!-- Tooltip -->
-<div id="tooltip">
+<div id="tooltip" role="tooltip" aria-live="assertive">
     <div class="word" id="tipWord"></div>
     <div class="count" id="tipCount"></div>
 </div>
 
 <!-- Compass (mobile) -->
-<div id="compass" style="display:none;">
+<div id="compass" style="display:none;" role="status" aria-live="polite" aria-label="Compass direction">
     <span id="cW">W</span> &bull;
     <span id="cDir" class="active">S</span> &bull;
     <span id="cE">E</span>
@@ -255,27 +267,15 @@ function hideTooltip() {
 // ============================================================
 
 const isMobile = 'ontouchstart' in window && window.innerWidth < 1024;
+const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-document.getElementById('beginBtn').textContent = isMobile ? 'Tap to look up' : 'Enter';
+document.getElementById('beginBtn').textContent = isMobile ? 'Tap to look up' : 'Explore the sky';
 document.getElementById('splashNote').textContent = isMobile ? 'Requires motion sensor access' : 'Interactive star chart';
 
-document.getElementById('beginBtn').addEventListener('click', async () => {
-    // iOS gyroscope permission
-    if (isMobile && typeof DeviceOrientationEvent.requestPermission === 'function') {
-        try {
-            const perm = await DeviceOrientationEvent.requestPermission();
-            if (perm !== 'granted') {
-                document.getElementById('splashNote').textContent = 'Permission denied — using touch controls instead';
-                // Fall through to mobile init with touch fallback
-            }
-        } catch (e) {
-            document.getElementById('splashNote').textContent = 'Using touch controls';
-        }
-    }
-
-    // Show loading, hide splash
+async function launchVisualization() {
     document.getElementById('splash').style.display = 'none';
     document.getElementById('loading').style.display = 'flex';
+    document.getElementById('nav-home').style.display = 'block';
 
     try {
         const data = await loadStars();
@@ -284,7 +284,7 @@ document.getElementById('beginBtn').addEventListener('click', async () => {
 
         if (isMobile) {
             document.getElementById('compass').style.display = 'block';
-            const { initMobile } = await import('https://unpkg.com/three@0.169.0/build/three.module.js')
+            const { initMobile } = await import('https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js/+esm')
                 .then(THREE => {
                     window.THREE = THREE;
                     return { initMobile: () => startMobile(THREE, data) };
@@ -298,9 +298,33 @@ document.getElementById('beginBtn').addEventListener('click', async () => {
             });
         }
     } catch (err) {
-        document.getElementById('loading').textContent = 'Failed to load — try refreshing';
+        const loading = document.getElementById('loading');
+        loading.innerHTML = '<div style="text-align:center;"><div style="color:rgba(255,200,80,0.7);">Failed to load star data</div><button id="retryBtn" style="margin-top:16px;padding:10px 28px;border:1px solid rgba(255,230,150,0.3);border-radius:20px;background:rgba(255,230,150,0.04);color:rgba(255,245,210,0.8);font-size:14px;cursor:pointer;">Try again</button></div>';
+        document.getElementById('retryBtn').addEventListener('click', launchVisualization);
         console.error(err);
     }
+}
+
+document.getElementById('beginBtn').addEventListener('click', async () => {
+    // iOS gyroscope permission
+    if (isMobile && typeof DeviceOrientationEvent.requestPermission === 'function') {
+        try {
+            const perm = await DeviceOrientationEvent.requestPermission();
+            if (perm !== 'granted') {
+                document.getElementById('splashNote').textContent = 'Permission denied — using touch controls instead';
+                document.getElementById('beginBtn').textContent = 'Continue with touch controls';
+                document.getElementById('beginBtn').onclick = launchVisualization;
+                return; // Wait for second tap
+            }
+        } catch (e) {
+            document.getElementById('splashNote').textContent = 'Using touch controls';
+            document.getElementById('beginBtn').textContent = 'Continue with touch controls';
+            document.getElementById('beginBtn').onclick = launchVisualization;
+            return;
+        }
+    }
+
+    launchVisualization();
 });
 
 // ============================================================
@@ -532,7 +556,7 @@ function startMobile(THREE, data) {
         q0.setFromAxisAngle(new THREE.Vector3(0, 0, 1), -orient);
         targetQuat.multiply(q0);
 
-        camera.quaternion.slerp(targetQuat, 0.3);
+        camera.quaternion.slerp(targetQuat, prefersReducedMotion ? 1.0 : 0.3);
     }
 
     // --- Touch-Drag Fallback ---
@@ -551,8 +575,8 @@ function startMobile(THREE, data) {
         e.preventDefault();
         const dx = e.touches[0].clientX - touchStartX;
         const dy = e.touches[0].clientY - touchStartY;
-        yaw -= dx * 0.003;
-        pitch -= dy * 0.003;
+        yaw -= dx * 0.005;
+        pitch -= dy * 0.005;
         pitch = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, pitch));
         camera.rotation.set(pitch, yaw, 0, 'YXZ');
         touchStartX = e.touches[0].clientX;
@@ -606,7 +630,7 @@ function startMobile(THREE, data) {
         updateCompass();
 
         const elapsed = Date.now() - lastBodyUpdate;
-        if (elapsed > BODY_UPDATE_MS) {
+        if (!prefersReducedMotion && elapsed > BODY_UPDATE_MS) {
             const d = new Date();
             updateBodies(d);
             updateEcliptic(d);
@@ -896,6 +920,20 @@ function startDesktop(d3, data) {
 
     canvas.style.cursor = 'grab';
 
+    // --- Keyboard Support ---
+    canvas.addEventListener('keydown', (e) => {
+        const PAN = 50, ZOOM_STEP = 0.15;
+        switch (e.key) {
+            case 'ArrowLeft':  transform = transform.translate(PAN, 0); render(); e.preventDefault(); break;
+            case 'ArrowRight': transform = transform.translate(-PAN, 0); render(); e.preventDefault(); break;
+            case 'ArrowUp':    transform = transform.translate(0, PAN); render(); e.preventDefault(); break;
+            case 'ArrowDown':  transform = transform.translate(0, -PAN); render(); e.preventDefault(); break;
+            case '+': case '=': transform = transform.scale(1 + ZOOM_STEP); render(); e.preventDefault(); break;
+            case '-': case '_': transform = transform.scale(1 - ZOOM_STEP); render(); e.preventDefault(); break;
+            case 'Escape': hideTooltip(); break;
+        }
+    });
+
     // --- Resize ---
     window.addEventListener('resize', () => {
         resize();
@@ -907,10 +945,12 @@ function startDesktop(d3, data) {
     });
 
     // --- Periodic position update (Earth rotation) ---
-    setInterval(() => {
-        updatePositions();
-        render();
-    }, 30000);
+    if (!prefersReducedMotion) {
+        setInterval(() => {
+            updatePositions();
+            render();
+        }, 30000);
+    }
 }
 </script>
 </body>
