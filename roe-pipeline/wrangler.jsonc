@@ -1,0 +1,71 @@
+{
+  "name": "roe-pipeline",
+  "main": "src/index.js",
+  "compatibility_date": "2024-12-01",
+
+  // D1 — same database as roe-search
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "roe-episodes",
+      "database_id": "cc7207a0-a581-4d3a-9c8f-12597b1ab46d"
+    }
+  ],
+
+  // R2 — same bucket, also the event source
+  "r2_buckets": [
+    {
+      "binding": "AUDIO_BUCKET",
+      "bucket_name": "roe-audio"
+    }
+  ],
+
+  // Vectorize — same index as roe-search
+  "vectorize": [
+    {
+      "binding": "VECTORIZE",
+      "index_name": "roe-transcripts"
+    }
+  ],
+
+  // Workers AI — for embedding generation
+  "ai": {
+    "binding": "AI"
+  },
+
+  // Durable Object for pipeline orchestration
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "EPISODE_PIPELINE",
+        "class_name": "EpisodePipeline"
+      }
+    ]
+  },
+
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_classes": ["EpisodePipeline"]
+    }
+  ],
+
+  // Queue consumer for R2 event notifications
+  "queues": {
+    "consumers": [
+      {
+        "queue": "roe-pipeline-queue",
+        "max_batch_size": 1,
+        "max_retries": 3
+      }
+    ]
+  },
+
+  "vars": {
+    "R2_PUBLIC_URL": "https://pub-e95bd2be3f9d4147b2955503d75e50c1.r2.dev"
+  },
+
+  "observability": {
+    "enabled": true
+  }
+}
