@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Stars - Roll Over Easy</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>☕</text></svg>">
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: #06080f; color: #fff; }
+
+/* --- Splash / Permission Screen --- */
+#splash {
+    position: fixed; inset: 0; z-index: 100;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    background: #06080f; text-align: center; padding: 30px;
+}
+#splash .title {
+    font-family: Georgia, 'Times New Roman', serif;
+    font-size: 28px; color: rgba(255,245,210,0.9); letter-spacing: 1px;
+}
+#splash .desc {
+    font-size: 14px; color: rgba(255,255,255,0.35);
+    margin-top: 10px; max-width: 280px; line-height: 1.5;
+}
+#splash .begin-btn {
+    margin-top: 44px; padding: 14px 40px;
+    border: 1px solid rgba(255,230,150,0.3); border-radius: 24px;
+    background: rgba(255,230,150,0.04); color: rgba(255,245,210,0.8);
+    font-size: 15px; letter-spacing: 0.5px; cursor: pointer;
+    transition: background 0.2s, border-color 0.2s;
+}
+#splash .begin-btn:active { background: rgba(255,230,150,0.1); border-color: rgba(255,230,150,0.5); }
+#splash .note { font-size: 11px; color: rgba(255,255,255,0.18); margin-top: 14px; }
+#splash .back-link {
+    position: absolute; top: 16px; left: 16px;
+    font-size: 13px; color: rgba(255,255,255,0.25); text-decoration: none;
+}
+#splash .back-link:hover { color: rgba(255,255,255,0.5); }
+
+/* --- Sky Container --- */
+#sky { position: fixed; inset: 0; }
+#sky canvas { display: block; width: 100%; height: 100%; }
+
+/* --- Tooltip --- */
+#tooltip {
+    display: none; position: fixed; z-index: 50;
+    background: rgba(15,15,30,0.88); border: 1px solid rgba(255,230,150,0.25);
+    border-radius: 8px; padding: 8px 14px;
+    backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+    pointer-events: none;
+}
+#tooltip .word {
+    font-family: Georgia, serif; font-size: 15px; color: #fff; letter-spacing: 0.5px;
+}
+#tooltip .count {
+    font-size: 11px; color: rgba(255,230,150,0.65); margin-top: 2px;
+}
+
+/* --- Compass --- */
+#compass {
+    position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%); z-index: 40;
+    color: rgba(255,255,255,0.2); font-size: 10px; letter-spacing: 2px;
+    pointer-events: none;
+}
+#compass .active { color: rgba(255,255,255,0.4); }
+
+/* --- Desktop Legend --- */
+#legend {
+    display: none; position: fixed; top: 20px; right: 20px; z-index: 40;
+    color: rgba(255,255,255,0.3); font-size: 11px; line-height: 2;
+}
+#legend .swatch {
+    display: inline-block; border-radius: 50%; vertical-align: middle; margin-right: 6px;
+}
+
+/* --- Desktop Bottom Bar --- */
+#bottom-bar {
+    display: none; position: fixed; bottom: 0; left: 0; right: 0; z-index: 40;
+    padding: 10px 20px;
+    background: rgba(8,12,24,0.8); border-top: 1px solid rgba(100,120,180,0.08);
+    font-size: 11px; color: rgba(255,255,255,0.25);
+    justify-content: space-between; align-items: center;
+}
+#bottom-bar .mobile-hint { color: rgba(255,200,80,0.4); }
+
+/* --- Loading --- */
+#loading {
+    position: fixed; inset: 0; z-index: 90;
+    display: none; align-items: center; justify-content: center;
+    background: #06080f; color: rgba(255,255,255,0.3); font-size: 14px;
+}
+</style>
+</head>
+<body>
+
+<!-- Splash / Permission Screen -->
+<div id="splash">
+    <a href="/" class="back-link">&larr; Roll Over Easy</a>
+    <div class="title">Stellar Lexicon</div>
+    <div class="desc">Every word ever spoken on Roll Over Easy, scattered across the night sky above San Francisco</div>
+    <button class="begin-btn" id="beginBtn">Tap to look up</button>
+    <div class="note" id="splashNote"></div>
+</div>
+
+<!-- Loading -->
+<div id="loading">Loading stars...</div>
+
+<!-- Sky Canvas -->
+<div id="sky" style="display:none;">
+    <canvas id="canvas"></canvas>
+</div>
+
+<!-- Tooltip -->
+<div id="tooltip">
+    <div class="word" id="tipWord"></div>
+    <div class="count" id="tipCount"></div>
+</div>
+
+<!-- Compass (mobile) -->
+<div id="compass" style="display:none;">
+    <span id="cW">W</span> &bull;
+    <span id="cDir" class="active">S</span> &bull;
+    <span id="cE">E</span>
+</div>
+
+<!-- Legend (desktop) -->
+<div id="legend">
+    <div><span class="swatch" style="width:8px;height:8px;background:radial-gradient(circle,#fff,transparent);"></span> frequent</div>
+    <div><span class="swatch" style="width:4px;height:4px;background:rgba(255,255,255,0.4);margin-left:2px;"></span> moderate</div>
+    <div><span class="swatch" style="width:2px;height:2px;background:rgba(255,255,255,0.2);margin-left:3px;"></span> rare</div>
+    <div style="margin-top:8px;border-top:1px solid rgba(100,120,180,0.1);padding-top:8px;">
+        <div><span class="swatch" style="width:10px;height:10px;background:radial-gradient(circle at 40% 40%,#fef9e7,#c4b078);"></span> moon</div>
+        <div><span class="swatch" style="width:4px;height:4px;background:#ffeaa7;margin-left:3px;"></span> planet</div>
+        <div style="margin-top:4px;color:rgba(255,200,80,0.3);">- - - ecliptic</div>
+    </div>
+</div>
+
+<!-- Desktop Bottom Bar -->
+<div id="bottom-bar">
+    <span>Drag to rotate &bull; Scroll to zoom &bull; Hover for details</span>
+    <span class="mobile-hint">View on mobile for the full experience</span>
+</div>
+
+<!-- Astronomy Engine (global, both paths) -->
+<script src="https://cdn.jsdelivr.net/npm/astronomy-engine@2.1.19/astronomy.browser.min.js"></script>
+
+<script type="module">
+// ============================================================
+// Shared: Constants, data loading, astronomy helpers
+// ============================================================
+
+const SF_LAT = 37.7749;
+const SF_LON = -122.4194;
+const SKY_RADIUS = 500;
+const observer = new Astronomy.Observer(SF_LAT, SF_LON, 0);
+
+const PLANET_BODIES = ['Sun', 'Moon', 'Mercury', 'Venus', 'Mars', 'Jupiter', 'Saturn', 'Uranus', 'Neptune'];
+const PLANET_COLORS = {
+    Sun: '#fff4c0', Moon: '#fef9e7', Mercury: '#bbb', Venus: '#ffeaa7',
+    Mars: '#e17055', Jupiter: '#ffeaa7', Saturn: '#fad390', Uranus: '#74b9ff', Neptune: '#a29bfe',
+};
+const PLANET_SIZES = {
+    Sun: 16, Moon: 12, Mercury: 3, Venus: 5, Mars: 4, Jupiter: 5, Saturn: 5, Uranus: 3, Neptune: 3,
+};
+
+// --- Data Loading ---
+
+async function loadStars() {
+    const res = await fetch('/api/stars');
+    if (!res.ok) throw new Error('Failed to load star data');
+    return res.json();
+}
+
+// --- Astronomy Helpers ---
+
+function getCelestialBodies(date) {
+    const bodies = [];
+    for (const name of PLANET_BODIES) {
+        const equ = Astronomy.Equator(name, date, observer, true, true);
+        const hor = Astronomy.Horizon(date, observer, equ.ra, equ.dec, 'normal');
+        bodies.push({
+            name, azimuth: hor.azimuth, altitude: hor.altitude,
+            color: PLANET_COLORS[name], size: PLANET_SIZES[name],
+        });
+    }
+    return bodies;
+}
+
+function getStarHorizontalCoords(stars, date) {
+    const coords = new Float32Array(stars.length * 2);
+    for (let i = 0; i < stars.length; i++) {
+        const hor = Astronomy.Horizon(date, observer, stars[i].ra, stars[i].dec, 'normal');
+        coords[i * 2] = hor.azimuth;
+        coords[i * 2 + 1] = hor.altitude;
+    }
+    return coords;
+}
+
+function getMoonPhase(date) {
+    return Astronomy.MoonPhase(date);  // 0-360 degrees
+}
+
+// Convert azimuth/altitude to 3D cartesian (Y=up, -Z=north)
+function skyToXYZ(azDeg, altDeg, r) {
+    const az = azDeg * Math.PI / 180;
+    const alt = altDeg * Math.PI / 180;
+    const y = r * Math.sin(alt);
+    const g = r * Math.cos(alt);
+    const x = g * Math.sin(az);
+    const z = -g * Math.cos(az);
+    return { x, y, z };
+}
+
+// Star visual properties from count
+function starVisuals(count, maxCount) {
+    const t = Math.log(count) / Math.log(maxCount); // 0-1 log-normalized
+    const size = 1 + t * 11;         // 1-12 px
+    const opacity = 0.15 + t * 0.85; // 0.15-1.0
+    return { size, opacity };
+}
+
+// Deterministic star color from word hash (warm gold to cool blue)
+function starColor(word) {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < word.length; i++) {
+        h ^= word.charCodeAt(i);
+        h = Math.imul(h, 0x01000193);
+    }
+    h = h >>> 0;
+    const hue = 30 + (h % 200);  // 30 (warm gold) to 230 (cool blue)
+    const sat = 20 + (h % 40);   // 20-60% saturation (subtle tinting)
+    return `hsl(${hue}, ${sat}%, 90%)`;
+}
+
+// Compass direction from camera azimuth
+function compassDir(azimuth) {
+    const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+    return dirs[Math.round(azimuth / 45) % 8];
+}
+
+// --- Tooltip ---
+
+function showTooltip(word, count, x, y) {
+    const tip = document.getElementById('tooltip');
+    document.getElementById('tipWord').textContent = word;
+    document.getElementById('tipCount').textContent = `spoken ${count.toLocaleString()} times`;
+    tip.style.display = 'block';
+    tip.style.left = Math.min(x + 12, window.innerWidth - 180) + 'px';
+    tip.style.top = Math.min(y - 40, window.innerHeight - 60) + 'px';
+}
+
+function hideTooltip() {
+    document.getElementById('tooltip').style.display = 'none';
+}
+
+// ============================================================
+// Device Detection & Init
+// ============================================================
+
+const isMobile = 'ontouchstart' in window && window.innerWidth < 1024;
+
+document.getElementById('beginBtn').textContent = isMobile ? 'Tap to look up' : 'Enter';
+document.getElementById('splashNote').textContent = isMobile ? 'Requires motion sensor access' : 'Interactive star chart';
+
+document.getElementById('beginBtn').addEventListener('click', async () => {
+    // iOS gyroscope permission
+    if (isMobile && typeof DeviceOrientationEvent.requestPermission === 'function') {
+        try {
+            const perm = await DeviceOrientationEvent.requestPermission();
+            if (perm !== 'granted') {
+                document.getElementById('splashNote').textContent = 'Permission denied — using touch controls instead';
+                // Fall through to mobile init with touch fallback
+            }
+        } catch (e) {
+            document.getElementById('splashNote').textContent = 'Using touch controls';
+        }
+    }
+
+    // Show loading, hide splash
+    document.getElementById('splash').style.display = 'none';
+    document.getElementById('loading').style.display = 'flex';
+
+    try {
+        const data = await loadStars();
+        document.getElementById('loading').style.display = 'none';
+        document.getElementById('sky').style.display = 'block';
+
+        if (isMobile) {
+            document.getElementById('compass').style.display = 'block';
+            const { initMobile } = await import('https://unpkg.com/three@0.169.0/build/three.module.js')
+                .then(THREE => {
+                    window.THREE = THREE;
+                    return { initMobile: () => startMobile(THREE, data) };
+                });
+            initMobile();
+        } else {
+            document.getElementById('legend').style.display = 'block';
+            document.getElementById('bottom-bar').style.display = 'flex';
+            await import('https://cdn.jsdelivr.net/npm/d3@7/+esm').then(d3 => {
+                startDesktop(d3, data);
+            });
+        }
+    } catch (err) {
+        document.getElementById('loading').textContent = 'Failed to load — try refreshing';
+        console.error(err);
+    }
+});
+
+// ============================================================
+// MOBILE: Three.js Planetarium (placeholder — implemented in Task 4)
+// ============================================================
+
+function startMobile(THREE, data) {
+    console.log('Mobile renderer: loaded', data.stars.length, 'stars');
+    // Task 4 fills this in
+}
+
+// ============================================================
+// DESKTOP: D3 Planisphere (placeholder — implemented in Task 5)
+// ============================================================
+
+function startDesktop(d3, data) {
+    console.log('Desktop renderer: loaded', data.stars.length, 'stars');
+    // Task 5 fills this in
+}
+</script>
+</body>
+</html>

@@ -3,6 +3,7 @@ import EPISODES_HTML from './episodes.html';
 import GUESTS_HTML from './guests.html';
 import ADMIN_HTML from './admin.html';
 import MAP_HTML from './map.html';
+import STARS_HTML from './stars.html';
 
 export default {
 	async fetch(request, env) {
@@ -25,6 +26,9 @@ export default {
 		}
 		if (url.pathname === '/api/guests') {
 			return handleGuests(env);
+		}
+		if (url.pathname === '/api/stars') {
+			return handleStars(env);
 		}
 		if (url.pathname.startsWith('/api/episode/')) {
 			const rest = url.pathname.slice('/api/episode/'.length);
@@ -52,6 +56,11 @@ export default {
 		}
 		if (url.pathname === '/map') {
 			return new Response(MAP_HTML, {
+				headers: { 'Content-Type': 'text/html; charset=utf-8' },
+			});
+		}
+		if (url.pathname === '/stars') {
+			return new Response(STARS_HTML, {
 				headers: { 'Content-Type': 'text/html; charset=utf-8' },
 			});
 		}
@@ -630,6 +639,24 @@ async function handleMapPlaces(env) {
 
 	const total_mentions = places.reduce((s, p) => s + p.episode_count, 0);
 	return json({ places, total_mentions });
+}
+
+async function handleStars(env) {
+	try {
+		const obj = await env.AUDIO.get('data/stars.json');
+		if (!obj) {
+			return json({ error: 'Star data not generated yet' }, 404);
+		}
+		return new Response(obj.body, {
+			headers: {
+				'Content-Type': 'application/json',
+				'Access-Control-Allow-Origin': '*',
+				'Cache-Control': 'public, max-age=86400',
+			},
+		});
+	} catch (err) {
+		return json({ error: 'Failed to load star data' }, 500);
+	}
 }
 
 function json(data, status = 200) {
