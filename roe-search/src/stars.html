@@ -175,7 +175,7 @@ const PLANET_COLORS = {
     Mars: '#e17055', Jupiter: '#ffeaa7', Saturn: '#fad390', Uranus: '#74b9ff', Neptune: '#a29bfe',
 };
 const PLANET_SIZES = {
-    Sun: 16, Moon: 12, Mercury: 3, Venus: 5, Mars: 4, Jupiter: 5, Saturn: 5, Uranus: 3, Neptune: 3,
+    Sun: 100, Moon: 80, Mercury: 20, Venus: 35, Mars: 28, Jupiter: 35, Saturn: 35, Uranus: 20, Neptune: 20,
 };
 
 // --- Data Loading ---
@@ -348,8 +348,8 @@ function startMobile(THREE, data) {
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setClearColor(0x06080f);
 
-    // --- Star Geometry ---
-    const starCount = data.stars.length;
+    // --- Star Geometry (top 100 for mobile performance + visibility) ---
+    const starCount = Math.min(100, data.stars.length);
     const positions = new Float32Array(starCount * 3);
     const colors = new Float32Array(starCount * 3);
     const sizes = new Float32Array(starCount);
@@ -366,7 +366,7 @@ function startMobile(THREE, data) {
         positions[i * 3 + 2] = pos.z;
 
         const { size, opacity } = starVisuals(data.stars[i].c, maxCount);
-        sizes[i] = size * 3; // Scale up for point sprites
+        sizes[i] = size * 8; // Scale up for point sprites
 
         // Parse star color
         const col = new THREE.Color(starColor(data.stars[i].w));
@@ -409,8 +409,8 @@ function startMobile(THREE, data) {
     const starPoints = new THREE.Points(starGeom, starMat);
     scene.add(starPoints);
 
-    // --- Star Labels (top 500 by rank — as sprites) ---
-    const labelLimit = Math.min(500, starCount);
+    // --- Star Labels ---
+    const labelLimit = starCount;
     const labelSprites = [];
 
     function makeLabel(text, fontSize) {
