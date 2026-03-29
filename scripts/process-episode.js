@@ -695,6 +695,57 @@ async function generateEmbeddings(episodeId) {
 	timer.done(`${vectors.length} vectors`);
 }
 
+// ── Guest interview start detection ───────────────────────────────────
+
+function detectGuestStart(segments, guestNames) {
+	const MIN_START_MS = 3_000_000;
+	const SONG_DURATION_MS = 180_000;
+	const GAP_THRESHOLD_MS = 60_000;
+	const FALLBACK_MS = 3_600_000;
+
+	if (guestNames.length === 0) return null;
+
+	const late = segments.filter(s => s.start_ms >= MIN_START_MS);
+	if (late.length === 0) return null;
+
+	const breaks = [];
+	for (let i = 0; i < late.length; i++) {
+		const seg = late[i];
+		const duration = seg.end_ms - seg.start_ms;
+		if (duration >= SONG_DURATION_MS) {
+			breaks.push({ type: 'song', index: i, end_ms: seg.end_ms });
+		}
+		if (i > 0) {
+			const gap = seg.start_ms - late[i - 1].end_ms;
+			if (gap >= GAP_THRESHOLD_MS) {
+				breaks.push({ type: 'gap', index: i, end_ms: late[i - 1].end_ms });
+			}
+		}
+	}
+
+	const lowerNames = guestNames.map(n => n.toLowerCase());
+	function segmentMentionsGuest(seg) {
+		const text = seg.text.toLowerCase();
+		return lowerNames.some(name => text.includes(name));
+	}
+
+	if (breaks.length > 0) {
+		breaks.sort((a, b) => a.end_ms - b.end_ms);
+		const lastBreak = breaks[breaks.length - 1];
+		const afterBreak = late.filter(s => s.start_ms >= lastBreak.end_ms);
+		for (const seg of afterBreak) {
+			if (segmentMentionsGuest(seg)) return seg.start_ms;
+		}
+		if (afterBreak.length > 0) return afterBreak[0].start_ms;
+	}
+
+	for (const seg of late) {
+		if (segmentMentionsGuest(seg)) return seg.start_ms;
+	}
+
+	return FALLBACK_MS;
+}
+
 // ── Step 6: Generate summary ───────────────────────────────────────────
 
 function parseEpisodeDate(episodeId) {
@@ -860,6 +911,21 @@ async function generateSummary(episodeId, force) {
 			const name = guest.trim();
 			if (name) {
 				runSQL(`INSERT OR IGNORE INTO episode_guests (episode_id, guest_name) VALUES ('${escapeSQL(episodeId)}', '${escapeSQL(name)}')`);
+			}
+		}
+	}
+
+	// Detect guest interview start time
+	if (guests.length > 0) {
+		const transcriptPath = path.join(transcriptsDir, `${episodeId}.json`);
+		if (fs.existsSync(transcriptPath)) {
+			const transcriptData = JSON.parse(fs.readFileSync(transcriptPath, 'utf-8'));
+			const guestStartMs = detectGuestStart(transcriptData.segments, guests);
+			if (guestStartMs != null) {
+				runSQL(`UPDATE episodes SET guest_start_ms = ${guestStartMs} WHERE id = '${escapeSQL(episodeId)}'`);
+				const mins = Math.floor(guestStartMs / 60000);
+				const secs = Math.floor((guestStartMs % 60000) / 1000);
+				console.log(`  Guest interview starts at ${mins}:${String(secs).padStart(2, '0')}`);
 			}
 		}
 	}
