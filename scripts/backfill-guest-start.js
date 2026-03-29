@@ -221,6 +221,13 @@ async function main() {
 			continue;
 		}
 
+		// Sanity check: some older transcripts have inflated timestamps
+		if (ep.duration_ms && startMs > ep.duration_ms) {
+			console.log(`  ${episode_id}: SKIPPED — detected ${startMs}ms exceeds duration ${ep.duration_ms}ms`);
+			skipped++;
+			continue;
+		}
+
 		const minutes = Math.floor(startMs / 60000);
 		const seconds = Math.floor((startMs % 60000) / 1000);
 		const timestamp = `${minutes}:${String(seconds).padStart(2, '0')}`;
