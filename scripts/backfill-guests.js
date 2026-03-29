@@ -93,7 +93,7 @@ async function extractGuests(transcriptText) {
 						'You extract guest names from transcripts of "Roll Over Easy," a live morning radio show on BFF.fm in San Francisco.',
 						'',
 						'Respond with a JSON object containing one field:',
-						'"guests": An array of guest full names who appeared on the episode. Exclude the host Sequoia. Return an empty array if there are no guests.',
+						'"guests": An array of guest full names who appeared on the episode. Exclude the hosts Sequoia and The Early Bird. Return an empty array if there are no guests.',
 						'',
 						'Only include people who are actually on the show as guests (interviewed, in-studio, called in). Do not include people who are merely mentioned or discussed.',
 					].join('\n'),

@@ -6,7 +6,8 @@
  *   2. Seed D1 database
  *   3. Generate embeddings → Vectorize
  *   4. Generate AI summary
- *   5. Upload audio → R2
+ *   5. Extract & seed SF places
+ *   6. Upload audio → R2
  *
  * Usage:
  *   node scripts/process-episode.js /path/to/roll-over-easy_2026-02-16_07-30-00.mp3
@@ -14,7 +15,7 @@
  * Options:
  *   --episode-id ID          Override auto-parsed episode ID
  *   --force                  Re-run all steps even if already done
- *   --skip step1,step2       Skip specific steps (transcribe, seed-db, embeddings, summary, upload-audio)
+ *   --skip step1,step2       Skip specific steps (transcribe, seed-db, embeddings, summary, extract-places, upload-audio)
  */
 
 import { execSync, execFileSync } from 'node:child_process';
@@ -74,6 +75,8 @@ const SF_VOCAB_PROMPT = [
 	'Hamburger Haven, Club Fugazi, Manny\'s, The Lab, Spin City, Parklab,',
 	'La Cocina, Bi-Rite, Tartine, Humphry Slocombe, Lazy Bear, Toronado,',
 	'Wesburger, The New Wheel, Laughing Monk,',
+	// Hosts
+	'Sequoia, The Early Bird,',
 	// People & characters
 	'Emperor Norton, Herb Caen, Cosmic Amanda, Dr. Guacamole,',
 	// Organizations & media
@@ -349,11 +352,19 @@ function cleanSegments(segments) {
 	for (const [text, count] of freq) {
 		if (count > threshold) hallucinated.add(text);
 	}
-	if (hallucinated.size > 0) {
-		return cleaned.filter(seg => !hallucinated.has(seg.text.trim().toLowerCase()));
+	const result = hallucinated.size > 0
+		? cleaned.filter(seg => !hallucinated.has(seg.text.trim().toLowerCase()))
+		: cleaned;
+
+	// Fix common Whisper mishearings of host name "Early Bird"
+	for (const seg of result) {
+		seg.text = seg.text.replace(
+			/\b(nearly|yearly|really|eerily|dearly)\s+(bird|beard)\b/gi,
+			'Early Bird'
+		);
 	}
 
-	return cleaned;
+	return result;
 }
 
 /**
@@ -765,11 +776,11 @@ async function generateSummary(episodeId, force) {
 		'',
 		'2. "summary": A concise summary in this format:',
 		'   Line 1: The weather/vibe that morning (if mentioned — fog, sun, rain, cold, etc.). If not mentioned, skip this line.',
-		'   Line 2: Who joined the show — name guests and briefly note who they are.',
+		'   Line 2: Who joined the show — name any guests who came on for a segment and briefly note who they are. The show is live on location, so random passersby sometimes hop on the mic for a few seconds to a few minutes — mention these folks too if they say something memorable or funny.',
 		'   Line 3-4: What stories and topics came up — San Francisco news, local culture, neighborhood happenings, food, music, etc.',
-		'   Keep a warm, San Francisco tone. Use 2-4 sentences total. Do not use bullet points or labels like "Weather:" — just weave it naturally.',
+		'   Keep a warm, San Francisco tone. Use 2-5 sentences total. Do not use bullet points or labels like "Weather:" — just weave it naturally.',
 		'',
-		'3. "guests": An array of guest full names mentioned in the episode. Exclude the host Sequoia. Return an empty array if there are no guests.',
+		'3. "guests": An array of guest full names mentioned in the episode. Exclude the hosts Sequoia and The Early Bird. Return an empty array if there are no guests.',
 	];
 
 	if (dateStr || sunData) {
@@ -854,6 +865,243 @@ async function generateSummary(episodeId, force) {
 	}
 
 	timer.done();
+}
+
+// ── Step 6.5: Extract & seed places ────────────────────────────────────
+
+const NOMINATIM_DELAY_MS = 1100;
+const SF_VIEWBOX = '-122.517,37.833,-122.355,37.708';
+const PLACES_JSON_PATH = path.join(projectRoot, 'scripts', 'places.json');
+
+const PLACES_SYSTEM_PROMPT = `You extract San Francisco place names from a local radio show transcript.
+This is "Roll Over Easy," a show deeply rooted in SF culture — hosts frequently mention restaurants, cafes, bars, taquerias, bakeries, bookstores, music venues, record shops, community spaces, murals, parks, plazas, beaches, hilltops, streets, intersections, neighborhoods, landmarks, schools, libraries, transit stops, and local businesses.
+
+Return ONLY a JSON array of strings. Be thorough — capture every SF place mentioned, including:
+- Restaurants & food: taquerias, dim sum spots, bakeries, coffee shops, ice cream parlors, breweries
+- Nightlife & culture: bars, dive bars, music venues, theaters, galleries, bookstores, record shops
+- Neighborhoods: Mission, Castro, Sunset, Richmond, Tenderloin, SoMa, Dogpatch, Excelsior, etc.
+- Parks & outdoor: Dolores Park, Golden Gate Park, Ocean Beach, Bernal Hill, Twin Peaks, etc.
+- Landmarks: Ferry Building, Transamerica Pyramid, Sutro Tower, Coit Tower, City Hall, etc.
+- Streets & intersections: Market Street, Valencia Street, 24th & Mission, etc.
+- Transit: Muni stops, BART stations, cable car lines
+- Community spaces: Manny's, BFF.fm Studios, libraries, rec centers
+
+Only include places in San Francisco proper (not Oakland, Berkeley, Marin, or other Bay Area cities unless the place is an SF icon like the Golden Gate Bridge).
+Normalise names to how they'd appear on a map:
+- "17th and valencia" → "17th Street & Valencia Street"
+- "dolores park" → "Dolores Park"
+- "the mission" → "Mission District"
+If nothing qualifies, return [].`;
+
+function sampleTranscript(segments) {
+	const total = segments.length;
+	if (total < 50) return segments.map(s => s.text).join(' ');
+
+	const start = Math.min(40, Math.floor(total * 0.05));
+	const usable = total - start;
+	const windowSize = Math.min(200, Math.floor(usable / 5));
+	const windows = [];
+	for (let i = 0; i < 5; i++) {
+		const offset = start + Math.floor((usable / 5) * i);
+		windows.push(segments.slice(offset, offset + windowSize));
+	}
+	return windows.flat().map(s => s.text).join(' ').slice(0, 12000);
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+async function nominatimSearch(url) {
+	const res = await fetch(url, { headers: { 'User-Agent': 'roe-episode-search/1.0' } });
+	if (!res.ok) return [];
+	return res.json();
+}
+
+async function geocodePlace(placeName) {
+	// Strategy 1: Bounded SF search
+	const q1 = encodeURIComponent(placeName + ' San Francisco CA');
+	try {
+		const results = await nominatimSearch(`https://nominatim.openstreetmap.org/search?q=${q1}&format=json&limit=1&viewbox=${SF_VIEWBOX}&bounded=1`);
+		if (results.length > 0) return { lat: parseFloat(results[0].lat), lng: parseFloat(results[0].lon) };
+	} catch {}
+
+	await sleep(NOMINATIM_DELAY_MS);
+
+	// Strategy 2: Intersection handling
+	if (placeName.includes('&') || placeName.includes(' and ')) {
+		const parts = placeName.split(/\s*[&]\s*|\s+and\s+/i);
+		if (parts.length === 2) {
+			const q2 = encodeURIComponent(parts[0].trim() + ' and ' + parts[1].trim() + ', San Francisco');
+			try {
+				const results = await nominatimSearch(`https://nominatim.openstreetmap.org/search?q=${q2}&format=json&limit=1&viewbox=${SF_VIEWBOX}&bounded=1`);
+				if (results.length > 0) return { lat: parseFloat(results[0].lat), lng: parseFloat(results[0].lon) };
+			} catch {}
+			await sleep(NOMINATIM_DELAY_MS);
+
+			// Strategy 3: First street only
+			const q3 = encodeURIComponent(parts[0].trim() + ', San Francisco CA');
+			try {
+				const results = await nominatimSearch(`https://nominatim.openstreetmap.org/search?q=${q3}&format=json&limit=1&viewbox=${SF_VIEWBOX}&bounded=1`);
+				if (results.length > 0) return { lat: parseFloat(results[0].lat), lng: parseFloat(results[0].lon) };
+			} catch {}
+			await sleep(NOMINATIM_DELAY_MS);
+		}
+	}
+
+	// Strategy 4: Unbounded but verify SF area
+	const q4 = encodeURIComponent(placeName + ' San Francisco CA');
+	try {
+		const results = await nominatimSearch(`https://nominatim.openstreetmap.org/search?q=${q4}&format=json&limit=1&viewbox=${SF_VIEWBOX}&bounded=0`);
+		if (results.length > 0) {
+			const lat = parseFloat(results[0].lat);
+			const lng = parseFloat(results[0].lon);
+			if (lat >= 37.7 && lat <= 37.84 && lng >= -122.52 && lng <= -122.35) {
+				return { lat, lng };
+			}
+		}
+	} catch {}
+
+	return null;
+}
+
+async function extractAndSeedPlaces(episodeId, force) {
+	const timer = stepTimer('EXTRACT-PLACES');
+
+	const apiKey = process.env.OPENAI_API_KEY;
+	if (!apiKey) {
+		logWarn('Missing OPENAI_API_KEY — skipping place extraction');
+		timer.done('skipped (no API key)');
+		return;
+	}
+
+	// Read transcript
+	const transcriptPath = path.join(transcriptsDir, `${episodeId}.json`);
+	const transcript = JSON.parse(fs.readFileSync(transcriptPath, 'utf-8'));
+	const text = sampleTranscript(transcript.segments);
+
+	// Extract places via GPT-4o-mini
+	console.log('  Extracting SF places from transcript...');
+	const res = await fetch('https://api.openai.com/v1/chat/completions', {
+		method: 'POST',
+		headers: {
+			'Content-Type': 'application/json',
+			Authorization: `Bearer ${apiKey}`,
+		},
+		body: JSON.stringify({
+			model: 'gpt-4o-mini',
+			messages: [
+				{ role: 'system', content: PLACES_SYSTEM_PROMPT },
+				{ role: 'user', content: text },
+			],
+			temperature: 0,
+			max_tokens: 1000,
+		}),
+	});
+
+	if (!res.ok) {
+		const body = await res.text();
+		throw new Error(`OpenAI API error ${res.status}: ${body}`);
+	}
+
+	const data = await res.json();
+	const content = data.choices[0].message.content.trim();
+	let places;
+	try {
+		const cleaned = content.replace(/^```json\s*/i, '').replace(/```\s*$/, '').trim();
+		places = JSON.parse(cleaned);
+	} catch {
+		places = [];
+	}
+
+	if (places.length === 0) {
+		timer.done('no SF places found');
+		return;
+	}
+
+	console.log(`  Found ${places.length} places: ${places.slice(0, 5).join(', ')}${places.length > 5 ? '...' : ''}`);
+
+	// Load existing places.json
+	let placesData = { episodeResults: {}, places: [] };
+	if (fs.existsSync(PLACES_JSON_PATH)) {
+		try { placesData = JSON.parse(fs.readFileSync(PLACES_JSON_PATH)); } catch {}
+	}
+
+	// Update episodeResults for this episode
+	placesData.episodeResults[episodeId] = places;
+
+	// Build set of already-geocoded place names
+	const existingCoords = {};
+	for (const p of (placesData.places || [])) {
+		existingCoords[p.name] = { lat: p.lat, lng: p.lng };
+	}
+
+	// Find new places that need geocoding
+	const newPlaceNames = places.filter(name => !existingCoords[name]);
+	if (newPlaceNames.length > 0) {
+		console.log(`  Geocoding ${newPlaceNames.length} new places...`);
+	}
+
+	const newGeocoded = [];
+	for (const name of newPlaceNames) {
+		const coords = await geocodePlace(name);
+		if (coords) {
+			newGeocoded.push({ name, lat: coords.lat, lng: coords.lng });
+			existingCoords[name] = coords;
+		}
+		await sleep(NOMINATIM_DELAY_MS);
+	}
+
+	// Rebuild places array: update episode lists for existing places, add new ones
+	const placeMap = new Map();
+	for (const p of (placesData.places || [])) {
+		placeMap.set(p.name, { ...p, episodes: new Set(p.episodes || []) });
+	}
+	for (const ng of newGeocoded) {
+		placeMap.set(ng.name, { ...ng, episodes: new Set() });
+	}
+	// Add this episode to all its places
+	for (const name of places) {
+		if (placeMap.has(name)) {
+			placeMap.get(name).episodes.add(episodeId);
+		}
+	}
+	// Convert back to arrays
+	placesData.places = [...placeMap.values()].map(p => ({
+		name: p.name, lat: p.lat, lng: p.lng, episodes: [...p.episodes],
+	}));
+
+	fs.writeFileSync(PLACES_JSON_PATH, JSON.stringify(placesData, null, 2));
+
+	// Seed to D1 incrementally
+	console.log('  Seeding places to D1...');
+
+	// Clear this episode's mentions first (idempotent re-run)
+	runSQL(`DELETE FROM place_mentions WHERE episode_id = '${escapeSQL(episodeId)}'`);
+
+	// Insert any new places
+	const geocodedForThisEpisode = places
+		.map(name => existingCoords[name] ? { name, ...existingCoords[name] } : null)
+		.filter(Boolean);
+
+	for (const p of geocodedForThisEpisode) {
+		runSQL(`INSERT OR IGNORE INTO places (name, lat, lng) VALUES ('${escapeSQL(p.name)}', ${p.lat}, ${p.lng})`);
+	}
+
+	// Get place IDs and insert mentions
+	const placeRows = queryJSON('SELECT id, name FROM places');
+	const nameToId = {};
+	for (const row of placeRows) nameToId[row.name] = row.id;
+
+	const mentionValues = geocodedForThisEpisode
+		.filter(p => nameToId[p.name])
+		.map(p => `(${nameToId[p.name]}, '${escapeSQL(episodeId)}')`)
+		.join(', ');
+
+	if (mentionValues) {
+		runSQL(`INSERT OR IGNORE INTO place_mentions (place_id, episode_id) VALUES ${mentionValues}`);
+	}
+
+	const seededCount = geocodedForThisEpisode.filter(p => nameToId[p.name]).length;
+	timer.done(`${places.length} extracted, ${newGeocoded.length} newly geocoded, ${seededCount} seeded to D1`);
 }
 
 // ── Step 7: Upload audio → R2 ─────────────────────────────────────────
@@ -997,7 +1245,14 @@ async function main() {
 		console.log('\n[SUMMARY] Skipped');
 	}
 
-	// Step 6: Upload audio
+	// Step 6: Extract & seed places
+	if (!skip.has('extract-places')) {
+		await extractAndSeedPlaces(episodeId, force);
+	} else {
+		console.log('\n[EXTRACT-PLACES] Skipped');
+	}
+
+	// Step 7: Upload audio
 	if (!skip.has('upload-audio')) {
 		uploadAudio(mp3Path, episodeId, force);
 	} else {

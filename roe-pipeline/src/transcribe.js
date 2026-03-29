@@ -18,6 +18,7 @@ const SF_VOCAB_PROMPT = [
   'Hamburger Haven, Club Fugazi, Manny\'s, The Lab, Spin City, Parklab,',
   'La Cocina, Bi-Rite, Tartine, Humphry Slocombe, Lazy Bear, Toronado,',
   'Wesburger, The New Wheel, Laughing Monk,',
+  'Sequoia, The Early Bird,',
   'Emperor Norton, Herb Caen, Cosmic Amanda, Dr. Guacamole,',
   'Muni Diaries, Noise Pop, Litquake, Litcrawl, KQED, KALW, Hoodline,',
   'Mission Local, SFGate, Tablehopper, Total SF, Bay City Beacon,',

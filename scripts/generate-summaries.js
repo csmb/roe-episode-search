@@ -19,10 +19,11 @@ import path from 'node:path';
 const DB_NAME = 'roe-episodes';
 
 function usage() {
-	console.log('Usage: node scripts/generate-summaries.js [--local] [--force]');
+	console.log('Usage: node scripts/generate-summaries.js [--local] [--force] [--since YYYY-MM-DD]');
 	console.log('');
 	console.log('Generates AI summaries for episodes missing them.');
-	console.log('  --force   Regenerate summaries for all episodes, even if they already have one.');
+	console.log('  --force          Regenerate summaries for all episodes, even if they already have one.');
+	console.log('  --since DATE     Only process episodes on or after this date (requires --force).');
 	console.log('Requires OPENAI_API_KEY environment variable.');
 	process.exit(0);
 }
@@ -101,11 +102,11 @@ async function generateSummary(text, { dateStr, sunData }) {
 		'',
 		'2. "summary": A concise summary in this format:',
 		'   Line 1: The weather/vibe that morning (if mentioned — fog, sun, rain, cold, etc.). If not mentioned, skip this line.',
-		'   Line 2: Who joined the show — name guests and briefly note who they are.',
+		'   Line 2: Who joined the show — name any guests who came on for a segment and briefly note who they are. The show is live on location, so random passersby sometimes hop on the mic for a few seconds to a few minutes — mention these folks too if they say something memorable or funny.',
 		'   Line 3-4: What stories and topics came up — San Francisco news, local culture, neighborhood happenings, food, music, etc.',
-		'   Keep a warm, San Francisco tone. Use 2-4 sentences total. Do not use bullet points or labels like "Weather:" — just weave it naturally.',
+		'   Keep a warm, San Francisco tone. Use 2-5 sentences total. Do not use bullet points or labels like "Weather:" — just weave it naturally.',
 		'',
-		'3. "guests": An array of guest full names mentioned in the episode. Exclude the host Sequoia. Return an empty array if there are no guests.',
+		'3. "guests": An array of guest full names mentioned in the episode. Exclude the hosts Sequoia and The Early Bird. Return an empty array if there are no guests.',
 	];
 
 	if (dateStr || sunData) {
@@ -148,6 +149,13 @@ async function generateSummary(text, { dateStr, sunData }) {
 		}),
 	});
 
+	if (res.status === 429) {
+		const retryAfter = parseFloat(res.headers.get('retry-after')) || 15;
+		console.log(`    Rate limited, waiting ${retryAfter}s...`);
+		await new Promise((r) => setTimeout(r, retryAfter * 1000));
+		return generateSummary(text, { dateStr, sunData });
+	}
+
 	if (!res.ok) {
 		const body = await res.text();
 		throw new Error(`OpenAI API error ${res.status}: ${body}`);
@@ -172,6 +180,8 @@ async function main() {
 
 	const isLocal = process.argv.includes('--local');
 	const force = process.argv.includes('--force');
+	const sinceIdx = process.argv.indexOf('--since');
+	const since = sinceIdx !== -1 ? process.argv[sinceIdx + 1] : null;
 
 	if (!process.env.OPENAI_API_KEY) {
 		console.error('Error: OPENAI_API_KEY environment variable is required');
@@ -187,7 +197,10 @@ async function main() {
 	// Find episodes to process
 	let needsSummary;
 	if (force) {
-		const allEpisodes = queryJSON('SELECT id FROM episodes', isLocal);
+		const sql = since
+			? `SELECT id FROM episodes WHERE id >= 'roll-over-easy_${since}'`
+			: 'SELECT id FROM episodes';
+		const allEpisodes = queryJSON(sql, isLocal);
 		needsSummary = new Set(allEpisodes.map((r) => r.id));
 	} else {
 		const episodesWithoutSummary = queryJSON(
@@ -206,77 +219,79 @@ async function main() {
 	console.log(`Target: ${isLocal ? 'local' : 'remote'} D1 database`);
 	console.log();
 
+	const CONCURRENCY = 5;
 	const files = fs.readdirSync(transcriptsDir).filter((f) => f.endsWith('.json')).sort();
 
-	let generated = 0;
-
+	// Build list of episodes to process
+	const toProcess = [];
 	for (const file of files) {
 		const transcript = JSON.parse(fs.readFileSync(path.join(transcriptsDir, file), 'utf-8'));
 		const { episode_id, segments } = transcript;
-
-		if (!needsSummary.has(episode_id)) {
-			continue;
-		}
-
+		if (!needsSummary.has(episode_id)) continue;
 		const transcriptText = segments.map((s) => s.text).join('\n');
+		toProcess.push({ episode_id, transcriptText });
+	}
 
-		// Fetch sunrise/sunset for this episode's date
-		const dateStr = parseEpisodeDate(episode_id);
-		let sunData = null;
-		if (dateStr) {
-			console.log(`  Fetching sunrise/sunset for ${dateStr}...`);
-			sunData = await fetchSunriseSunset(dateStr);
-			if (sunData) {
-				console.log(`    Sunrise: ${sunData.sunrise} PT, Sunset: ${sunData.sunset} PT`);
-			} else {
-				console.log('    Could not fetch sunrise/sunset data, continuing without it.');
+	let generated = 0;
+
+	// Process in concurrent batches
+	for (let i = 0; i < toProcess.length; i += CONCURRENCY) {
+		const batch = toProcess.slice(i, i + CONCURRENCY);
+		console.log(`\nBatch ${Math.floor(i / CONCURRENCY) + 1}/${Math.ceil(toProcess.length / CONCURRENCY)} (${batch.length} episodes)`);
+
+		const results = await Promise.all(batch.map(async ({ episode_id, transcriptText }) => {
+			const dateStr = parseEpisodeDate(episode_id);
+			let sunData = null;
+			if (dateStr) {
+				sunData = await fetchSunriseSunset(dateStr);
 			}
-		}
+			const { title, summary, guests } = await generateSummary(transcriptText, { dateStr, sunData });
+			return { episode_id, title, summary, guests };
+		}));
 
-		console.log(`  Generating title + summary for ${episode_id}...`);
-		const { title, summary, guests } = await generateSummary(transcriptText, { dateStr, sunData });
-		if (title) {
-			console.log(`    Title: ${title}`);
-		}
-		console.log(`    Summary: ${(summary || '').slice(0, 80)}...`);
-		if (guests.length > 0) {
-			console.log(`    Guests: ${guests.join(', ')}`);
-		}
+		// Write results to D1 sequentially
+		for (const { episode_id, title, summary, guests } of results) {
+			if (title) {
+				console.log(`  ${episode_id}: ${title}`);
+			}
+			console.log(`    ${(summary || '').slice(0, 80)}...`);
+			if (guests.length > 0) {
+				console.log(`    Guests: ${guests.join(', ')}`);
+			}
 
-		// Update D1
-		if (title) {
-			runSQL(
-				`UPDATE episodes SET title = '${escapeSQL(title)}', summary = '${escapeSQL(summary)}' WHERE id = '${escapeSQL(episode_id)}'`,
-				isLocal
-			);
-		} else {
-			runSQL(
-				`UPDATE episodes SET summary = '${escapeSQL(summary)}' WHERE id = '${escapeSQL(episode_id)}'`,
-				isLocal
-			);
-		}
+			if (title) {
+				runSQL(
+					`UPDATE episodes SET title = '${escapeSQL(title)}', summary = '${escapeSQL(summary)}' WHERE id = '${escapeSQL(episode_id)}'`,
+					isLocal
+				);
+			} else {
+				runSQL(
+					`UPDATE episodes SET summary = '${escapeSQL(summary)}' WHERE id = '${escapeSQL(episode_id)}'`,
+					isLocal
+				);
+			}
 
-		// Insert guests
-		if (guests.length > 0) {
-			runSQL(`DELETE FROM episode_guests WHERE episode_id = '${escapeSQL(episode_id)}'`, isLocal);
-			for (const guest of guests) {
-				const name = guest.trim();
-				if (name) {
-					runSQL(
-						`INSERT OR IGNORE INTO episode_guests (episode_id, guest_name) VALUES ('${escapeSQL(episode_id)}', '${escapeSQL(name)}')`,
-						isLocal
-					);
+			if (guests.length > 0) {
+				runSQL(`DELETE FROM episode_guests WHERE episode_id = '${escapeSQL(episode_id)}'`, isLocal);
+				for (const guest of guests) {
+					const name = guest.trim();
+					if (name) {
+						runSQL(
+							`INSERT OR IGNORE INTO episode_guests (episode_id, guest_name) VALUES ('${escapeSQL(episode_id)}', '${escapeSQL(name)}')`,
+							isLocal
+						);
+					}
 				}
 			}
-		}
 
-		generated++;
+			generated++;
+		}
 	}
 
 	console.log();
 	console.log('=== Summary ===');
 	console.log(`Generated: ${generated} summaries`);
-	console.log(`Skipped: ${files.length - generated} (already had summaries or no transcript)`);
+	console.log(`Skipped: ${files.length - toProcess.length} (already had summaries or no transcript)`);
 }
 
 main().catch((err) => {

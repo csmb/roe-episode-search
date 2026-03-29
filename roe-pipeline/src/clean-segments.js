@@ -40,6 +40,14 @@ export function cleanSegments(segments) {
     cleaned.push(seg);
   }
 
+  // Fix common Whisper mishearings of host name "Early Bird"
+  for (const seg of cleaned) {
+    seg.text = seg.text.replace(
+      /\b(nearly|yearly|really|eerily|dearly)\s+(bird|beard)\b/gi,
+      'Early Bird'
+    );
+  }
+
   return cleaned;
 }
 
