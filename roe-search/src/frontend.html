@@ -779,7 +779,7 @@ const onThisDayEl = document.getElementById('on-this-day');
 
 // Delegated click handler for play/skip buttons using data attributes
 document.addEventListener('click', (e) => {
-	const btn = e.target.closest('.ep-play-btn, .ep-skip-btn');
+	const btn = e.target.closest('.ep-play-btn, .ep-skip-btn, .ep-guest-btn');
 	if (!btn || !btn.dataset.audio) return;
 	playAt(btn.dataset.audio, parseInt(btn.dataset.start, 10), btn.dataset.title);
 });
@@ -870,6 +870,9 @@ async function loadClip(episodeId, startMs) {
 		if (ep.audio_file) {
 			html += '<button class="ep-btn ep-play-btn" data-audio="' + escapeHtml(ep.audio_file) + '" data-title="' + escapeHtml(ep.title) + '" data-start="0">&#9654; Play</button>';
 			html += '<button class="ep-btn ep-skip-btn" data-audio="' + escapeHtml(ep.audio_file) + '" data-title="' + escapeHtml(ep.title) + '" data-start="250000">&#9193; Skip intro</button>';
+			if (ep.guest_start_ms && ep.guests && ep.guests.length > 0) {
+				html += '<button class="ep-btn ep-guest-btn" data-audio="' + escapeHtml(ep.audio_file) + '" data-title="' + escapeHtml(ep.title) + '" data-start="' + ep.guest_start_ms + '">&#127908; Skip to interview with ' + escapeHtml(formatGuestLabel(ep.guests)) + '</button>';
+			}
 		}
 		html += '<a class="ep-btn" href="/?q=&episode=' + encodeURIComponent(ep.id) + '">&#128269; Search</a>';
 		html += '</div>';
@@ -925,6 +928,9 @@ async function loadOnThisDay() {
 			if (ep.audio_file) {
 				html += '<button class="ep-btn ep-play-btn" data-audio="' + escapeHtml(ep.audio_file) + '" data-title="' + escapeHtml(ep.title) + '" data-start="0">&#9654; Play</button>';
 				html += '<button class="ep-btn ep-skip-btn" data-audio="' + escapeHtml(ep.audio_file) + '" data-title="' + escapeHtml(ep.title) + '" data-start="250000">&#9193; Skip intro</button>';
+				if (ep.guest_start_ms && ep.guests && ep.guests.length > 0) {
+					html += '<button class="ep-btn ep-guest-btn" data-audio="' + escapeHtml(ep.audio_file) + '" data-title="' + escapeHtml(ep.title) + '" data-start="' + ep.guest_start_ms + '">&#127908; Skip to interview with ' + escapeHtml(formatGuestLabel(ep.guests)) + '</button>';
+				}
 			}
 			html += '<a class="ep-btn" href="/?q=&episode=' + encodeURIComponent(ep.id) + '">&#128269; Search</a>';
 			html += '</div>';
@@ -1080,6 +1086,13 @@ function renderEpisode(episode) {
 		skipBtn.innerHTML = '&#9193; Skip intro';
 		skipBtn.onclick = () => playAt(episode.audio_file, 250000, episode.title);
 		actions.appendChild(skipBtn);
+	}
+	if (episode.guest_start_ms && episode.guests && episode.guests.length > 0) {
+		const guestBtn = document.createElement('button');
+		guestBtn.className = 'ep-btn';
+		guestBtn.innerHTML = '&#127908; Skip to interview with ' + escapeHtml(formatGuestLabel(episode.guests));
+		guestBtn.onclick = () => playAt(episode.audio_file, episode.guest_start_ms, episode.title);
+		actions.appendChild(guestBtn);
 	}
 	const searchBtn = document.createElement('a');
 	searchBtn.className = 'ep-btn';
@@ -1395,6 +1408,14 @@ function formatDate(dateStr) {
 	const [y, m, d] = dateStr.split('-');
 	const date = new Date(y, m - 1, d);
 	return date.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+}
+
+function formatGuestLabel(guests) {
+	if (!guests || guests.length === 0) return '';
+	if (guests.length === 1) return guests[0];
+	if (guests.length === 2) return guests[0] + ' & ' + guests[1];
+	if (guests.length === 3) return guests[0] + ', ' + guests[1] + ' & ' + guests[2];
+	return guests[0] + ', ' + guests[1] + ' & ' + (guests.length - 2) + ' others';
 }
 
 function formatDuration(ms) {
