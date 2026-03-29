@@ -197,6 +197,29 @@ async function handleSearch(url, env) {
 		});
 	}
 
+	// Fetch guest_start_ms and guest names for matched episodes
+	const epIds = Array.from(episodeMap.keys());
+	if (epIds.length > 0) {
+		const placeholders = epIds.map(() => '?').join(', ');
+		const [startResult, guestResult] = await Promise.all([
+			env.DB.prepare(`SELECT id, guest_start_ms FROM episodes WHERE id IN (${placeholders})`)
+				.bind(...epIds).all(),
+			env.DB.prepare(`SELECT episode_id, guest_name FROM episode_guests WHERE episode_id IN (${placeholders})`)
+				.bind(...epIds).all(),
+		]);
+		for (const row of startResult.results) {
+			const ep = episodeMap.get(row.id);
+			if (ep) ep.guest_start_ms = row.guest_start_ms;
+		}
+		for (const row of guestResult.results) {
+			const ep = episodeMap.get(row.episode_id);
+			if (ep) {
+				if (!ep.guests) ep.guests = [];
+				ep.guests.push(row.guest_name);
+			}
+		}
+	}
+
 	// Sort matches chronologically within each episode
 	for (const ep of episodeMap.values()) {
 		ep.matches.sort((a, b) => a.start_ms - b.start_ms);
@@ -260,15 +283,23 @@ async function handleSemanticSearch(url, env) {
 
 	// Enrich only the current page's episodes with D1 metadata
 	let episodeMeta = {};
+	let guestsByEpisode = {};
 	if (pageEpisodeIds.length > 0) {
 		const placeholders = pageEpisodeIds.map(() => '?').join(', ');
-		const { results } = await env.DB.prepare(
-			`SELECT id, title, duration_ms, summary FROM episodes WHERE id IN (${placeholders})`
-		)
-			.bind(...pageEpisodeIds)
-			.all();
-		for (const row of results) {
+		const [metaResult, guestResult] = await Promise.all([
+			env.DB.prepare(
+				`SELECT id, title, duration_ms, summary, guest_start_ms FROM episodes WHERE id IN (${placeholders})`
+			).bind(...pageEpisodeIds).all(),
+			env.DB.prepare(
+				`SELECT episode_id, guest_name FROM episode_guests WHERE episode_id IN (${placeholders})`
+			).bind(...pageEpisodeIds).all(),
+		]);
+		for (const row of metaResult.results) {
 			episodeMeta[row.id] = row;
+		}
+		for (const row of guestResult.results) {
+			if (!guestsByEpisode[row.episode_id]) guestsByEpisode[row.episode_id] = [];
+			guestsByEpisode[row.episode_id].push(row.guest_name);
 		}
 	}
 
@@ -282,6 +313,8 @@ async function handleSemanticSearch(url, env) {
 			title: dbMeta.title || null,
 			duration_ms: dbMeta.duration_ms || null,
 			summary: dbMeta.summary || null,
+			guest_start_ms: dbMeta.guest_start_ms || null,
+			guests: guestsByEpisode[epId] || [],
 			audio_file: `/audio/${epId}.m4a`,
 			matches,
 		};
@@ -349,16 +382,32 @@ async function handleTimeline(url, env) {
 }
 
 async function handleEpisodes(env) {
-	const { results } = await env.DB.prepare(`
-		SELECT e.id, e.title, e.duration_ms, e.published_at, e.summary,
-		       COALESCE(pc.cnt, 0) as place_count
-		FROM episodes e
-		LEFT JOIN (SELECT episode_id, COUNT(*) as cnt FROM place_mentions GROUP BY episode_id) pc
-		  ON pc.episode_id = e.id
-		ORDER BY e.id
-	`).all();
+	const [episodeResult, guestResult] = await Promise.all([
+		env.DB.prepare(`
+			SELECT e.id, e.title, e.duration_ms, e.published_at, e.summary, e.guest_start_ms,
+			       COALESCE(pc.cnt, 0) as place_count
+			FROM episodes e
+			LEFT JOIN (SELECT episode_id, COUNT(*) as cnt FROM place_mentions GROUP BY episode_id) pc
+			  ON pc.episode_id = e.id
+			ORDER BY e.id
+		`).all(),
+		env.DB.prepare('SELECT episode_id, guest_name FROM episode_guests ORDER BY episode_id, guest_name').all(),
+	]);
 
-	return json({ episodes: results });
+	const guestsByEpisode = new Map();
+	for (const row of guestResult.results) {
+		if (!guestsByEpisode.has(row.episode_id)) {
+			guestsByEpisode.set(row.episode_id, []);
+		}
+		guestsByEpisode.get(row.episode_id).push(row.guest_name);
+	}
+
+	const episodes = episodeResult.results.map(e => ({
+		...e,
+		guests: guestsByEpisode.get(e.id) || [],
+	}));
+
+	return json({ episodes });
 }
 
 async function handleAudio(request, url, env) {
@@ -408,23 +457,28 @@ async function handleAudio(request, url, env) {
 
 async function handleEpisodeById(episodeId, env) {
 	try {
-		const { results } = await env.DB.prepare(
-			'SELECT id, title, duration_ms, summary FROM episodes WHERE id = ?1'
-		)
-			.bind(episodeId)
-			.all();
+		const [epResult, guestResult] = await Promise.all([
+			env.DB.prepare(
+				'SELECT id, title, duration_ms, summary, guest_start_ms FROM episodes WHERE id = ?1'
+			).bind(episodeId).all(),
+			env.DB.prepare(
+				'SELECT guest_name FROM episode_guests WHERE episode_id = ?1'
+			).bind(episodeId).all(),
+		]);
 
-		if (results.length === 0) {
+		if (epResult.results.length === 0) {
 			return json({ error: 'Episode not found' }, 404);
 		}
 
-		const ep = results[0];
+		const ep = epResult.results[0];
 		return json({
 			episode: {
 				id: ep.id,
 				title: ep.title,
 				duration_ms: ep.duration_ms,
 				summary: ep.summary,
+				guest_start_ms: ep.guest_start_ms,
+				guests: guestResult.results.map(r => r.guest_name),
 				audio_file: `/audio/${ep.id}.m4a`,
 			},
 		});
@@ -452,7 +506,6 @@ async function handleEpisodePlaces(episodeId, env) {
 }
 
 async function handleOnThisDay(url, env) {
-	// Use Pacific time for "today"
 	const now = new Date();
 	const pacificDate = new Date(now.toLocaleString('en-US', { timeZone: 'America/Los_Angeles' }));
 	const month = String(pacificDate.getMonth() + 1).padStart(2, '0');
@@ -461,13 +514,27 @@ async function handleOnThisDay(url, env) {
 
 	try {
 		const { results } = await env.DB.prepare(`
-			SELECT id, title, duration_ms, summary
+			SELECT id, title, duration_ms, summary, guest_start_ms
 			FROM episodes
 			WHERE SUBSTR(id, 21, 5) = ?1
 			ORDER BY id DESC
 		`)
 			.bind(todayMmDd)
 			.all();
+
+		// Fetch guest names for these episodes
+		const epIds = results.map(r => r.id);
+		let guestsByEpisode = {};
+		if (epIds.length > 0) {
+			const placeholders = epIds.map(() => '?').join(', ');
+			const guestResult = await env.DB.prepare(
+				`SELECT episode_id, guest_name FROM episode_guests WHERE episode_id IN (${placeholders})`
+			).bind(...epIds).all();
+			for (const row of guestResult.results) {
+				if (!guestsByEpisode[row.episode_id]) guestsByEpisode[row.episode_id] = [];
+				guestsByEpisode[row.episode_id].push(row.guest_name);
+			}
+		}
 
 		return json({
 			date: todayMmDd,
@@ -476,6 +543,8 @@ async function handleOnThisDay(url, env) {
 				title: ep.title,
 				duration_ms: ep.duration_ms,
 				summary: ep.summary,
+				guest_start_ms: ep.guest_start_ms,
+				guests: guestsByEpisode[ep.id] || [],
 				audio_file: `/audio/${ep.id}.m4a`,
 			})),
 		});
