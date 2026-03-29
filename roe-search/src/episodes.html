@@ -323,6 +323,14 @@ function formatDate(dateStr) {
 	return date.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
 }
 
+function formatGuestLabel(guests) {
+	if (!guests || guests.length === 0) return '';
+	if (guests.length === 1) return guests[0];
+	if (guests.length === 2) return guests[0] + ' & ' + guests[1];
+	if (guests.length === 3) return guests[0] + ', ' + guests[1] + ' & ' + guests[2];
+	return guests[0] + ', ' + guests[1] + ' & ' + (guests.length - 2) + ' others';
+}
+
 async function loadEpisodes() {
 	try {
 		const res = await fetch('/api/episodes');
@@ -363,6 +371,9 @@ async function loadEpisodes() {
 			html += '<div class="episode-actions">';
 			html += '<button class="ep-btn ep-play-btn" data-audio="/audio/' + encodeURIComponent(ep.id) + '.m4a" data-title="' + escapeAttr(ep.title) + '" data-start="0">&#9654; Play</button>';
 			html += '<button class="ep-btn ep-skip-btn" data-audio="/audio/' + encodeURIComponent(ep.id) + '.m4a" data-title="' + escapeAttr(ep.title) + '" data-start="250">&#9193; Skip intro</button>';
+			if (ep.guest_start_ms && ep.guests && ep.guests.length > 0) {
+				html += '<button class="ep-btn ep-skip-btn" data-audio="/audio/' + encodeURIComponent(ep.id) + '.m4a" data-title="' + escapeAttr(ep.title) + '" data-start="' + Math.floor(ep.guest_start_ms / 1000) + '">&#127908; Skip to interview with ' + escapeHtml(formatGuestLabel(ep.guests)) + '</button>';
+			}
 			html += '<a class="ep-btn" href="/?q=&episode=' + encodeURIComponent(ep.id) + '">&#128269; Search</a>';
 			html += '</div>';
 			html += '</div>';
