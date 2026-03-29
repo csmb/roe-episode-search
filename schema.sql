@@ -5,7 +5,8 @@ CREATE TABLE episodes (
     duration_ms INTEGER,
     published_at TEXT,
     summary TEXT,
-    guests_reviewed INTEGER DEFAULT 0
+    guests_reviewed INTEGER DEFAULT 0,
+    guest_start_ms INTEGER
 );
 
 CREATE TABLE transcript_segments (
