@@ -6,7 +6,7 @@ A searchable archive of the Roll Over Easy podcast. Search for any keyword or co
 
 ## How it works
 
-Audio files are transcribed locally using whisper.cpp (large-v3 model with Silero VAD), stored in a SQLite database with full-text search (FTS5), and served via a Cloudflare Worker. Two search modes are available: **Keyword** finds exact word matches via FTS5, while **Semantic** finds conceptually related segments via vector embeddings (Cloudflare Vectorize + Workers AI). Click any result to play the audio from that exact moment.
+Audio files are uploaded to Cloudflare R2. An R2 event notification triggers the `roe-pipeline` Cloudflare Worker, which runs the full processing pipeline via a Durable Object: transcription (OpenAI Whisper API), D1 seeding, vector embeddings, AI title/summary/guest extraction (GPT-4o-mini), SF place geocoding (Nominatim), and audio URL linking. The resulting data is served via a second Cloudflare Worker (`roe-search`) with keyword search (FTS5) and semantic search (Vectorize). Click any result to play the audio from that exact moment.
 
 ## Architecture
 
@@ -31,15 +31,16 @@ Audio files are transcribed locally using whisper.cpp (large-v3 model with Siler
 ### Data flow for a single episode
 
 ```
-episode.mp3
+Upload episode.mp3 to R2
     │
-    └──► process-episode.js
+    └──► R2 event notification ──► roe-pipeline-queue ──► EpisodePipeline DO
               │
-              ├── 1. whisper.cpp + VAD ──► transcripts/episode.json
-              ├── 2. seed-db ──► D1 (episodes + transcript_segments + FTS index)
-              ├── 3. embeddings ──► Vectorize (45s vector chunks)
-              ├── 4. title + summary ──► D1 (AI-generated via GPT-4o-mini)
-              └── 5. upload ──► ffmpeg (MP3 → M4A) ──► R2
+              ├── 1. transcribe ──► OpenAI Whisper API (chunked for large files)
+              ├── 2. seed-db ──► D1 (episodes + transcript_segments + FTS5)
+              ├── 3. embeddings ──► Cloudflare Vectorize (45s chunks)
+              ├── 4. summary ──► GPT-4o-mini ──► D1 (title, summary, guests)
+              ├── 5. extract-places ──► GPT-4o-mini + Nominatim ──► D1 (places, place_mentions)
+              └── 6. set-audio-url ──► D1 (links episode to R2 MP3 URL)
 ```
 
 ### Components
@@ -127,20 +128,47 @@ npx wrangler d1 execute roe-episodes --remote --file=../schema.sql
 cd ..
 ```
 
-### Processing episodes
+### Processing a new episode
+
+Upload the MP3 to the `roe-audio` R2 bucket — the pipeline triggers automatically:
 
 ```bash
-# Process a single episode (transcribe → D1 → embeddings → title/summary → R2)
-node scripts/process-episode.js /path/to/episode.mp3
-
-# Process all episodes in batch
-node scripts/process-all.js "/path/to/All episodes/" --cooldown 120
-
-# Deploy
-cd roe-search && npx wrangler deploy
+# Via wrangler CLI:
+npx wrangler r2 object put roe-audio/"Roll Over Easy 2026-04-02.mp3" \
+  --file="/path/to/Roll Over Easy 2026-04-02.mp3"
 ```
 
-Each step is idempotent — safe to re-run, skips already-processed episodes.
+Processing takes ~10–15 minutes for a 2-hour episode. Check status:
+
+```bash
+curl "https://roe-pipeline.christophersbunting.workers.dev/status?key=Roll%20Over%20Easy%202026-04-02.mp3"
+# {"status":"completed"} when done
+```
+
+To manually re-trigger (e.g. after a pipeline fix), delete the episode from D1 first to clear the dedup check, then POST to `/process`:
+
+```bash
+# Delete episode (if partially seeded)
+TOKEN=<your-cloudflare-api-token>
+curl -X POST "https://api.cloudflare.com/client/v4/accounts/c300f1dedb1ae128ce63852774e32976/d1/database/cc7207a0-a581-4d3a-9c8f-12597b1ab46d/query" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"sql": "DELETE FROM episodes WHERE id = '"'"'roll-over-easy_YYYY-MM-DD_07-30-00'"'"'"}'
+
+# Re-trigger
+curl -X POST "https://roe-pipeline.christophersbunting.workers.dev/process?key=Roll%20Over%20Easy%20YYYY-MM-DD.mp3"
+```
+
+### Batch processing (historical backfill only)
+
+For processing large numbers of older episodes locally:
+
+```bash
+# Process a single episode locally
+node scripts/process-episode.js /path/to/episode.mp3
+
+# Process all episodes in batch with checkpoint/resume
+node scripts/process-all.js "/path/to/All episodes/" --cooldown 120
+```
 
 ### Local development
 
