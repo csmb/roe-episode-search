@@ -18,6 +18,15 @@ describe('sampleTranscript', () => {
     const segments = Array.from({ length: 200 }, () => ({ text: 'a'.repeat(200) }));
     expect(sampleTranscript(segments).length).toBeLessThanOrEqual(12000);
   });
+
+  it('uses windowing path at exactly 50 segments', () => {
+    const segments = Array.from({ length: 50 }, (_, i) => ({ text: `s${i}` }));
+    const result = sampleTranscript(segments);
+    // Windowing path: skips first min(40, floor(50*0.05))=2 segments
+    expect(result.startsWith('s0')).toBe(false);
+    expect(result.startsWith('s1')).toBe(false);
+    expect(result.length).toBeGreaterThan(0);
+  });
 });
 
 describe('extractAndSeedPlaces', () => {
@@ -42,7 +51,7 @@ describe('extractAndSeedPlaces', () => {
               inserted.push({ id: inserted.length + 1, name: args[0] });
             }
           },
-          all: async () => ({ results: [] }),
+          all: async () => ({ results: inserted.filter(p => args.includes(p.name)) }),
         }),
         all: async () => ({ results: inserted }),
       }),

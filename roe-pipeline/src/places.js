@@ -85,6 +85,8 @@ async function geocodePlace(placeName) {
     }
   }
 
+  // Strategy 4: Same query as strategy 1 but unbounded — catches places Nominatim
+  // knows but places outside the strict SF viewport. Validate coordinates manually.
   const q4 = encodeURIComponent(placeName + ' San Francisco CA');
   try {
     const results = await nominatimSearch(
@@ -154,7 +156,8 @@ export async function extractAndSeedPlaces(db, episodeId, segments, openaiApiKey
   }
 
   // Check D1 for already-known places to avoid re-geocoding
-  const { results: existingPlaces } = await db.prepare('SELECT id, name FROM places').all();
+  const placeholders = placeNames.map(() => '?').join(', ');
+  const { results: existingPlaces } = await db.prepare(`SELECT id, name FROM places WHERE name IN (${placeholders})`).bind(...placeNames).all();
   const knownPlaces = new Map(existingPlaces.map(p => [p.name, p.id]));
 
   const geocoded = [];
@@ -180,12 +183,15 @@ export async function extractAndSeedPlaces(db, episodeId, segments, openaiApiKey
   }
 
   // Re-query to get IDs for newly inserted places
-  const { results: allPlaces } = await db.prepare('SELECT id, name FROM places').all();
+  const geocodedPlaceholders = geocoded.map(() => '?').join(', ');
+  const { results: allPlaces } = await db.prepare(`SELECT id, name FROM places WHERE name IN (${geocodedPlaceholders})`).bind(...geocoded).all();
   const placeIdMap = new Map(allPlaces.map(p => [p.name, p.id]));
 
   await db.prepare('DELETE FROM place_mentions WHERE episode_id = ?').bind(episodeId).run();
   for (const name of geocoded) {
     const placeId = placeIdMap.get(name);
+    // placeId could be absent if a known place was deleted between the two queries,
+    // or if INSERT OR IGNORE silently skipped due to a race. Guard is intentional.
     if (placeId != null) {
       await db.prepare('INSERT OR IGNORE INTO place_mentions (place_id, episode_id) VALUES (?, ?)')
         .bind(placeId, episodeId).run();
