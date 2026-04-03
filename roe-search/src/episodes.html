@@ -264,7 +264,7 @@
 	<div class="hero-content">
 		<h1><a href="/">Roll Over Easy</a></h1>
 		<div class="tagline">All Episodes</div>
-		<nav aria-label="Main navigation"><a href="/episodes" aria-current="page">Episodes</a> · <a href="/map">Map</a> · <a href="/stars">Stars</a> · <a href="/">Search</a></nav>
+		<nav aria-label="Main navigation"><a href="/episodes" aria-current="page">Episodes</a> · <a href="/map">Map</a> · <a href="/">Search</a></nav>
 	</div>
 </div>
 
@@ -450,7 +450,7 @@ function initMiniMap(container, places) {
 	const markers = places.map(p =>
 		L.circleMarker([p.lat, p.lng], {
 			radius: 7, fillColor: '#e85d04', color: '#e85d04',
-			weight: 1, opacity: 0.8, fillOpacity: 0.7,
+			weight: 1, opacity: 0.8, fillOpacity: 0.45,
 		}).bindTooltip(escapeHtml(p.name)).addTo(map)
 	);
 

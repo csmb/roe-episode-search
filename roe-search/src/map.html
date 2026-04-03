@@ -133,7 +133,7 @@
 		<div class="hero-content">
 			<h1><a href="/">Roll Over Easy</a></h1>
 			<div class="tagline">SF Places Map · <span id="place-count">Loading…</span></div>
-			<nav aria-label="Main navigation"><a href="/episodes">Episodes</a> · <a href="/map" aria-current="page">Map</a> · <a href="/stars">Stars</a> · <a href="/">Search</a></nav>
+			<nav aria-label="Main navigation"><a href="/episodes">Episodes</a> · <a href="/map" aria-current="page">Map</a> · <a href="/">Search</a></nav>
 		</div>
 	</div>
 	<div id="map"></div>
@@ -180,7 +180,7 @@
 				const circle = L.circleMarker([place.lat, place.lng], {
 					radius,
 					fillColor: '#e85d04',
-					fillOpacity: 0.7,
+					fillOpacity: 0.45,
 					color: '#c44d02',
 					weight: 1.5,
 				}).addTo(map);
@@ -201,6 +201,28 @@
 						<ul>${episodeItems}</ul>
 					</div>
 				`, { maxWidth: 280 });
+
+				// Desktop: show popup on hover; mobile keeps default click behavior
+				const hasHover = window.matchMedia('(hover: hover) and (pointer: fine)').matches;
+				if (hasHover) {
+					let closeTimer = null;
+					circle.on('mouseover', () => {
+						clearTimeout(closeTimer);
+						circle.openPopup();
+					});
+					circle.on('mouseout', () => {
+						closeTimer = setTimeout(() => circle.closePopup(), 300);
+					});
+					circle.on('popupopen', () => {
+						const el = circle.getPopup().getElement();
+						if (el) {
+							el.addEventListener('mouseenter', () => clearTimeout(closeTimer));
+							el.addEventListener('mouseleave', () => {
+								closeTimer = setTimeout(() => circle.closePopup(), 300);
+							});
+						}
+					});
+				}
 			}
 		}
 
