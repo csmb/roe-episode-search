@@ -3,7 +3,7 @@
  * FTS index is updated automatically by database triggers.
  */
 
-const DB_BATCH_SIZE = 50;
+const DB_BATCH_SIZE = 20; // D1 has ~100 SQL variable limit; 20 rows × 4 params = 80 vars
 
 /**
  * @param {D1Database} db
