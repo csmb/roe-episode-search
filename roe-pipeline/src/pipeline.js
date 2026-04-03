@@ -9,6 +9,7 @@ import { transcribeFromR2 } from './transcribe.js';
 import { seedDatabase } from './seed-db.js';
 import { generateEmbeddings } from './embeddings.js';
 import { generateSummary } from './summary.js';
+import { extractAndSeedPlaces } from './places.js';
 
 const SEGMENTS_PER_KEY = 500;
 
@@ -109,6 +110,17 @@ export class EpisodePipeline {
         case 'summary': {
           const segments = await this.loadSegments();
           await generateSummary(this.env.DB, episodeId, segments, this.env.OPENAI_API_KEY);
+          await this.advanceStep('extract-places');
+          break;
+        }
+
+        case 'extract-places': {
+          const segments = await this.loadSegments();
+          try {
+            await extractAndSeedPlaces(this.env.DB, episodeId, segments, this.env.OPENAI_API_KEY);
+          } catch (err) {
+            console.error(`[${episodeId}] Places extraction failed (soft): ${err.message}`);
+          }
           await this.advanceStep('set-audio-url');
           break;
         }
