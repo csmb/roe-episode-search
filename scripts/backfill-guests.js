@@ -6,71 +6,13 @@
  *
  * Usage:
  *   node scripts/backfill-guests.js [--local] [--force]
- *
- * Options:
- *   --local   Target local D1 database instead of remote
- *   --force   Re-extract guests for all episodes, even if already populated
  */
 
-import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { loadEnv, escapeSQL, runSQL, queryJSON, transcriptsDir } from './lib.js';
 
-// ── Load .env ─────────────────────────────────────────────────────────
-
-const envPath = path.resolve(path.dirname(decodeURIComponent(new URL(import.meta.url).pathname)), '..', '.env');
-if (fs.existsSync(envPath)) {
-	for (const line of fs.readFileSync(envPath, 'utf-8').split('\n')) {
-		const trimmed = line.trim();
-		if (!trimmed || trimmed.startsWith('#')) continue;
-		const eq = trimmed.indexOf('=');
-		if (eq === -1) continue;
-		const key = trimmed.slice(0, eq);
-		const val = trimmed.slice(eq + 1);
-		if (!process.env[key]) process.env[key] = val;
-	}
-}
-
-const DB_NAME = 'roe-episodes';
-
-function workerCwd() {
-	return path.resolve(path.dirname(decodeURIComponent(new URL(import.meta.url).pathname)), '..', 'roe-search');
-}
-
-function escapeSQL(str) {
-	return str.replace(/'/g, "''");
-}
-
-function wranglerEnv() {
-	// Strip CLOUDFLARE_API_TOKEN so wrangler uses its OAuth login instead
-	const env = { ...process.env };
-	delete env.CLOUDFLARE_API_TOKEN;
-	return env;
-}
-
-function runSQL(sql, isLocal) {
-	const flag = isLocal ? '--local' : '--remote';
-	const cmd = `npx wrangler d1 execute ${DB_NAME} ${flag} --command="${sql.replace(/"/g, '\\"')}"`;
-	return execSync(cmd, {
-		cwd: workerCwd(),
-		encoding: 'utf-8',
-		stdio: 'pipe',
-		env: wranglerEnv(),
-	});
-}
-
-function queryJSON(sql, isLocal) {
-	const flag = isLocal ? '--local' : '--remote';
-	const cmd = `npx wrangler d1 execute ${DB_NAME} ${flag} --json --command="${sql.replace(/"/g, '\\"')}"`;
-	const result = execSync(cmd, {
-		cwd: workerCwd(),
-		encoding: 'utf-8',
-		stdio: 'pipe',
-		env: wranglerEnv(),
-	});
-	const parsed = JSON.parse(result);
-	return parsed[0]?.results ?? [];
-}
+loadEnv();
 
 async function extractGuests(transcriptText) {
 	const apiKey = process.env.OPENAI_API_KEY;
@@ -142,20 +84,19 @@ async function main() {
 		process.exit(1);
 	}
 
-	const transcriptsDir = path.resolve(path.dirname(decodeURIComponent(new URL(import.meta.url).pathname)), '..', 'transcripts');
 	if (!fs.existsSync(transcriptsDir)) {
 		console.error('No transcripts/ directory found.');
 		process.exit(1);
 	}
 
 	// Find episodes to process
-	const allEpisodes = queryJSON('SELECT id FROM episodes', isLocal);
+	const allEpisodes = queryJSON('SELECT id FROM episodes', { isLocal });
 	const allIds = new Set(allEpisodes.map(r => r.id));
 
 	let alreadyHasGuests = new Set();
 	if (!force) {
 		try {
-			const existing = queryJSON('SELECT DISTINCT episode_id FROM episode_guests', isLocal);
+			const existing = queryJSON('SELECT DISTINCT episode_id FROM episode_guests', { isLocal });
 			alreadyHasGuests = new Set(existing.map(r => r.episode_id));
 		} catch {
 			// Table might not exist yet
@@ -187,13 +128,13 @@ async function main() {
 			console.log(`    Found: ${guests.join(', ')}`);
 
 			// Clear existing and insert
-			runSQL(`DELETE FROM episode_guests WHERE episode_id = '${escapeSQL(episode_id)}'`, isLocal);
+			runSQL(`DELETE FROM episode_guests WHERE episode_id = '${escapeSQL(episode_id)}'`, { isLocal });
 			for (const guest of guests) {
 				const name = guest.trim();
 				if (name) {
 					runSQL(
 						`INSERT OR IGNORE INTO episode_guests (episode_id, guest_name) VALUES ('${escapeSQL(episode_id)}', '${escapeSQL(name)}')`,
-						isLocal
+						{ isLocal }
 					);
 					totalGuests++;
 				}
