@@ -5,6 +5,11 @@
  * Fetches registered SF businesses from the DataSF Open Data (Socrata) API
  * and saves them as candidates for map enrichment.
  *
+ * The g8m3-pdis dataset has business registrations with DBA names, addresses,
+ * and dates — but no industry/NAICS codes. We pull all SF businesses active
+ * since 2013 and let the cross-reference step filter to those actually
+ * mentioned in the show.
+ *
  * No API key required.
  *
  * Usage:
@@ -23,31 +28,7 @@ const API_HOST = 'data.sfgov.org';
 const API_PATH = '/resource/g8m3-pdis.json';
 const PAGE_SIZE = 50000;
 
-// NAICS code prefix → category label
-// Checked from most-specific to least-specific (longer prefix wins).
-const NAICS_CATEGORY_MAP = [
-  { prefix: '7225', category: 'restaurant' },  // Restaurants and Other Eating Places
-  { prefix: '7224', category: 'bar' },          // Drinking Places (Alcoholic Beverages)
-  { prefix: '7222', category: 'restaurant' },   // Limited-Service Eating Places
-  { prefix: '7223', category: 'restaurant' },   // Special Food Services
-  { prefix: '7211', category: 'hotel' },        // Traveler Accommodation
-  { prefix: '445',  category: 'grocery' },      // Food and Beverage Stores
-  { prefix: '71',   category: 'entertainment' },// Arts, Entertainment, and Recreation
-  { prefix: '44',   category: 'retail' },       // Retail Trade
-  { prefix: '45',   category: 'retail' },       // Retail Trade (cont.)
-  { prefix: '72',   category: 'food_service' }, // Accommodation and Food Services (catch-all)
-];
-
-function naicsToCategory(naics) {
-  if (!naics) return null;
-  const code = String(naics).replace(/\D/g, '');
-  // Sort by prefix length descending so longer (more specific) prefixes match first
-  const sorted = [...NAICS_CATEGORY_MAP].sort((a, b) => b.prefix.length - a.prefix.length);
-  for (const { prefix, category } of sorted) {
-    if (code.startsWith(prefix)) return category;
-  }
-  return null;
-}
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 function httpsGet(urlPath) {
   return new Promise((resolve, reject) => {
@@ -78,16 +59,10 @@ function httpsGet(urlPath) {
 }
 
 async function fetchPage(offset) {
-  // Filter: NAICS codes starting with 72 (food/accommodation), 71 (entertainment),
-  // 44 or 45 (retail). In the g8m3-pdis Socrata dataset the field is `naics_code`.
-  // We also check `lic_code_description` as an alternative code field.
-  // business start date >= 2013, city = San Francisco.
   const where = [
-    "(naics_code like '72%' OR naics_code like '71%' OR naics_code like '44%' OR naics_code like '45%'",
-    "OR lic_code_description like '72%' OR lic_code_description like '71%' OR lic_code_description like '44%' OR lic_code_description like '45%')",
-    "AND location_start_date >= '2013-01-01T00:00:00.000'",
-    "AND city = 'San Francisco'",
-  ].join(' ');
+    "location_start_date >= '2013-01-01T00:00:00.000'",
+    "city = 'San Francisco'",
+  ].join(' AND ');
 
   const params = new URLSearchParams({
     '$limit': String(PAGE_SIZE),
@@ -106,44 +81,14 @@ async function fetchPage(offset) {
   return Array.isArray(body) ? body : [];
 }
 
-function mapCandidate(row) {
-  const name = (row.dba_name || row.business_name || '').trim();
-  if (!name) return null;
-
-  // Try numeric NAICS code first; fall back to the description field if present
-  const naics = row.naics_code || row.lic_code_description || '';
-  const category = naicsToCategory(naics);
-
-  const addressParts = [
-    row.full_business_address,
-    row.city,
-    row.business_zip,
-  ].filter(Boolean);
-
-  return {
-    name,
-    address: addressParts.join(', '),
-    lat: null,    // DataSF business registrations don't include geocoordinates
-    lng: null,
-    source: 'datasf',
-    category,
-    meta: {
-      naics_code: row.naics_code || null,
-      lic_code: row.lic_code_description || null,
-      start_date: row.location_start_date || row.dba_start_date || null,
-      end_date: row.location_end_date || row.dba_end_date || null,
-      uniqueid: row.uniqueid || null,
-    },
-  };
-}
-
 async function main() {
   console.log('Fetching SF businesses from DataSF...');
 
   // Deduplicate by lowercase DBA name — keep first occurrence (most recent, due to ORDER BY DESC)
-  const seen = new Map(); // lowercase name → candidate
+  const seen = new Map();
   let offset = 0;
   let pageNum = 0;
+  let totalRows = 0;
 
   while (true) {
     process.stdout.write(`\r  Page ${pageNum + 1} (offset ${offset})... `);
@@ -154,13 +99,27 @@ async function main() {
       break;
     }
 
+    totalRows += rows.length;
     let pageAdded = 0;
     for (const row of rows) {
-      const candidate = mapCandidate(row);
-      if (!candidate) continue;
-      const key = candidate.name.toLowerCase();
+      const name = (row.dba_name || '').trim();
+      if (!name) continue;
+
+      const key = name.toLowerCase();
       if (!seen.has(key)) {
-        seen.set(key, candidate);
+        seen.set(key, {
+          name,
+          address: [row.full_business_address, row.city, row.state].filter(Boolean).join(', '),
+          lat: null,
+          lng: null,
+          source: 'datasf',
+          category: 'business',
+          meta: {
+            start_date: row.location_start_date || row.dba_start_date || null,
+            end_date: row.location_end_date || row.dba_end_date || null,
+            uniqueid: row.uniqueid || null,
+          },
+        });
         pageAdded++;
       }
     }
@@ -173,17 +132,15 @@ async function main() {
       console.log('\n  Last page reached.');
       break;
     }
+
+    await sleep(500);
   }
 
-  console.log(`\nTotal unique businesses: ${seen.size}`);
+  console.log(`\nTotal rows fetched: ${totalRows}`);
+  console.log(`Unique DBA names: ${seen.size}`);
 
   const candidates = [...seen.values()];
-  const output = {
-    candidates,
-    fetched_at: new Date().toISOString(),
-  };
-
-  fs.writeFileSync(OUT_PATH, JSON.stringify(output, null, 2));
+  fs.writeFileSync(OUT_PATH, JSON.stringify({ candidates, fetched_at: new Date().toISOString() }, null, 2));
   console.log(`Saved ${candidates.length} candidates to ${OUT_PATH}`);
 }
 
