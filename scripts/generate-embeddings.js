@@ -181,7 +181,11 @@ async function main() {
 	console.log('\nDone!');
 }
 
-main().catch((err) => {
-	console.error('Error:', err.message);
-	process.exit(1);
-});
+// Only run main() when executed directly (not when imported)
+const isMainModule = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(decodeURIComponent(new URL(import.meta.url).pathname));
+if (isMainModule) {
+	main().catch((err) => {
+		console.error('Error:', err.message);
+		process.exit(1);
+	});
+}

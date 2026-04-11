@@ -6,8 +6,7 @@
  *   2. Seed D1 database
  *   3. Generate embeddings → Vectorize
  *   4. Generate AI summary
- *   5. Extract & seed SF places
- *   6. Upload audio → R2
+ *   5. Upload audio → R2
  *
  * Usage:
  *   node scripts/process-episode.js /path/to/roll-over-easy_2026-02-16_07-30-00.mp3
@@ -15,39 +14,33 @@
  * Options:
  *   --episode-id ID          Override auto-parsed episode ID
  *   --force                  Re-run all steps even if already done
- *   --skip step1,step2       Skip specific steps (transcribe, seed-db, embeddings, summary, extract-places, upload-audio)
+ *   --skip step1,step2       Skip specific steps (transcribe, seed-db, embeddings, summary, upload-audio)
  */
 
-import { execSync, execFileSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
-// ── Load .env ─────────────────────────────────────────────────────────
+import {
+	loadEnv, escapeSQL, isAscii, wranglerExec, queryJSON, runSQL,
+	stepTimer, logWarn, projectRoot, workerDir, transcriptsDir,
+	DB_NAME, applyWordCorrections, parseEpisodeDate, fetchSunriseSunset,
+} from './lib.js';
+import { buildSummarySystemPrompt } from './prompts.js';
+import { purgeEpisode } from './clean-hallucinations.js';
+import { generateSummaryFromText } from './generate-summaries.js';
+import { chunkEpisode } from './generate-embeddings.js';
 
-const envPath = path.resolve(path.dirname(decodeURIComponent(new URL(import.meta.url).pathname)), '..', '.env');
-if (fs.existsSync(envPath)) {
-	for (const line of fs.readFileSync(envPath, 'utf-8').split('\n')) {
-		const trimmed = line.trim();
-		if (!trimmed || trimmed.startsWith('#')) continue;
-		const eq = trimmed.indexOf('=');
-		if (eq === -1) continue;
-		const key = trimmed.slice(0, eq);
-		const val = trimmed.slice(eq + 1);
-		if (!process.env[key]) process.env[key] = val;
-	}
-}
+loadEnv();
 
 // ── Constants ──────────────────────────────────────────────────────────
 
-const DB_NAME = 'roe-episodes';
 const R2_BUCKET = 'roe-audio';
 const R2_PUBLIC_URL = 'https://pub-e95bd2be3f9d4147b2955503d75e50c1.r2.dev';
 const VECTORIZE_INDEX = 'roe-transcripts';
 const EMBED_MODEL = '@cf/baai/bge-base-en-v1.5';
 
-const WINDOW_SEC = 45;
-const STEP_SEC = 35;
 const EMBED_BATCH_SIZE = 100;
 const UPSERT_BATCH_SIZE = 1000;
 const DB_BATCH_SIZE = 50;
@@ -75,8 +68,6 @@ const SF_VOCAB_PROMPT = [
 	'Hamburger Haven, Club Fugazi, Manny\'s, The Lab, Spin City, Parklab,',
 	'La Cocina, Bi-Rite, Tartine, Humphry Slocombe, Lazy Bear, Toronado,',
 	'Wesburger, The New Wheel, Laughing Monk,',
-	// Hosts
-	'Sequoia, The Early Bird,',
 	// People & characters
 	'Emperor Norton, Herb Caen, Cosmic Amanda, Dr. Guacamole,',
 	// Organizations & media
@@ -89,64 +80,9 @@ const SF_VOCAB_PROMPT = [
 	// Culture & SF-specific
 	'Eichler Homes, Compton\'s Cafeteria, Critical Mass, Sketch Fest, Karl the Fog,',
 	'NIMBYism, YIMBYism, Dungeness crab, cioppino, dim sum, sourdough,',
+	// People
+	'Suldrew,',
 ].join(' ');
-
-const projectRoot = path.resolve(path.dirname(decodeURIComponent(new URL(import.meta.url).pathname)), '..');
-const workerDir = path.join(projectRoot, 'roe-search');
-const transcriptsDir = path.join(projectRoot, 'transcripts');
-
-// ── Helpers ────────────────────────────────────────────────────────────
-
-function escapeSQL(str) {
-	return str.replace(/'/g, "''");
-}
-
-function isAscii(text) {
-	// eslint-disable-next-line no-control-regex
-	return /^[\x00-\x7F]*$/.test(text);
-}
-
-function wranglerExec(args, opts = {}) {
-	// Strip CLOUDFLARE_API_TOKEN so wrangler uses its OAuth login instead
-	const env = { ...process.env };
-	delete env.CLOUDFLARE_API_TOKEN;
-	return execSync(`npx wrangler ${args}`, {
-		cwd: workerDir,
-		encoding: 'utf-8',
-		stdio: opts.stdio || 'pipe',
-		env,
-		...opts,
-	});
-}
-
-function queryJSON(sql) {
-	const cmd = `d1 execute ${DB_NAME} --remote --json --command="${sql.replace(/"/g, '\\"')}"`;
-	const result = wranglerExec(cmd);
-	const parsed = JSON.parse(result);
-	return parsed[0]?.results ?? [];
-}
-
-function runSQL(sql) {
-	const cmd = `d1 execute ${DB_NAME} --remote --command="${sql.replace(/"/g, '\\"')}"`;
-	wranglerExec(cmd);
-}
-
-function stepTimer(name) {
-	const start = Date.now();
-	console.log(`\n[${name}] Starting...`);
-	return {
-		done(msg) {
-			const elapsed = ((Date.now() - start) / 1000).toFixed(1);
-			console.log(`[${name}] Complete (${elapsed}s)${msg ? ' — ' + msg : ''}`);
-		},
-	};
-}
-
-function logWarn(message) {
-	const line = `[${new Date().toISOString()}] ${message}`;
-	console.warn(`  ${message}`);
-	fs.appendFileSync(path.join(projectRoot, 'scripts', 'pipeline-errors.log'), line + '\n');
-}
 
 // ── Step 1: Prerequisite checks ────────────────────────────────────────
 
@@ -155,13 +91,13 @@ function checkPrerequisites() {
 	const missing = [];
 
 	try {
-		execSync('which whisper-cli', { stdio: 'pipe' });
+		execFileSync('which', ['whisper-cli'], { stdio: 'pipe' });
 	} catch {
 		missing.push('whisper-cli — install with: brew install whisper-cpp');
 	}
 
 	try {
-		execSync('which ffmpeg', { stdio: 'pipe' });
+		execFileSync('which', ['ffmpeg'], { stdio: 'pipe' });
 	} catch {
 		missing.push('ffmpeg — install with: brew install ffmpeg');
 	}
@@ -247,36 +183,15 @@ export function parseEpisodeId(mp3Path) {
 		return `roll-over-easy_${y}-${m}-${d}_07-30-00`;
 	}
 
-	// Roll Over Easy YYYY-MM-DD (space-separated, dashes in date — post-rename canonical form)
-	const roeSpaceDashMatch = stem.match(/^Roll Over Easy\s+(\d{4})-(\d{2})-(\d{2})(?:\s|$)/i);
-	if (roeSpaceDashMatch) {
-		const [, y, m, d] = roeSpaceDashMatch;
-		return `roll-over-easy_${y}-${m}-${d}_07-30-00`;
-	}
-
 	// Roll_Over_Easy_-_YYYY-MM-DD
-	const roeUnderscoreDashMatch = stem.match(/^Roll_Over_Easy_-_(\d{4})-(\d{2})-(\d{2})/i);
-	if (roeUnderscoreDashMatch) {
-		const [, y, m, d] = roeUnderscoreDashMatch;
+	const roeUnderMatch = stem.match(/^Roll_Over_Easy_-_(\d{4})-(\d{2})-(\d{2})/i);
+	if (roeUnderMatch) {
+		const [, y, m, d] = roeUnderMatch;
 		return `roll-over-easy_${y}-${m}-${d}_07-30-00`;
 	}
 
-	// roll_over_easy-YYYY-MM-DD
-	const roeUnderscoreMatch = stem.match(/^roll_over_easy-(\d{4})-(\d{2})-(\d{2})/i);
-	if (roeUnderscoreMatch) {
-		const [, y, m, d] = roeUnderscoreMatch;
-		return `roll-over-easy_${y}-${m}-${d}_07-30-00`;
-	}
-
-	// roll-over-easy YYYY-MM-DD (space instead of underscore)
-	const roeSpaceMatch = stem.match(/^roll-over-easy\s+(\d{4})-(\d{2})-(\d{2})/i);
-	if (roeSpaceMatch) {
-		const [, y, m, d] = roeSpaceMatch;
-		return `roll-over-easy_${y}-${m}-${d}_07-30-00`;
-	}
-
-	// rec_(YYYY_MM_DD)_N
-	const recYMDMatch = stem.match(/^rec_\((\d{4})_(\d{2})_(\d{2})\)_/);
+	// rec_YYYYMMDD_HHMM
+	const recYMDMatch = stem.match(/^rec_(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})/);
 	if (recYMDMatch) {
 		const [, y, m, d] = recYMDMatch;
 		return `roll-over-easy_${y}-${m}-${d}_07-30-00`;
@@ -316,6 +231,7 @@ export function parseEpisodeId(mp3Path) {
 
 /**
  * Clean whisper.cpp artifacts from parsed segments:
+ *  - Apply word corrections (e.g. "soldier" -> "Suldrew")
  *  - Drop zero-duration segments (start_ms == end_ms)
  *  - Deduplicate consecutive identical text
  *  - Drop segments with internal phrase looping (same phrase 4+ times)
@@ -324,7 +240,7 @@ function cleanSegments(segments) {
 	const cleaned = [];
 
 	for (let i = 0; i < segments.length; i++) {
-		const seg = segments[i];
+		const seg = { ...segments[i], text: applyWordCorrections(segments[i].text) };
 
 		// Drop zero-duration segments
 		if (seg.start_ms === seg.end_ms) continue;
@@ -352,32 +268,21 @@ function cleanSegments(segments) {
 	for (const [text, count] of freq) {
 		if (count > threshold) hallucinated.add(text);
 	}
-	const result = hallucinated.size > 0
-		? cleaned.filter(seg => !hallucinated.has(seg.text.trim().toLowerCase()))
-		: cleaned;
-
-	// Fix common Whisper mishearings of host name "Early Bird"
-	for (const seg of result) {
-		seg.text = seg.text.replace(
-			/\b(nearly|yearly|really|eerily|dearly)\s+(bird|beard)\b/gi,
-			'Early Bird'
-		);
+	if (hallucinated.size > 0) {
+		return cleaned.filter(seg => !hallucinated.has(seg.text.trim().toLowerCase()));
 	}
 
-	return result;
+	return cleaned;
 }
 
 /**
  * Detect internal looping: a phrase of 3+ words repeating 4+ times in a row.
- * E.g. "I think that I think that I think that I think that"
  */
 function hasInternalLoop(text) {
 	const words = text.toLowerCase().split(/\s+/);
 	if (words.length < 12) return false;
 
-	// Check phrase lengths from 3 to 8 words
 	for (let phraseLen = 3; phraseLen <= 8 && phraseLen <= words.length / 4; phraseLen++) {
-		// Slide through the text looking for repeating phrases
 		for (let start = 0; start <= words.length - phraseLen * 4; start++) {
 			const phrase = words.slice(start, start + phraseLen).join(' ');
 			let repeats = 1;
@@ -434,7 +339,6 @@ function transcribe(mp3Path, episodeId, force) {
 			'--vad',
 			'--vad-model', VAD_MODEL_PATH,
 			'--suppress-nst',
-			'--max-context', '0',
 			wavPath,
 		], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'inherit'], timeout: 0, maxBuffer: 50 * 1024 * 1024 });
 
@@ -458,7 +362,6 @@ function transcribe(mp3Path, episodeId, force) {
 			// Filter very short segments
 			if (text.length < 3) continue;
 
-			// offsets.from and offsets.to are in milliseconds (with VAD + --output-json-full)
 			parsed.push({
 				start_ms: seg.offsets.from,
 				end_ms: seg.offsets.to,
@@ -480,25 +383,6 @@ function transcribe(mp3Path, episodeId, force) {
 	} finally {
 		fs.rmSync(tmpDir, { recursive: true, force: true });
 	}
-}
-
-// ── Step 3b: Transcribe (OpenAI Whisper API) ───────────────────────────
-
-async function transcribeOpenAI(mp3Path, episodeId, force) {
-	const timer = stepTimer('TRANSCRIBE (OpenAI Whisper)');
-	const outputPath = path.join(transcriptsDir, `${episodeId}.json`);
-
-	if (!force && fs.existsSync(outputPath)) {
-		timer.done('transcript already exists, skipping');
-		return;
-	}
-
-	const { transcribeFile } = await import('./transcribe.js');
-	const transcript = await transcribeFile(mp3Path, episodeId, episodeId);
-
-	fs.mkdirSync(transcriptsDir, { recursive: true });
-	fs.writeFileSync(outputPath, JSON.stringify(transcript, null, 2));
-	timer.done(`${transcript.segments.length} segments`);
 }
 
 // ── Step 4: Seed D1 database ───────────────────────────────────────────
@@ -525,23 +409,13 @@ function seedDB(episodeId, force) {
 	const { segments } = transcript;
 
 	if (force) {
-		// Delete existing data to re-insert (DELETE is a no-op if rows don't exist)
 		runSQL(`DELETE FROM transcript_segments WHERE episode_id = '${escapeSQL(episodeId)}'`);
 		runSQL(`DELETE FROM episodes WHERE id = '${escapeSQL(episodeId)}'`);
 	}
 
-	// Get actual audio duration via ffprobe
-	let durationMs = 0;
-	try {
-		const probe = execFileSync('ffprobe', [
-			'-v', 'quiet', '-show_entries', 'format=duration',
-			'-of', 'csv=p=0', mp3Path,
-		], { encoding: 'utf-8' }).trim();
-		durationMs = Math.round(parseFloat(probe) * 1000);
-	} catch {
-		const lastSegment = segments[segments.length - 1];
-		durationMs = lastSegment ? lastSegment.end_ms : 0;
-	}
+	// Insert episode record
+	const lastSegment = segments[segments.length - 1];
+	const durationMs = lastSegment ? lastSegment.end_ms : 0;
 	runSQL(
 		`INSERT INTO episodes (id, title, duration_ms) VALUES ('${escapeSQL(episodeId)}', '${escapeSQL(episodeId)}', ${durationMs})`
 	);
@@ -550,30 +424,13 @@ function seedDB(episodeId, force) {
 	for (let i = 0; i < segments.length; i += DB_BATCH_SIZE) {
 		const batch = segments.slice(i, i + DB_BATCH_SIZE);
 		const values = batch
-			.map((s) => `('${escapeSQL(episodeId)}', ${s.start_ms}, ${s.end_ms}, '${escapeSQL(s.text)}')`)
+			.map((s) => `('${escapeSQL(episodeId)}', ${s.start_ms}, ${s.end_ms}, '${escapeSQL(applyWordCorrections(s.text))}')`)
 			.join(', ');
 		runSQL(`INSERT INTO transcript_segments (episode_id, start_ms, end_ms, text) VALUES ${values}`);
 	}
 
 	timer.done(`${segments.length} segments inserted`);
-	purgeHallucinations(episodeId);
-}
-
-function purgeHallucinations(episodeId) {
-	const hallucinations = queryJSON(
-		`SELECT text, COUNT(*) as cnt FROM transcript_segments
-		 WHERE episode_id = '${escapeSQL(episodeId)}'
-		 GROUP BY text HAVING cnt > 20 AND length(text) > 20`
-	);
-	if (!hallucinations || hallucinations.length === 0) return;
-	const phrases = hallucinations.map((r) => `'${escapeSQL(r.text)}'`).join(', ');
-	runSQL(
-		`DELETE FROM transcript_segments
-		 WHERE episode_id = '${escapeSQL(episodeId)}'
-		   AND text IN (${phrases})`
-	);
-	const totalDeleted = hallucinations.reduce((sum, r) => sum + r.cnt, 0);
-	logWarn(`Purged ${totalDeleted} hallucinated segments (${hallucinations.length} unique phrase(s)) from ${episodeId}`);
+	purgeEpisode(episodeId);
 }
 
 // ── Step 5: Generate embeddings → Vectorize ────────────────────────────
@@ -589,43 +446,14 @@ async function generateEmbeddings(episodeId) {
 
 	const baseUrl = `https://api.cloudflare.com/client/v4/accounts/${accountId}`;
 
-	// Read transcript
+	// Read transcript and chunk it
 	const transcriptPath = path.join(transcriptsDir, `${episodeId}.json`);
 	const transcript = JSON.parse(fs.readFileSync(transcriptPath, 'utf-8'));
-	const { segments } = transcript;
+	const chunks = chunkEpisode(transcript);
 
-	if (!segments || segments.length === 0) {
-		timer.done('no segments, skipping');
+	if (chunks.length === 0) {
+		timer.done('no chunks, skipping');
 		return;
-	}
-
-	// Chunk transcript into windows
-	const lastSegment = segments[segments.length - 1];
-	const episodeDurationMs = lastSegment.end_ms;
-	const windowMs = WINDOW_SEC * 1000;
-	const stepMs = STEP_SEC * 1000;
-
-	const chunks = [];
-	for (let windowStart = 0; windowStart < episodeDurationMs; windowStart += stepMs) {
-		const windowEnd = windowStart + windowMs;
-		const windowSegments = segments.filter((s) => s.end_ms > windowStart && s.start_ms < windowEnd);
-		if (windowSegments.length === 0) continue;
-
-		const text = windowSegments.map((s) => s.text).join(' ');
-		if (!isAscii(text)) continue;
-		if (text.trim().length < 20) continue;
-
-		const chunkStartMs = windowSegments[0].start_ms;
-		const chunkEndMs = windowSegments[windowSegments.length - 1].end_ms;
-
-		chunks.push({
-			id: `${episodeId}:${chunkStartMs}`,
-			episode_id: episodeId,
-			title: episodeId,
-			start_ms: chunkStartMs,
-			end_ms: chunkEndMs,
-			text: text.trim(),
-		});
 	}
 
 	console.log(`  ${chunks.length} chunks to embed`);
@@ -695,96 +523,10 @@ async function generateEmbeddings(episodeId) {
 	timer.done(`${vectors.length} vectors`);
 }
 
-// ── Guest interview start detection ───────────────────────────────────
-
-function detectGuestStart(segments, guestNames) {
-	const MIN_START_MS = 3_000_000;
-	const SONG_DURATION_MS = 180_000;
-	const GAP_THRESHOLD_MS = 60_000;
-	const FALLBACK_MS = 3_600_000;
-
-	if (guestNames.length === 0) return null;
-
-	const late = segments.filter(s => s.start_ms >= MIN_START_MS);
-	if (late.length === 0) return null;
-
-	const breaks = [];
-	for (let i = 0; i < late.length; i++) {
-		const seg = late[i];
-		const duration = seg.end_ms - seg.start_ms;
-		if (duration >= SONG_DURATION_MS) {
-			breaks.push({ type: 'song', index: i, end_ms: seg.end_ms });
-		}
-		if (i > 0) {
-			const gap = seg.start_ms - late[i - 1].end_ms;
-			if (gap >= GAP_THRESHOLD_MS) {
-				breaks.push({ type: 'gap', index: i, end_ms: late[i - 1].end_ms });
-			}
-		}
-	}
-
-	const lowerNames = guestNames.map(n => n.toLowerCase());
-	function segmentMentionsGuest(seg) {
-		const text = seg.text.toLowerCase();
-		return lowerNames.some(name => text.includes(name));
-	}
-
-	if (breaks.length > 0) {
-		breaks.sort((a, b) => a.end_ms - b.end_ms);
-		const lastBreak = breaks[breaks.length - 1];
-		const afterBreak = late.filter(s => s.start_ms >= lastBreak.end_ms);
-		for (const seg of afterBreak) {
-			if (segmentMentionsGuest(seg)) return seg.start_ms;
-		}
-		if (afterBreak.length > 0) return afterBreak[0].start_ms;
-	}
-
-	for (const seg of late) {
-		if (segmentMentionsGuest(seg)) return seg.start_ms;
-	}
-
-	return FALLBACK_MS;
-}
-
 // ── Step 6: Generate summary ───────────────────────────────────────────
-
-function parseEpisodeDate(episodeId) {
-	const match = episodeId.match(/(\d{4}-\d{2}-\d{2})/);
-	return match ? match[1] : null;
-}
-
-function utcToPacific(isoString) {
-	const date = new Date(isoString);
-	return date.toLocaleTimeString('en-US', {
-		timeZone: 'America/Los_Angeles',
-		hour: 'numeric',
-		minute: '2-digit',
-	});
-}
-
-async function fetchSunriseSunset(dateStr) {
-	const url = `https://api.sunrise-sunset.org/json?lat=37.7955&lng=-122.3937&date=${dateStr}&formatted=0`;
-	try {
-		const res = await fetch(url);
-		const data = await res.json();
-		if (data.status !== 'OK') return null;
-		return {
-			sunrise: utcToPacific(data.results.sunrise),
-			sunset: utcToPacific(data.results.sunset),
-		};
-	} catch (err) {
-		logWarn(`sunrise/sunset fetch failed for ${dateStr}: ${err.message}`);
-		return null;
-	}
-}
 
 async function generateSummary(episodeId, force) {
 	const timer = stepTimer('SUMMARY');
-
-	const apiKey = process.env.OPENAI_API_KEY;
-	if (!apiKey) {
-		throw new Error('Missing OPENAI_API_KEY environment variable');
-	}
 
 	// Check if summary already exists
 	if (!force) {
@@ -817,77 +559,9 @@ async function generateSummary(episodeId, force) {
 		}
 	}
 
-	// Build system prompt
-	const systemLines = [
-		'You summarize transcripts from "Roll Over Easy," a live morning radio show on BFF.fm broadcast from the Ferry Building in San Francisco.',
-		'',
-		'Respond with a JSON object containing three fields:',
-		'',
-		'1. "title": A short, catchy episode title (3-8 words). Highlight the main guest or topic. Use an exclamation point for energy. Examples: "Super Bowl Thursday!", "Jane Natoli\'s San Francisco!", "Tree Twins and Muni Diaries".',
-		'',
-		'2. "summary": A concise summary in this format:',
-		'   Line 1: The weather/vibe that morning (if mentioned — fog, sun, rain, cold, etc.). If not mentioned, skip this line.',
-		'   Line 2: Who joined the show — name any guests who came on for a segment and briefly note who they are. The show is live on location, so random passersby sometimes hop on the mic for a few seconds to a few minutes — mention these folks too if they say something memorable or funny.',
-		'   Line 3-4: What stories and topics came up — San Francisco news, local culture, neighborhood happenings, food, music, etc.',
-		'   Keep a warm, San Francisco tone. Use 2-5 sentences total. Do not use bullet points or labels like "Weather:" — just weave it naturally.',
-		'',
-		'3. "guests": An array of guest full names mentioned in the episode. Exclude the hosts Sequoia and The Early Bird. Return an empty array if there are no guests.',
-	];
-
-	if (dateStr || sunData) {
-		systemLines.push('');
-		systemLines.push('Additional context for this episode:');
-		if (dateStr) {
-			const formatted = new Date(dateStr + 'T12:00:00').toLocaleDateString('en-US', {
-				year: 'numeric', month: 'long', day: 'numeric',
-			});
-			systemLines.push(`- Date: ${formatted}`);
-		}
-		if (sunData) {
-			systemLines.push(`- Sunrise: ${sunData.sunrise} PT`);
-			systemLines.push(`- Sunset: ${sunData.sunset} PT`);
-		}
-		systemLines.push('Include the weather and temperature explicitly in your summary (pull temperature from what the hosts mention in the transcript). Also mention what time sunrise and sunset were that day.');
-	}
-
-	// Call OpenAI
+	// Generate summary using shared function
 	console.log('  Generating title + summary...');
-	const res = await fetch('https://api.openai.com/v1/chat/completions', {
-		method: 'POST',
-		headers: {
-			'Content-Type': 'application/json',
-			Authorization: `Bearer ${apiKey}`,
-		},
-		body: JSON.stringify({
-			model: 'gpt-4o-mini',
-			messages: [
-				{ role: 'system', content: systemLines.join('\n') },
-				{ role: 'user', content: `Summarize this Roll Over Easy episode transcript:\n\n${transcriptText}` },
-			],
-			temperature: 0.5,
-			max_tokens: 400,
-			response_format: { type: 'json_object' },
-		}),
-	});
-
-	if (!res.ok) {
-		const body = await res.text();
-		throw new Error(`OpenAI API error ${res.status}: ${body}`);
-	}
-
-	const data = await res.json();
-	const content = data.choices[0].message.content.trim();
-	let title, summary, guests = [];
-	try {
-		const parsed = JSON.parse(content);
-		title = parsed.title?.trim();
-		summary = parsed.summary?.trim();
-		guests = Array.isArray(parsed.guests) ? parsed.guests : [];
-	} catch (err) {
-		logWarn(`[${episodeId}] JSON parse failed in summary: ${err.message}`);
-		title = null;
-		summary = content;
-	}
+	const { title, summary, guests } = await generateSummaryFromText(transcriptText, { dateStr, sunData });
 
 	if (title) {
 		console.log(`  Title: ${title}`);
@@ -915,259 +589,7 @@ async function generateSummary(episodeId, force) {
 		}
 	}
 
-	// Detect guest interview start time
-	if (guests.length > 0) {
-		const transcriptPath = path.join(transcriptsDir, `${episodeId}.json`);
-		if (fs.existsSync(transcriptPath)) {
-			const transcriptData = JSON.parse(fs.readFileSync(transcriptPath, 'utf-8'));
-			const guestStartMs = detectGuestStart(transcriptData.segments, guests);
-			if (guestStartMs != null) {
-				runSQL(`UPDATE episodes SET guest_start_ms = ${guestStartMs} WHERE id = '${escapeSQL(episodeId)}'`);
-				const mins = Math.floor(guestStartMs / 60000);
-				const secs = Math.floor((guestStartMs % 60000) / 1000);
-				console.log(`  Guest interview starts at ${mins}:${String(secs).padStart(2, '0')}`);
-			}
-		}
-	}
-
 	timer.done();
-}
-
-// ── Step 6.5: Extract & seed places ────────────────────────────────────
-
-const NOMINATIM_DELAY_MS = 1100;
-const SF_VIEWBOX = '-122.517,37.833,-122.355,37.708';
-const PLACES_JSON_PATH = path.join(projectRoot, 'scripts', 'places.json');
-
-const PLACES_SYSTEM_PROMPT = `You extract San Francisco place names from a local radio show transcript.
-This is "Roll Over Easy," a show deeply rooted in SF culture — hosts frequently mention restaurants, cafes, bars, taquerias, bakeries, bookstores, music venues, record shops, community spaces, murals, parks, plazas, beaches, hilltops, streets, intersections, neighborhoods, landmarks, schools, libraries, transit stops, and local businesses.
-
-Return ONLY a JSON array of strings. Be thorough — capture every SF place mentioned, including:
-- Restaurants & food: taquerias, dim sum spots, bakeries, coffee shops, ice cream parlors, breweries
-- Nightlife & culture: bars, dive bars, music venues, theaters, galleries, bookstores, record shops
-- Neighborhoods: Mission, Castro, Sunset, Richmond, Tenderloin, SoMa, Dogpatch, Excelsior, etc.
-- Parks & outdoor: Dolores Park, Golden Gate Park, Ocean Beach, Bernal Hill, Twin Peaks, etc.
-- Landmarks: Ferry Building, Transamerica Pyramid, Sutro Tower, Coit Tower, City Hall, etc.
-- Streets & intersections: Market Street, Valencia Street, 24th & Mission, etc.
-- Transit: Muni stops, BART stations, cable car lines
-- Community spaces: Manny's, BFF.fm Studios, libraries, rec centers
-
-Only include places in San Francisco proper (not Oakland, Berkeley, Marin, or other Bay Area cities unless the place is an SF icon like the Golden Gate Bridge).
-Normalise names to how they'd appear on a map:
-- "17th and valencia" → "17th Street & Valencia Street"
-- "dolores park" → "Dolores Park"
-- "the mission" → "Mission District"
-If nothing qualifies, return [].`;
-
-function sampleTranscript(segments) {
-	const total = segments.length;
-	if (total < 50) return segments.map(s => s.text).join(' ');
-
-	const start = Math.min(40, Math.floor(total * 0.05));
-	const usable = total - start;
-	const windowSize = Math.min(200, Math.floor(usable / 5));
-	const windows = [];
-	for (let i = 0; i < 5; i++) {
-		const offset = start + Math.floor((usable / 5) * i);
-		windows.push(segments.slice(offset, offset + windowSize));
-	}
-	return windows.flat().map(s => s.text).join(' ').slice(0, 12000);
-}
-
-function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
-
-async function nominatimSearch(url) {
-	const res = await fetch(url, { headers: { 'User-Agent': 'roe-episode-search/1.0' } });
-	if (!res.ok) return [];
-	return res.json();
-}
-
-async function geocodePlace(placeName) {
-	// Strategy 1: Bounded SF search
-	const q1 = encodeURIComponent(placeName + ' San Francisco CA');
-	try {
-		const results = await nominatimSearch(`https://nominatim.openstreetmap.org/search?q=${q1}&format=json&limit=1&viewbox=${SF_VIEWBOX}&bounded=1`);
-		if (results.length > 0) return { lat: parseFloat(results[0].lat), lng: parseFloat(results[0].lon) };
-	} catch {}
-
-	await sleep(NOMINATIM_DELAY_MS);
-
-	// Strategy 2: Intersection handling
-	if (placeName.includes('&') || placeName.includes(' and ')) {
-		const parts = placeName.split(/\s*[&]\s*|\s+and\s+/i);
-		if (parts.length === 2) {
-			const q2 = encodeURIComponent(parts[0].trim() + ' and ' + parts[1].trim() + ', San Francisco');
-			try {
-				const results = await nominatimSearch(`https://nominatim.openstreetmap.org/search?q=${q2}&format=json&limit=1&viewbox=${SF_VIEWBOX}&bounded=1`);
-				if (results.length > 0) return { lat: parseFloat(results[0].lat), lng: parseFloat(results[0].lon) };
-			} catch {}
-			await sleep(NOMINATIM_DELAY_MS);
-
-			// Strategy 3: First street only
-			const q3 = encodeURIComponent(parts[0].trim() + ', San Francisco CA');
-			try {
-				const results = await nominatimSearch(`https://nominatim.openstreetmap.org/search?q=${q3}&format=json&limit=1&viewbox=${SF_VIEWBOX}&bounded=1`);
-				if (results.length > 0) return { lat: parseFloat(results[0].lat), lng: parseFloat(results[0].lon) };
-			} catch {}
-			await sleep(NOMINATIM_DELAY_MS);
-		}
-	}
-
-	// Strategy 4: Unbounded but verify SF area
-	const q4 = encodeURIComponent(placeName + ' San Francisco CA');
-	try {
-		const results = await nominatimSearch(`https://nominatim.openstreetmap.org/search?q=${q4}&format=json&limit=1&viewbox=${SF_VIEWBOX}&bounded=0`);
-		if (results.length > 0) {
-			const lat = parseFloat(results[0].lat);
-			const lng = parseFloat(results[0].lon);
-			if (lat >= 37.7 && lat <= 37.84 && lng >= -122.52 && lng <= -122.35) {
-				return { lat, lng };
-			}
-		}
-	} catch {}
-
-	return null;
-}
-
-async function extractAndSeedPlaces(episodeId, force) {
-	const timer = stepTimer('EXTRACT-PLACES');
-
-	const apiKey = process.env.OPENAI_API_KEY;
-	if (!apiKey) {
-		logWarn('Missing OPENAI_API_KEY — skipping place extraction');
-		timer.done('skipped (no API key)');
-		return;
-	}
-
-	// Read transcript
-	const transcriptPath = path.join(transcriptsDir, `${episodeId}.json`);
-	const transcript = JSON.parse(fs.readFileSync(transcriptPath, 'utf-8'));
-	const text = sampleTranscript(transcript.segments);
-
-	// Extract places via GPT-4o-mini
-	console.log('  Extracting SF places from transcript...');
-	const res = await fetch('https://api.openai.com/v1/chat/completions', {
-		method: 'POST',
-		headers: {
-			'Content-Type': 'application/json',
-			Authorization: `Bearer ${apiKey}`,
-		},
-		body: JSON.stringify({
-			model: 'gpt-4o-mini',
-			messages: [
-				{ role: 'system', content: PLACES_SYSTEM_PROMPT },
-				{ role: 'user', content: text },
-			],
-			temperature: 0,
-			max_tokens: 1000,
-		}),
-	});
-
-	if (!res.ok) {
-		const body = await res.text();
-		throw new Error(`OpenAI API error ${res.status}: ${body}`);
-	}
-
-	const data = await res.json();
-	const content = data.choices[0].message.content.trim();
-	let places;
-	try {
-		const cleaned = content.replace(/^```json\s*/i, '').replace(/```\s*$/, '').trim();
-		places = JSON.parse(cleaned);
-	} catch {
-		places = [];
-	}
-
-	if (places.length === 0) {
-		timer.done('no SF places found');
-		return;
-	}
-
-	console.log(`  Found ${places.length} places: ${places.slice(0, 5).join(', ')}${places.length > 5 ? '...' : ''}`);
-
-	// Load existing places.json
-	let placesData = { episodeResults: {}, places: [] };
-	if (fs.existsSync(PLACES_JSON_PATH)) {
-		try { placesData = JSON.parse(fs.readFileSync(PLACES_JSON_PATH)); } catch {}
-	}
-
-	// Update episodeResults for this episode
-	placesData.episodeResults[episodeId] = places;
-
-	// Build set of already-geocoded place names
-	const existingCoords = {};
-	for (const p of (placesData.places || [])) {
-		existingCoords[p.name] = { lat: p.lat, lng: p.lng };
-	}
-
-	// Find new places that need geocoding
-	const newPlaceNames = places.filter(name => !existingCoords[name]);
-	if (newPlaceNames.length > 0) {
-		console.log(`  Geocoding ${newPlaceNames.length} new places...`);
-	}
-
-	const newGeocoded = [];
-	for (const name of newPlaceNames) {
-		const coords = await geocodePlace(name);
-		if (coords) {
-			newGeocoded.push({ name, lat: coords.lat, lng: coords.lng });
-			existingCoords[name] = coords;
-		}
-		await sleep(NOMINATIM_DELAY_MS);
-	}
-
-	// Rebuild places array: update episode lists for existing places, add new ones
-	const placeMap = new Map();
-	for (const p of (placesData.places || [])) {
-		placeMap.set(p.name, { ...p, episodes: new Set(p.episodes || []) });
-	}
-	for (const ng of newGeocoded) {
-		placeMap.set(ng.name, { ...ng, episodes: new Set() });
-	}
-	// Add this episode to all its places
-	for (const name of places) {
-		if (placeMap.has(name)) {
-			placeMap.get(name).episodes.add(episodeId);
-		}
-	}
-	// Convert back to arrays
-	placesData.places = [...placeMap.values()].map(p => ({
-		name: p.name, lat: p.lat, lng: p.lng, episodes: [...p.episodes],
-	}));
-
-	fs.writeFileSync(PLACES_JSON_PATH, JSON.stringify(placesData, null, 2));
-
-	// Seed to D1 incrementally
-	console.log('  Seeding places to D1...');
-
-	// Clear this episode's mentions first (idempotent re-run)
-	runSQL(`DELETE FROM place_mentions WHERE episode_id = '${escapeSQL(episodeId)}'`);
-
-	// Insert any new places
-	const geocodedForThisEpisode = places
-		.map(name => existingCoords[name] ? { name, ...existingCoords[name] } : null)
-		.filter(Boolean);
-
-	for (const p of geocodedForThisEpisode) {
-		runSQL(`INSERT OR IGNORE INTO places (name, lat, lng) VALUES ('${escapeSQL(p.name)}', ${p.lat}, ${p.lng})`);
-	}
-
-	// Get place IDs and insert mentions
-	const placeRows = queryJSON('SELECT id, name FROM places');
-	const nameToId = {};
-	for (const row of placeRows) nameToId[row.name] = row.id;
-
-	const mentionValues = geocodedForThisEpisode
-		.filter(p => nameToId[p.name])
-		.map(p => `(${nameToId[p.name]}, '${escapeSQL(episodeId)}')`)
-		.join(', ');
-
-	if (mentionValues) {
-		runSQL(`INSERT OR IGNORE INTO place_mentions (place_id, episode_id) VALUES ${mentionValues}`);
-	}
-
-	const seededCount = geocodedForThisEpisode.filter(p => nameToId[p.name]).length;
-	timer.done(`${places.length} extracted, ${newGeocoded.length} newly geocoded, ${seededCount} seeded to D1`);
 }
 
 // ── Step 7: Upload audio → R2 ─────────────────────────────────────────
@@ -1204,7 +626,7 @@ function uploadAudio(mp3Path, episodeId, force) {
 		const r2Key = `${episodeId}.m4a`;
 		const publicUrl = `${R2_PUBLIC_URL}/${r2Key}`;
 		console.log('  Uploading to R2...');
-		wranglerExec(`r2 object put ${R2_BUCKET}/${r2Key} --file="${m4aPath}" --content-type="audio/mp4"`);
+		wranglerExec(['r2', 'object', 'put', `${R2_BUCKET}/${r2Key}`, `--file=${m4aPath}`, '--content-type=audio/mp4']);
 
 		// Update DB
 		console.log('  Updating database...');
@@ -1220,7 +642,7 @@ function uploadAudio(mp3Path, episodeId, force) {
 
 function parseArgs() {
 	const args = process.argv.slice(2);
-	const opts = { force: false, skip: new Set(), episodeId: null, mp3Path: null, openaiWhisper: false };
+	const opts = { force: false, skip: new Set(), episodeId: null, mp3Path: null };
 
 	for (let i = 0; i < args.length; i++) {
 		if (args[i] === '--force') {
@@ -1231,8 +653,6 @@ function parseArgs() {
 		} else if (args[i] === '--episode-id' && args[i + 1]) {
 			opts.episodeId = args[i + 1];
 			i++;
-		} else if (args[i] === '--openai-whisper') {
-			opts.openaiWhisper = true;
 		} else if (!args[i].startsWith('--')) {
 			opts.mp3Path = args[i];
 		}
@@ -1251,7 +671,6 @@ async function main() {
 		console.error('  --episode-id ID          Override auto-parsed episode ID');
 		console.error('  --force                  Re-run all steps even if already done');
 		console.error('  --skip step1,step2       Skip steps (transcribe, seed-db, embeddings, summary, upload-audio)');
-		console.error('  --openai-whisper         Use OpenAI Whisper API instead of local whisper.cpp');
 		process.exit(1);
 	}
 
@@ -1269,23 +688,16 @@ async function main() {
 	console.log(`  File:       ${path.basename(mp3Path)}`);
 	console.log(`  Episode ID: ${episodeId}`);
 	console.log(`  Force:      ${force}`);
-	console.log(`  Transcribe: ${opts.openaiWhisper ? 'OpenAI Whisper API' : 'local whisper.cpp'}`);
 	if (skip.size > 0) console.log(`  Skipping:   ${[...skip].join(', ')}`);
 
 	const totalStart = Date.now();
 
-	// Step 1: Prerequisites (only needed for local whisper)
-	if (!opts.openaiWhisper) {
-		checkPrerequisites();
-	}
+	// Step 1: Prerequisites
+	checkPrerequisites();
 
 	// Step 2: Transcribe
 	if (!skip.has('transcribe')) {
-		if (opts.openaiWhisper) {
-			await transcribeOpenAI(mp3Path, episodeId, force);
-		} else {
-			transcribe(mp3Path, episodeId, force);
-		}
+		transcribe(mp3Path, episodeId, force);
 	} else {
 		console.log('\n[TRANSCRIBE] Skipped');
 	}
@@ -1311,14 +723,7 @@ async function main() {
 		console.log('\n[SUMMARY] Skipped');
 	}
 
-	// Step 6: Extract & seed places
-	if (!skip.has('extract-places')) {
-		await extractAndSeedPlaces(episodeId, force);
-	} else {
-		console.log('\n[EXTRACT-PLACES] Skipped');
-	}
-
-	// Step 7: Upload audio
+	// Step 6: Upload audio
 	if (!skip.has('upload-audio')) {
 		uploadAudio(mp3Path, episodeId, force);
 	} else {
