@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -23,10 +23,12 @@ function splitAudio(audioPath, tmpDir) {
 	const chunks = [];
 
 	// Get total duration in seconds
-	const durationStr = execSync(
-		`ffprobe -v error -show_entries format=duration -of csv=p=0 "${audioPath}"`,
-		{ encoding: 'utf-8' }
-	).trim();
+	const durationStr = execFileSync('ffprobe', [
+		'-v', 'error',
+		'-show_entries', 'format=duration',
+		'-of', 'csv=p=0',
+		audioPath,
+	], { encoding: 'utf-8' }).trim();
 	const totalSeconds = parseFloat(durationStr);
 	const totalChunks = Math.ceil(totalSeconds / CHUNK_DURATION_SECONDS);
 
@@ -36,10 +38,13 @@ function splitAudio(audioPath, tmpDir) {
 		const startSeconds = i * CHUNK_DURATION_SECONDS;
 		const chunkPath = path.join(tmpDir, `chunk_${String(i).padStart(3, '0')}${ext}`);
 
-		execSync(
-			`ffmpeg -y -i "${audioPath}" -ss ${startSeconds} -t ${CHUNK_DURATION_SECONDS} -acodec copy "${chunkPath}" 2>/dev/null`,
-			{ encoding: 'utf-8' }
-		);
+		execFileSync('ffmpeg', [
+			'-y', '-i', audioPath,
+			'-ss', String(startSeconds),
+			'-t', String(CHUNK_DURATION_SECONDS),
+			'-acodec', 'copy',
+			chunkPath,
+		], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] });
 
 		chunks.push({ path: chunkPath, offsetMs: startSeconds * 1000 });
 	}
@@ -95,7 +100,7 @@ async function transcribeChunk(chunkPath, offsetMs) {
 			'Marin, the East Bay, the Peninsula, Silicon Valley,',
 			// Common SF topics
 			'tech, gentrification, rent control, the housing crisis, NIMBYism, YIMBYism,',
-			'the Summer of Love, the Beat Generation, Burning Man,',
+			'the Summer of Love, the Beat Generation, Burning Man, Suldrew,',
 		].join(' '),
 	});
 
