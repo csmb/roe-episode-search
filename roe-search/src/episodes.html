@@ -137,6 +137,19 @@
 	.ep-btn:hover { background: #ebebeb; color: #303030; }
 	.ep-btn:active { transform: scale(0.97); }
 	.ep-btn.playing { background: #fff3eb; color: #e85d04; }
+	.ep-btn.copied { background: #e8f5e9; color: #2e7d32; }
+
+	/* Highlighted episode from share link */
+	.episode.highlighted {
+		box-shadow: 0 0 0 2px #e85d04, 0 2px 8px rgba(0,0,0,0.06);
+	}
+	.episode.highlight-fade {
+		animation: highlight-pulse 2s ease-out forwards;
+	}
+	@keyframes highlight-pulse {
+		from { box-shadow: 0 0 0 2px #e85d04, 0 2px 8px rgba(0,0,0,0.06); }
+		to { box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+	}
 
 	/* Player bar */
 	.player-bar {
@@ -354,6 +367,7 @@ async function loadEpisodes() {
 			const ep = data.episodes[i];
 			const div = document.createElement('div');
 			div.className = 'episode';
+			div.id = ep.id;
 
 			const dateStr = parseEpisodeDate(ep.id);
 
@@ -375,6 +389,7 @@ async function loadEpisodes() {
 				html += '<button class="ep-btn ep-skip-btn" data-audio="/audio/' + encodeURIComponent(ep.id) + '.m4a" data-title="' + escapeAttr(ep.title) + '" data-start="' + Math.floor(ep.guest_start_ms / 1000) + '">&#127908; Skip to interview with ' + escapeHtml(formatGuestLabel(ep.guests)) + '</button>';
 			}
 			html += '<a class="ep-btn" href="/?q=&episode=' + encodeURIComponent(ep.id) + '">&#128269; Search</a>';
+			html += '<button class="ep-btn ep-share-btn" data-id="' + escapeAttr(ep.id) + '">&#128279; Link</button>';
 			html += '</div>';
 			html += '</div>';
 
@@ -551,6 +566,19 @@ progressContainer.addEventListener('click', (e) => {
 episodesEl.addEventListener('click', (e) => {
 	const btn = e.target.closest('.ep-btn');
 	if (!btn) return;
+
+	// Share/link button
+	if (btn.classList.contains('ep-share-btn')) {
+		const epId = btn.dataset.id;
+		const url = location.origin + '/episodes#' + epId;
+		navigator.clipboard.writeText(url).then(() => {
+			btn.innerHTML = '&#10003; Copied';
+			btn.classList.add('copied');
+			setTimeout(() => { btn.innerHTML = '&#128279; Link'; btn.classList.remove('copied'); }, 2000);
+		});
+		return;
+	}
+
 	const audioUrl = btn.dataset.audio;
 	const title = btn.dataset.title;
 	const start = parseInt(btn.dataset.start, 10);
@@ -563,7 +591,18 @@ episodesEl.addEventListener('click', (e) => {
 	playEpisode(audioUrl, start, title);
 });
 
-loadEpisodes();
+// Scroll to linked episode after load
+function scrollToLinkedEpisode() {
+	const hash = location.hash.slice(1);
+	if (!hash) return;
+	const el = document.getElementById(hash);
+	if (!el) return;
+	el.classList.add('highlighted');
+	el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+	setTimeout(() => { el.classList.remove('highlighted'); el.classList.add('highlight-fade'); }, 2000);
+}
+
+loadEpisodes().then(scrollToLinkedEpisode);
 </script>
 
 </body>
