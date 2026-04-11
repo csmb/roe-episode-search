@@ -12,44 +12,9 @@
  *   node scripts/clean-hallucinations.js 2014-03-06 2014-05-08    # specific dates
  */
 
-import { execSync } from 'node:child_process';
-import path from 'node:path';
+import { escapeSQL, queryJSON, runSQL } from './lib.js';
 
-const DB_NAME = 'roe-episodes';
-const workerDir = path.resolve(
-	path.dirname(decodeURIComponent(new URL(import.meta.url).pathname)),
-	'..',
-	'roe-search'
-);
-
-function escapeSQL(str) {
-	return str.replace(/'/g, "''");
-}
-
-function wranglerExec(args) {
-	const env = { ...process.env };
-	delete env.CLOUDFLARE_API_TOKEN;
-	return execSync(`npx wrangler ${args}`, {
-		cwd: workerDir,
-		encoding: 'utf-8',
-		stdio: 'pipe',
-		env,
-	});
-}
-
-function queryJSON(sql) {
-	const cmd = `d1 execute ${DB_NAME} --remote --json --command="${sql.replace(/"/g, '\\"')}"`;
-	const result = wranglerExec(cmd);
-	const parsed = JSON.parse(result);
-	return parsed[0]?.results ?? [];
-}
-
-function runSQL(sql) {
-	const cmd = `d1 execute ${DB_NAME} --remote --command="${sql.replace(/"/g, '\\"')}"`;
-	wranglerExec(cmd);
-}
-
-function purgeEpisode(episodeId) {
+export function purgeEpisode(episodeId) {
 	// Find hallucinated phrases: length > 20 chars, repeated > 20 times
 	const hallucinations = queryJSON(
 		`SELECT text, COUNT(*) as cnt FROM transcript_segments
