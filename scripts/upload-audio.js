@@ -155,7 +155,10 @@ async function main() {
 	console.log(`Previously done: ${existingAudio.size}`);
 }
 
-main().catch((err) => {
-	console.error('Fatal error:', err.message);
-	process.exit(1);
-});
+const isMainModule = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(decodeURIComponent(new URL(import.meta.url).pathname));
+if (isMainModule) {
+	main().catch((err) => {
+		console.error('Fatal error:', err.message);
+		process.exit(1);
+	});
+}
