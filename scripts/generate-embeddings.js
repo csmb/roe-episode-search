@@ -3,13 +3,6 @@
 /**
  * Generate vector embeddings for transcript chunks and upsert to Cloudflare Vectorize.
  *
- * Prerequisites:
- *   1. Create the Vectorize index:
- *        npx wrangler vectorize create roe-transcripts --dimensions=768 --metric=cosine
- *   2. Set environment variables:
- *        CLOUDFLARE_ACCOUNT_ID  — your Cloudflare account ID
- *        CLOUDFLARE_API_TOKEN   — API token with Workers AI and Vectorize permissions
- *
  * Usage:
  *   node scripts/generate-embeddings.js
  *
@@ -18,9 +11,10 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { loadEnv, isAscii, transcriptsDir } from './lib.js';
 
-const ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID;
-const API_TOKEN = process.env.CLOUDFLARE_API_TOKEN;
+loadEnv();
+
 const INDEX_NAME = 'roe-transcripts';
 const MODEL = '@cf/baai/bge-base-en-v1.5';
 
@@ -29,19 +23,11 @@ const STEP_SEC = 35; // 45 - 10 overlap
 const EMBED_BATCH_SIZE = 100;
 const UPSERT_BATCH_SIZE = 1000;
 
-if (!ACCOUNT_ID || !API_TOKEN) {
-	console.error('Missing CLOUDFLARE_ACCOUNT_ID or CLOUDFLARE_API_TOKEN environment variables.');
-	process.exit(1);
-}
-
-const BASE_URL = `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}`;
-
-function isAscii(text) {
-	// eslint-disable-next-line no-control-regex
-	return /^[\x00-\x7F]*$/.test(text);
-}
-
-function chunkEpisode(transcript) {
+/**
+ * Chunk a transcript into overlapping windows for embedding.
+ * Exported for process-episode.js to reuse.
+ */
+export function chunkEpisode(transcript) {
 	const { episode_id, title, segments } = transcript;
 	if (!segments || segments.length === 0) return [];
 
@@ -86,11 +72,11 @@ function chunkEpisode(transcript) {
 	return chunks;
 }
 
-async function embedBatch(texts) {
-	const res = await fetch(`${BASE_URL}/ai/run/${MODEL}`, {
+async function embedBatch(texts, baseUrl, apiToken) {
+	const res = await fetch(`${baseUrl}/ai/run/${MODEL}`, {
 		method: 'POST',
 		headers: {
-			Authorization: `Bearer ${API_TOKEN}`,
+			Authorization: `Bearer ${apiToken}`,
 			'Content-Type': 'application/json',
 		},
 		body: JSON.stringify({ text: texts }),
@@ -105,14 +91,14 @@ async function embedBatch(texts) {
 	return json.result.data;
 }
 
-async function upsertVectors(vectors) {
+async function upsertVectors(vectors, baseUrl, apiToken) {
 	// Vectorize REST API expects NDJSON
 	const ndjson = vectors.map((v) => JSON.stringify(v)).join('\n');
 
-	const res = await fetch(`${BASE_URL}/vectorize/v2/indexes/${INDEX_NAME}/upsert`, {
+	const res = await fetch(`${baseUrl}/vectorize/v2/indexes/${INDEX_NAME}/upsert`, {
 		method: 'POST',
 		headers: {
-			Authorization: `Bearer ${API_TOKEN}`,
+			Authorization: `Bearer ${apiToken}`,
 			'Content-Type': 'application/x-ndjson',
 		},
 		body: ndjson,
@@ -127,11 +113,15 @@ async function upsertVectors(vectors) {
 }
 
 async function main() {
-	const transcriptsDir = path.resolve(
-		path.dirname(decodeURIComponent(new URL(import.meta.url).pathname)),
-		'..',
-		'transcripts'
-	);
+	const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
+	const apiToken = process.env.CLOUDFLARE_API_TOKEN;
+
+	if (!accountId || !apiToken) {
+		console.error('Missing CLOUDFLARE_ACCOUNT_ID or CLOUDFLARE_API_TOKEN environment variables.');
+		process.exit(1);
+	}
+
+	const baseUrl = `https://api.cloudflare.com/client/v4/accounts/${accountId}`;
 
 	if (!fs.existsSync(transcriptsDir)) {
 		console.error('No transcripts/ directory found.');
@@ -160,7 +150,7 @@ async function main() {
 		const batch = allChunks.slice(i, i + EMBED_BATCH_SIZE);
 		const texts = batch.map((c) => c.text);
 
-		const embeddings = await embedBatch(texts);
+		const embeddings = await embedBatch(texts, baseUrl, apiToken);
 
 		for (let j = 0; j < batch.length; j++) {
 			vectors.push({
@@ -184,7 +174,7 @@ async function main() {
 
 	for (let i = 0; i < vectors.length; i += UPSERT_BATCH_SIZE) {
 		const batch = vectors.slice(i, i + UPSERT_BATCH_SIZE);
-		await upsertVectors(batch);
+		await upsertVectors(batch, baseUrl, apiToken);
 		console.log(`  Upserted ${Math.min(i + UPSERT_BATCH_SIZE, vectors.length)}/${vectors.length}`);
 	}
 
