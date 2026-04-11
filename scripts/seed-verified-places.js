@@ -37,14 +37,18 @@ function d1(sql) {
 // SF bounding box for Nominatim
 const SF_BOUNDS = { south: 37.703, north: 37.812, west: -122.527, east: -122.348 };
 
-function geocode(address) {
+function geocodeOnce(address) {
 	return new Promise((resolve, reject) => {
 		const q = encodeURIComponent(address + ', San Francisco, CA');
-		const url = `https://nominatim.openstreetmap.org/search?format=json&q=${q}&viewbox=${SF_BOUNDS.west},${SF_BOUNDS.north},${SF_BOUNDS.east},${SF_BOUNDS.south}&bounded=1&limit=1`;
-		https.get(url, { headers: { 'User-Agent': 'roe-episode-search/1.0' } }, res => {
+		const urlPath = `/search?format=json&q=${q}&viewbox=${SF_BOUNDS.west},${SF_BOUNDS.north},${SF_BOUNDS.east},${SF_BOUNDS.south}&bounded=1&limit=1`;
+		https.get(`https://nominatim.openstreetmap.org${urlPath}`, { headers: { 'User-Agent': 'roe-episode-search/1.0' } }, res => {
 			let data = '';
 			res.on('data', chunk => data += chunk);
 			res.on('end', () => {
+				if (res.statusCode === 429 || res.statusCode >= 500) {
+					resolve({ rateLimited: true });
+					return;
+				}
 				try {
 					const results = JSON.parse(data);
 					if (results.length > 0) {
@@ -52,10 +56,81 @@ function geocode(address) {
 					} else {
 						resolve(null);
 					}
-				} catch (e) { reject(e); }
+				} catch {
+					// XML/HTML error page = rate limited
+					resolve({ rateLimited: true });
+				}
 			});
 		}).on('error', reject);
 	});
+}
+
+async function geocode(address) {
+	const delays = [2000, 5000, 10000];
+	for (let attempt = 0; attempt <= delays.length; attempt++) {
+		const result = await geocodeOnce(address);
+		if (result && result.rateLimited) {
+			if (attempt < delays.length) {
+				await new Promise(r => setTimeout(r, delays[attempt]));
+				continue;
+			}
+			return null; // exhausted retries
+		}
+		return result;
+	}
+	return null;
+}
+
+// False positives the LLM verification missed — generic words, person names, etc.
+const SEED_STOPLIST = new Set([
+	'san francisco', 'mission', 'market', 'the mission', 'restaurant',
+	'square', 'fresh', 'treasure', 'phil', 'steps', 'my house', 'hayes',
+	'soma', 'jesse', 'real estate', 'property', 'bakery', 'edition',
+	'fillmore', 'balboa', 'guerrero', 'patricia', 'recreation', 'masonic',
+	'the garden', 'the cafe', 'corner store', 'headquarters', 'cafe in',
+	'cantina', 'omar', 'the examiner', 'pack heights', 'spin city',
+	'sfo', 'san bruno', 'sfmta', 'sf weekly', 'gia', 'linkedin',
+	'san francisco, california', 'san francisco bay area',
+	'golden state warriors', 'san francisco giants', 'candlestick',
+	'sam\'s', 'joe\'s', 'levi\'s', 'bay city beacon',
+]);
+
+function insertPlaces(places) {
+	const BATCH = 20;
+	let inserted = 0;
+	for (let i = 0; i < places.length; i += BATCH) {
+		const chunk = places.slice(i, i + BATCH);
+		const values = chunk.map(p =>
+			`(${JSON.stringify(p.name)}, ${p.lat}, ${p.lng})`
+		).join(', ');
+		try {
+			d1(`INSERT OR IGNORE INTO places (name, lat, lng) VALUES ${values}`);
+		} catch (err) {
+			console.error(`  Insert error: ${err.message}`);
+		}
+		inserted += chunk.length;
+		process.stdout.write(`\r  Places: ${inserted}/${places.length}`);
+	}
+	console.log('');
+}
+
+function insertMentions(pairs) {
+	const BATCH = 20;
+	let inserted = 0;
+	for (let i = 0; i < pairs.length; i += BATCH) {
+		const chunk = pairs.slice(i, i + BATCH);
+		const values = chunk.map(([pid, eid]) =>
+			`(${pid}, ${JSON.stringify(eid)})`
+		).join(', ');
+		try {
+			d1(`INSERT OR IGNORE INTO place_mentions (place_id, episode_id) VALUES ${values}`);
+		} catch {
+			// episode may not exist in DB yet; skip
+		}
+		inserted += chunk.length;
+		process.stdout.write(`\r  Mentions: ${inserted}/${pairs.length}`);
+	}
+	console.log('');
 }
 
 async function main() {
@@ -66,8 +141,15 @@ async function main() {
 
 	const raw = JSON.parse(fs.readFileSync(VERIFIED_PATH, 'utf8'));
 	// Support both { matches: [...] } and a bare array
-	const matches = Array.isArray(raw) ? raw : (raw.matches || []);
-	console.log(`${matches.length} verified places loaded`);
+	const allMatches = Array.isArray(raw) ? raw : (raw.matches || []);
+	console.log(`${allMatches.length} verified places loaded`);
+
+	// Filter out false positives
+	const matches = allMatches.filter(m => {
+		const name = (m.name || '').toLowerCase();
+		return !SEED_STOPLIST.has(name);
+	});
+	console.log(`${allMatches.length - matches.length} filtered by stoplist, ${matches.length} remaining`);
 
 	// Step 1: Fetch existing places from D1
 	console.log('\nFetching existing places from D1...');
@@ -120,109 +202,113 @@ async function main() {
 		return;
 	}
 
-	// Step 3: Geocode new places missing coords
-	const geocoded = [];
+	// Separate new places by whether they already have coords
 	const hasCoords = toInsert.filter(p => p.lat != null && p.lng != null);
 	const needsGeocode = toInsert.filter(p => (p.lat == null || p.lng == null) && p.address);
 	const cannotGeocode = toInsert.filter(p => (p.lat == null || p.lng == null) && !p.address);
 
-	// Places with coords already — no geocoding needed
-	for (const p of hasCoords) {
-		geocoded.push({ name: p.name, lat: p.lat, lng: p.lng, episodeIds: p.episodeIds });
+	console.log(`  ${hasCoords.length} have coords, ${needsGeocode.length} need geocoding, ${cannotGeocode.length} have no address`);
+
+	// --- Phase A: Insert places that already have coords (OSM data) ---
+	const allReady = hasCoords.map(p => ({ name: p.name, lat: p.lat, lng: p.lng, episodeIds: p.episodeIds }));
+
+	if (allReady.length > 0) {
+		console.log(`\nInserting ${allReady.length} places with existing coords...`);
+		insertPlaces(allReady);
 	}
 
-	if (needsGeocode.length > 0) {
-		console.log(`\nGeocoding ${needsGeocode.length} new places (1100ms rate limit)...`);
-		for (let i = 0; i < needsGeocode.length; i++) {
-			const p = needsGeocode[i];
-			let coords = null;
-			try {
-				coords = await geocode(p.address);
-				await new Promise(r => setTimeout(r, 1100));
-			} catch (err) {
-				console.error(`  Geocode error for ${p.name}: ${err.message}`);
-			}
-
-			if (!coords) {
-				console.warn(`  Skipping ${p.name} — geocode returned no results`);
-				continue;
-			}
-
-			geocoded.push({ name: p.name, lat: coords.lat, lng: coords.lng, episodeIds: p.episodeIds });
-
-			if ((i + 1) % 10 === 0 || i === needsGeocode.length - 1) {
-				process.stdout.write(`\r  Geocoded: ${i + 1}/${needsGeocode.length}`);
-			}
-		}
-		if (needsGeocode.length > 0) console.log('');
-	}
-
-	// Places with no address and no coords cannot be placed on the map — skip
-	if (cannotGeocode.length > 0) {
-		console.log(`Skipping ${cannotGeocode.length} new places with no coords and no address`);
-	}
-
-	// Step 4: Insert new places in batches of 20
-	if (geocoded.length > 0) {
-		console.log(`\nInserting ${geocoded.length} new places into D1...`);
-		const BATCH = 20;
-		let inserted = 0;
-		for (let i = 0; i < geocoded.length; i += BATCH) {
-			const chunk = geocoded.slice(i, i + BATCH);
-			const values = chunk.map(p =>
-				`(${JSON.stringify(p.name)}, ${p.lat}, ${p.lng})`
-			).join(', ');
-			try {
-				d1(`INSERT OR IGNORE INTO places (name, lat, lng) VALUES ${values}`);
-			} catch (err) {
-				console.error(`  Insert error: ${err.message}`);
-			}
-			inserted += chunk.length;
-			process.stdout.write(`\r  Places: ${inserted}/${geocoded.length}`);
-		}
-		console.log('');
-	}
-
-	// Step 5: Fetch all place IDs (existing + newly inserted)
-	const allRows = d1('SELECT id, LOWER(name) as lower_name FROM places');
-	const nameToId = new Map();
+	// --- Phase B: Add mentions for existing places + just-inserted places ---
+	// Fetch all place IDs after first insert
+	let allRows = d1('SELECT id, LOWER(name) as lower_name FROM places');
+	let nameToId = new Map();
 	for (const row of (allRows[0]?.results || [])) {
 		nameToId.set(row.lower_name, row.id);
 	}
 
-	// Step 6: Build mention pairs for both existing and new places
-	const mentionPairs = [];
+	// Build mention pairs for existing places and places just inserted
+	let mentionPairs = [];
 	for (const link of toLink) {
 		for (const eid of link.episodeIds) {
 			mentionPairs.push([link.placeId, eid]);
 		}
 	}
-	for (const g of geocoded) {
-		const placeId = nameToId.get(g.name.toLowerCase());
+	for (const p of allReady) {
+		const placeId = nameToId.get(p.name.toLowerCase());
 		if (!placeId) continue;
-		for (const eid of g.episodeIds) {
+		for (const eid of p.episodeIds) {
 			mentionPairs.push([placeId, eid]);
 		}
 	}
 
-	// Step 7: Insert place_mentions in batches of 20
-	console.log(`\nInserting ${mentionPairs.length} place_mentions...`);
-	const BATCH = 20;
-	let mInserted = 0;
-	for (let i = 0; i < mentionPairs.length; i += BATCH) {
-		const chunk = mentionPairs.slice(i, i + BATCH);
-		const values = chunk.map(([pid, eid]) =>
-			`(${pid}, ${JSON.stringify(eid)})`
-		).join(', ');
-		try {
-			d1(`INSERT OR IGNORE INTO place_mentions (place_id, episode_id) VALUES ${values}`);
-		} catch {
-			// episode may not exist in DB yet; skip
-		}
-		mInserted += chunk.length;
-		process.stdout.write(`\r  Mentions: ${mInserted}/${mentionPairs.length}`);
+	if (mentionPairs.length > 0) {
+		console.log(`\nInserting ${mentionPairs.length} place_mentions (phase A)...`);
+		insertMentions(mentionPairs);
 	}
-	console.log('\nDone!');
+
+	// --- Phase C: Geocode remaining places ---
+	if (cannotGeocode.length > 0) {
+		console.log(`\nSkipping ${cannotGeocode.length} new places with no coords and no address`);
+	}
+
+	const geocoded = [];
+	if (needsGeocode.length > 0) {
+		console.log(`\nGeocoding ${needsGeocode.length} new places (1.5s rate limit, retries on rate-limit)...`);
+		let skipped = 0;
+		for (let i = 0; i < needsGeocode.length; i++) {
+			const p = needsGeocode[i];
+			let coords = null;
+			try {
+				coords = await geocode(p.address);
+				await new Promise(r => setTimeout(r, 1500));
+			} catch (err) {
+				console.error(`  Geocode error for ${p.name}: ${err.message}`);
+			}
+
+			if (!coords) {
+				skipped++;
+				continue;
+			}
+
+			geocoded.push({ name: p.name, lat: coords.lat, lng: coords.lng, episodeIds: p.episodeIds });
+
+			if ((i + 1) % 25 === 0 || i === needsGeocode.length - 1) {
+				process.stdout.write(`\r  Geocoded: ${i + 1}/${needsGeocode.length} (${geocoded.length} found, ${skipped} skipped)`);
+			}
+		}
+		console.log('');
+	}
+
+	// --- Phase D: Insert geocoded places + their mentions ---
+	if (geocoded.length > 0) {
+		console.log(`\nInserting ${geocoded.length} geocoded places...`);
+		insertPlaces(geocoded);
+
+		// Re-fetch IDs for mention linking
+		allRows = d1('SELECT id, LOWER(name) as lower_name FROM places');
+		nameToId = new Map();
+		for (const row of (allRows[0]?.results || [])) {
+			nameToId.set(row.lower_name, row.id);
+		}
+
+		mentionPairs = [];
+		for (const g of geocoded) {
+			const placeId = nameToId.get(g.name.toLowerCase());
+			if (!placeId) continue;
+			for (const eid of g.episodeIds) {
+				mentionPairs.push([placeId, eid]);
+			}
+		}
+
+		if (mentionPairs.length > 0) {
+			console.log(`Inserting ${mentionPairs.length} place_mentions (phase D)...`);
+			insertMentions(mentionPairs);
+		}
+	}
+
+	// Final count
+	const finalCount = d1('SELECT COUNT(*) as cnt FROM places');
+	const mentionCount = d1('SELECT COUNT(*) as cnt FROM place_mentions');
+	console.log(`\nDone! Places: ${finalCount[0]?.results?.[0]?.cnt}, Mentions: ${mentionCount[0]?.results?.[0]?.cnt}`);
 }
 
 main().catch(err => { console.error('Fatal:', err); process.exit(1); });
