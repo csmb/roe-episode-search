@@ -1198,23 +1198,25 @@ function startDesktop(THREE, data) {
             })));
         }
         if (c.stars.length > 0) {
-            const cp = raDecToVec3(c.center.ra, c.center.dec, GLOBE_R * 0.96);
+            const cp = raDecToVec3(c.center.ra, c.center.dec - 8, GLOBE_R * 1.04);
             const nameCnv = document.createElement('canvas');
             const nameCtx = nameCnv.getContext('2d');
-            nameCtx.font = '24px Georgia';
-            const tw = nameCtx.measureText(c.name).width + 12;
-            nameCnv.width = tw; nameCnv.height = 36;
-            nameCtx.font = '24px Georgia';
-            nameCtx.fillStyle = '#99bbee';
-            nameCtx.globalAlpha = 0.7;
+            const fontSize = 32;
+            nameCtx.font = fontSize + 'px Georgia';
+            const tw = nameCtx.measureText(c.name.toUpperCase()).width + 16;
+            nameCnv.width = tw; nameCnv.height = fontSize + 12;
+            nameCtx.font = fontSize + 'px Georgia';
+            nameCtx.fillStyle = '#aaccee';
+            nameCtx.globalAlpha = 0.8;
             nameCtx.textAlign = 'center';
-            nameCtx.fillText(c.name, tw / 2, 26);
+            nameCtx.letterSpacing = '2px';
+            nameCtx.fillText(c.name.toUpperCase(), tw / 2, fontSize);
             const nameTex = new THREE.CanvasTexture(nameCnv);
             nameTex.minFilter = THREE.LinearFilter;
             const nameSprite = new THREE.Sprite(new THREE.SpriteMaterial({
                 map: nameTex, transparent: true, depthWrite: false,
             }));
-            nameSprite.scale.set(tw / 8, 36 / 8, 1);
+            nameSprite.scale.set(tw / 7, (fontSize + 12) / 7, 1);
             nameSprite.position.copy(cp);
             nameSprite.userData = { isLabel: true };
             globe.add(nameSprite);
