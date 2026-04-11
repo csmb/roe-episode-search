@@ -1,117 +1,114 @@
 import FRONTEND_HTML from './frontend.html';
 import EPISODES_HTML from './episodes.html';
 import GUESTS_HTML from './guests.html';
-import ADMIN_HTML from './admin.html';
-import MAP_HTML from './map.html';
-import STARS_HTML from './stars.html';
+
+// ── Rate limiting ─────────────────────────────────────────────────────
+// Simple sliding-window rate limiter per IP. Limits are per Worker isolate
+// (not globally distributed), which is sufficient for basic cost protection.
+
+const rateLimitState = new Map();
+const RATE_WINDOW_MS = 60_000;
+const RATE_LIMIT_SEMANTIC = 10; // semantic search: 10 req/min (uses Workers AI)
+const RATE_LIMIT_SEARCH = 30;   // keyword search + timeline: 30 req/min
+
+function checkRateLimit(ip, bucket, limit) {
+	const key = `${bucket}:${ip}`;
+	const now = Date.now();
+	let timestamps = rateLimitState.get(key);
+	if (!timestamps) {
+		timestamps = [];
+		rateLimitState.set(key, timestamps);
+	}
+	// Evict expired entries
+	while (timestamps.length > 0 && timestamps[0] <= now - RATE_WINDOW_MS) {
+		timestamps.shift();
+	}
+	if (timestamps.length >= limit) {
+		return false;
+	}
+	timestamps.push(now);
+	// Periodically prune stale keys (every ~100 checks)
+	if (Math.random() < 0.01) {
+		for (const [k, v] of rateLimitState) {
+			if (v.length === 0 || v[v.length - 1] <= now - RATE_WINDOW_MS) {
+				rateLimitState.delete(k);
+			}
+		}
+	}
+	return true;
+}
+
+// ── Security headers ──────────────────────────────────────────────────
+
+const HTML_HEADERS = {
+	'Content-Type': 'text/html; charset=utf-8',
+	'X-Content-Type-Options': 'nosniff',
+	'X-Frame-Options': 'DENY',
+	'Referrer-Policy': 'strict-origin-when-cross-origin',
+};
+
+const ALLOWED_ORIGINS = ['https://rollovereasy.org', 'https://www.rollovereasy.org'];
+
+function getCorsOrigin(request) {
+	const origin = request.headers.get('Origin');
+	if (!origin) return null;
+	if (ALLOWED_ORIGINS.includes(origin)) return origin;
+	// Allow localhost for development
+	if (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) return origin;
+	return null;
+}
+
+// ── Router ────────────────────────────────────────────────────────────
 
 export default {
 	async fetch(request, env) {
 		const url = new URL(request.url);
+		const clientIP = request.headers.get('CF-Connecting-IP') || 'unknown';
 
 		if (url.pathname === '/api/search') {
-			return handleSearch(url, env);
+			if (!checkRateLimit(clientIP, 'search', RATE_LIMIT_SEARCH)) {
+				return json({ error: 'Rate limit exceeded. Try again in a minute.' }, 429, request);
+			}
+			return handleSearch(url, env, request);
 		}
 		if (url.pathname === '/api/semantic-search') {
-			return handleSemanticSearch(url, env);
+			if (!checkRateLimit(clientIP, 'semantic', RATE_LIMIT_SEMANTIC)) {
+				return json({ error: 'Rate limit exceeded. Try again in a minute.' }, 429, request);
+			}
+			return handleSemanticSearch(url, env, request);
 		}
 		if (url.pathname === '/api/timeline') {
-			return handleTimeline(url, env);
+			if (!checkRateLimit(clientIP, 'search', RATE_LIMIT_SEARCH)) {
+				return json({ error: 'Rate limit exceeded. Try again in a minute.' }, 429, request);
+			}
+			return handleTimeline(url, env, request);
 		}
 		if (url.pathname === '/api/episodes') {
-			return handleEpisodes(env);
+			return handleEpisodes(env, request);
 		}
 		if (url.pathname === '/api/on-this-day') {
-			return handleOnThisDay(url, env);
+			return handleOnThisDay(url, env, request);
 		}
 		if (url.pathname === '/api/guests') {
-			return handleGuests(env);
-		}
-		if (url.pathname === '/api/stars') {
-			return handleStars(env);
+			return handleGuests(env, request);
 		}
 		if (url.pathname.startsWith('/api/episode/')) {
-			const rest = url.pathname.slice('/api/episode/'.length);
-			if (rest.endsWith('/places')) {
-				const episodeId = decodeURIComponent(rest.slice(0, -'/places'.length));
-				return handleEpisodePlaces(episodeId, env);
-			}
-			const episodeId = decodeURIComponent(rest);
-			return handleEpisodeById(episodeId, env);
+			const episodeId = decodeURIComponent(url.pathname.slice('/api/episode/'.length));
+			return handleEpisodeById(episodeId, env, request);
 		}
 		if (url.pathname === '/episodes') {
-			return new Response(EPISODES_HTML, {
-				headers: { 'Content-Type': 'text/html; charset=utf-8' },
-			});
+			return new Response(EPISODES_HTML, { headers: HTML_HEADERS });
 		}
 		if (url.pathname === '/guests') {
-			return new Response(GUESTS_HTML, {
-				headers: { 'Content-Type': 'text/html; charset=utf-8' },
-			});
-		}
-		if (url.pathname === '/admin') {
-			return new Response(ADMIN_HTML, {
-				headers: { 'Content-Type': 'text/html; charset=utf-8' },
-			});
-		}
-		if (url.pathname === '/map') {
-			return new Response(MAP_HTML, {
-				headers: { 'Content-Type': 'text/html; charset=utf-8' },
-			});
-		}
-		if (url.pathname === '/stars') {
-			return new Response(STARS_HTML, {
-				headers: {
-					'Content-Type': 'text/html; charset=utf-8',
-					'X-Frame-Options': 'DENY',
-					'X-Content-Type-Options': 'nosniff',
-					'Content-Security-Policy': "default-src 'self'; script-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'",
-				},
-			});
-		}
-		if (url.pathname === '/api/map-places') {
-			return handleMapPlaces(env);
-		}
-		if (url.pathname === '/api/admin/unreviewed') {
-			return handleAdminUnreviewed(env);
-		}
-		if (url.pathname === '/api/admin/guest/rename' && request.method === 'POST') {
-			return handleAdminGuestRename(request, env);
-		}
-		if (url.pathname === '/api/admin/guest/delete' && request.method === 'POST') {
-			return handleAdminGuestDelete(request, env);
-		}
-		if (url.pathname === '/api/admin/episode/reviewed' && request.method === 'POST') {
-			return handleAdminEpisodeReviewed(request, env);
-		}
-		if (url.pathname === '/api/admin/episode/duration' && request.method === 'POST') {
-			return handleAdminUpdateDuration(request, env);
+			return new Response(GUESTS_HTML, { headers: HTML_HEADERS });
 		}
 		if (url.pathname.startsWith('/audio/')) {
 			return handleAudio(request, url, env);
 		}
-		if (url.pathname === '/robots.txt') {
-			return new Response('User-agent: *\nDisallow: /\n', {
-				headers: { 'Content-Type': 'text/plain' },
-			});
-		}
 		// Serve frontend for everything else
-		return new Response(FRONTEND_HTML, {
-			headers: { 'Content-Type': 'text/html; charset=utf-8' },
-		});
+		return new Response(FRONTEND_HTML, { headers: HTML_HEADERS });
 	},
 };
-
-const BLOCKED_WORDS = new Set([
-	'fuck', 'shit', 'ass', 'asshole', 'bitch', 'cunt', 'cock', 'dick', 'pussy',
-	'nigger', 'nigga', 'faggot', 'fag', 'whore', 'slut', 'bastard', 'motherfucker',
-	'piss', 'damn', 'crap',
-]);
-
-function containsBlockedWord(query) {
-	const tokens = query.toLowerCase().split(/\s+/);
-	return tokens.some(t => BLOCKED_WORDS.has(t));
-}
 
 function sanitizeFtsQuery(input) {
 	const terms = input
@@ -123,19 +120,15 @@ function sanitizeFtsQuery(input) {
 	return terms.join(' ');
 }
 
-async function handleSearch(url, env) {
+async function handleSearch(url, env, request) {
 	const query = url.searchParams.get('q')?.trim();
 	if (!query) {
-		return json({ error: 'Missing ?q= parameter' }, 400);
-	}
-
-	if (containsBlockedWord(query)) {
-		return json({ query, page: 1, results: [], has_more: false });
+		return json({ error: 'Missing ?q= parameter' }, 400, request);
 	}
 
 	const sanitized = sanitizeFtsQuery(query);
 	if (!sanitized) {
-		return json({ error: 'Invalid search query' }, 400);
+		return json({ error: 'Invalid search query' }, 400, request);
 	}
 
 	const page = Math.max(1, parseInt(url.searchParams.get('page') || '1', 10));
@@ -197,29 +190,6 @@ async function handleSearch(url, env) {
 		});
 	}
 
-	// Fetch guest_start_ms and guest names for matched episodes
-	const epIds = Array.from(episodeMap.keys());
-	if (epIds.length > 0) {
-		const placeholders = epIds.map(() => '?').join(', ');
-		const [startResult, guestResult] = await Promise.all([
-			env.DB.prepare(`SELECT id, guest_start_ms FROM episodes WHERE id IN (${placeholders})`)
-				.bind(...epIds).all(),
-			env.DB.prepare(`SELECT episode_id, guest_name FROM episode_guests WHERE episode_id IN (${placeholders})`)
-				.bind(...epIds).all(),
-		]);
-		for (const row of startResult.results) {
-			const ep = episodeMap.get(row.id);
-			if (ep) ep.guest_start_ms = row.guest_start_ms;
-		}
-		for (const row of guestResult.results) {
-			const ep = episodeMap.get(row.episode_id);
-			if (ep) {
-				if (!ep.guests) ep.guests = [];
-				ep.guests.push(row.guest_name);
-			}
-		}
-	}
-
 	// Sort matches chronologically within each episode
 	for (const ep of episodeMap.values()) {
 		ep.matches.sort((a, b) => a.start_ms - b.start_ms);
@@ -230,112 +200,91 @@ async function handleSearch(url, env) {
 		page,
 		results: Array.from(episodeMap.values()),
 		has_more: episodeMap.size === pageSize,
-	});
+	}, 200, request);
 	} catch (err) {
-		return json({ error: 'Search failed. Try simplifying your query.' }, 400);
+		return json({ error: 'Search failed. Try simplifying your query.' }, 400, request);
 	}
 }
 
-async function handleSemanticSearch(url, env) {
+async function handleSemanticSearch(url, env, request) {
 	const query = url.searchParams.get('q')?.trim();
 	if (!query) {
-		return json({ error: 'Missing ?q= parameter' }, 400);
+		return json({ error: 'Missing ?q= parameter' }, 400, request);
 	}
-
-	if (containsBlockedWord(query)) {
-		return json({ query, page: 1, results: [], has_more: false });
-	}
-
-	const page = Math.max(1, parseInt(url.searchParams.get('page') || '1', 10));
-	const pageSize = 20;
 
 	// Embed the query
 	const embeddingResult = await env.AI.run('@cf/baai/bge-base-en-v1.5', { text: [query] });
 	const queryVector = embeddingResult.data[0];
 
-	// Query Vectorize — max topK with returnMetadata:'all' is 50
+	// Query Vectorize
 	const vectorResults = await env.VECTORIZE.query(queryVector, {
-		topK: 50,
+		topK: 20,
 		returnMetadata: 'all',
 	});
 
-	// Group all matches by episode, keeping the best score per episode
-	const episodeMatchMap = new Map();
+	// Collect unique episode IDs to enrich with D1 metadata
+	const episodeIds = [...new Set(vectorResults.matches.map((m) => m.metadata.episode_id))];
+
+	let episodeMeta = {};
+	if (episodeIds.length > 0) {
+		const placeholders = episodeIds.map(() => '?').join(', ');
+		const { results } = await env.DB.prepare(
+			`SELECT id, title, duration_ms, summary FROM episodes WHERE id IN (${placeholders})`
+		)
+			.bind(...episodeIds)
+			.all();
+		for (const row of results) {
+			episodeMeta[row.id] = row;
+		}
+	}
+
+	// Group results by episode (same pattern as handleSearch)
+	const episodeMap = new Map();
 	for (const match of vectorResults.matches) {
 		const meta = match.metadata;
 		const epId = meta.episode_id;
-		if (!episodeMatchMap.has(epId)) {
-			episodeMatchMap.set(epId, { bestScore: match.score, matches: [] });
+
+		if (!episodeMap.has(epId)) {
+			const dbMeta = episodeMeta[epId] || {};
+			episodeMap.set(epId, {
+				episode_id: epId,
+				title: dbMeta.title || meta.title,
+				duration_ms: dbMeta.duration_ms || null,
+				summary: dbMeta.summary || null,
+				audio_file: `/audio/${epId}.m4a`,
+				matches: [],
+			});
 		}
-		const ep = episodeMatchMap.get(epId);
-		if (match.score > ep.bestScore) ep.bestScore = match.score;
-		ep.matches.push({ start_ms: meta.start_ms, end_ms: meta.end_ms, text: meta.text, score: match.score });
+		episodeMap.get(epId).matches.push({
+			start_ms: meta.start_ms,
+			end_ms: meta.end_ms,
+			text: meta.text,
+			score: match.score,
+		});
 	}
 
-	// Sort episodes by best score descending, then paginate
-	const allEpisodeIds = Array.from(episodeMatchMap.entries())
-		.sort((a, b) => b[1].bestScore - a[1].bestScore)
-		.map(([id]) => id);
-
-	const offset = (page - 1) * pageSize;
-	const pageEpisodeIds = allEpisodeIds.slice(offset, offset + pageSize);
-	const has_more = allEpisodeIds.length > offset + pageSize;
-
-	// Enrich only the current page's episodes with D1 metadata
-	let episodeMeta = {};
-	let guestsByEpisode = {};
-	if (pageEpisodeIds.length > 0) {
-		const placeholders = pageEpisodeIds.map(() => '?').join(', ');
-		const [metaResult, guestResult] = await Promise.all([
-			env.DB.prepare(
-				`SELECT id, title, duration_ms, summary, guest_start_ms FROM episodes WHERE id IN (${placeholders})`
-			).bind(...pageEpisodeIds).all(),
-			env.DB.prepare(
-				`SELECT episode_id, guest_name FROM episode_guests WHERE episode_id IN (${placeholders})`
-			).bind(...pageEpisodeIds).all(),
-		]);
-		for (const row of metaResult.results) {
-			episodeMeta[row.id] = row;
-		}
-		for (const row of guestResult.results) {
-			if (!guestsByEpisode[row.episode_id]) guestsByEpisode[row.episode_id] = [];
-			guestsByEpisode[row.episode_id].push(row.guest_name);
-		}
+	// Sort matches chronologically within each episode
+	for (const ep of episodeMap.values()) {
+		ep.matches.sort((a, b) => a.start_ms - b.start_ms);
 	}
 
-	// Build result objects for this page
-	const results = pageEpisodeIds.map((epId) => {
-		const { matches } = episodeMatchMap.get(epId);
-		const dbMeta = episodeMeta[epId] || {};
-		matches.sort((a, b) => a.start_ms - b.start_ms);
-		return {
-			episode_id: epId,
-			title: dbMeta.title || null,
-			duration_ms: dbMeta.duration_ms || null,
-			summary: dbMeta.summary || null,
-			guest_start_ms: dbMeta.guest_start_ms || null,
-			guests: guestsByEpisode[epId] || [],
-			audio_file: `/audio/${epId}.m4a`,
-			matches,
-		};
-	});
-
-	return json({ query, page, results, has_more });
+	return json({
+		query,
+		page: 1,
+		results: Array.from(episodeMap.values()).sort((a, b) => b.episode_id.localeCompare(a.episode_id)),
+		has_more: false,
+	}, 200, request);
 }
 
-async function handleTimeline(url, env) {
+async function handleTimeline(url, env, request) {
 	const query = url.searchParams.get('q')?.trim();
 	if (!query) {
-		return json({ error: 'Missing ?q= parameter' }, 400);
-	}
-
-	if (containsBlockedWord(query)) {
-		return json({ query, timeline: [], total_mentions: 0 });
+		return json({ error: 'Missing ?q= parameter' }, 400, request);
 	}
 
 	const sanitized = sanitizeFtsQuery(query);
 	if (!sanitized) {
-		return json({ error: 'Invalid search query' }, 400);
+		return json({ error: 'Invalid search query' }, 400, request);
 	}
 
 	try {
@@ -375,39 +324,18 @@ async function handleTimeline(url, env) {
 		total_mentions: totalMentions,
 		first_month: range.first_month,
 		last_month: range.last_month,
-	});
+	}, 200, request);
 	} catch (err) {
-		return json({ error: 'Search failed. Try simplifying your query.' }, 400);
+		return json({ error: 'Search failed. Try simplifying your query.' }, 400, request);
 	}
 }
 
-async function handleEpisodes(env) {
-	const [episodeResult, guestResult] = await Promise.all([
-		env.DB.prepare(`
-			SELECT e.id, e.title, e.duration_ms, e.published_at, e.summary, e.guest_start_ms,
-			       COALESCE(pc.cnt, 0) as place_count
-			FROM episodes e
-			LEFT JOIN (SELECT episode_id, COUNT(*) as cnt FROM place_mentions GROUP BY episode_id) pc
-			  ON pc.episode_id = e.id
-			ORDER BY e.id
-		`).all(),
-		env.DB.prepare('SELECT episode_id, guest_name FROM episode_guests ORDER BY episode_id, guest_name').all(),
-	]);
+async function handleEpisodes(env, request) {
+	const { results } = await env.DB.prepare(
+		'SELECT id, title, duration_ms, published_at, summary FROM episodes ORDER BY id'
+	).all();
 
-	const guestsByEpisode = new Map();
-	for (const row of guestResult.results) {
-		if (!guestsByEpisode.has(row.episode_id)) {
-			guestsByEpisode.set(row.episode_id, []);
-		}
-		guestsByEpisode.get(row.episode_id).push(row.guest_name);
-	}
-
-	const episodes = episodeResult.results.map(e => ({
-		...e,
-		guests: guestsByEpisode.get(e.id) || [],
-	}));
-
-	return json({ episodes });
+	return json({ episodes: results }, 200, request);
 }
 
 async function handleAudio(request, url, env) {
@@ -455,57 +383,35 @@ async function handleAudio(request, url, env) {
 	return new Response(object.body, { status: 200, headers });
 }
 
-async function handleEpisodeById(episodeId, env) {
+async function handleEpisodeById(episodeId, env, request) {
 	try {
-		const [epResult, guestResult] = await Promise.all([
-			env.DB.prepare(
-				'SELECT id, title, duration_ms, summary, guest_start_ms FROM episodes WHERE id = ?1'
-			).bind(episodeId).all(),
-			env.DB.prepare(
-				'SELECT guest_name FROM episode_guests WHERE episode_id = ?1'
-			).bind(episodeId).all(),
-		]);
+		const { results } = await env.DB.prepare(
+			'SELECT id, title, duration_ms, summary FROM episodes WHERE id = ?1'
+		)
+			.bind(episodeId)
+			.all();
 
-		if (epResult.results.length === 0) {
-			return json({ error: 'Episode not found' }, 404);
+		if (results.length === 0) {
+			return json({ error: 'Episode not found' }, 404, request);
 		}
 
-		const ep = epResult.results[0];
+		const ep = results[0];
 		return json({
 			episode: {
 				id: ep.id,
 				title: ep.title,
 				duration_ms: ep.duration_ms,
 				summary: ep.summary,
-				guest_start_ms: ep.guest_start_ms,
-				guests: guestResult.results.map(r => r.guest_name),
 				audio_file: `/audio/${ep.id}.m4a`,
 			},
-		});
+		}, 200, request);
 	} catch (err) {
-		return json({ error: 'Failed to fetch episode' }, 500);
+		return json({ error: 'Failed to fetch episode' }, 500, request);
 	}
 }
 
-async function handleEpisodePlaces(episodeId, env) {
-	try {
-		const { results } = await env.DB.prepare(
-			`SELECT p.name, p.lat, p.lng FROM places p
-			 JOIN place_mentions pm ON pm.place_id = p.id
-			 LEFT JOIN (SELECT place_id, COUNT(*) AS total FROM place_mentions GROUP BY place_id) pc ON pc.place_id = p.id
-			 WHERE pm.episode_id = ?1
-			 ORDER BY pc.total DESC, p.name`
-		)
-			.bind(episodeId)
-			.all();
-
-		return json({ episode_id: episodeId, places: results });
-	} catch (err) {
-		return json({ episode_id: episodeId, places: [] });
-	}
-}
-
-async function handleOnThisDay(url, env) {
+async function handleOnThisDay(url, env, request) {
+	// Use Pacific time for "today"
 	const now = new Date();
 	const pacificDate = new Date(now.toLocaleString('en-US', { timeZone: 'America/Los_Angeles' }));
 	const month = String(pacificDate.getMonth() + 1).padStart(2, '0');
@@ -514,27 +420,13 @@ async function handleOnThisDay(url, env) {
 
 	try {
 		const { results } = await env.DB.prepare(`
-			SELECT id, title, duration_ms, summary, guest_start_ms
+			SELECT id, title, duration_ms, summary
 			FROM episodes
 			WHERE SUBSTR(id, 21, 5) = ?1
 			ORDER BY id DESC
 		`)
 			.bind(todayMmDd)
 			.all();
-
-		// Fetch guest names for these episodes
-		const epIds = results.map(r => r.id);
-		let guestsByEpisode = {};
-		if (epIds.length > 0) {
-			const placeholders = epIds.map(() => '?').join(', ');
-			const guestResult = await env.DB.prepare(
-				`SELECT episode_id, guest_name FROM episode_guests WHERE episode_id IN (${placeholders})`
-			).bind(...epIds).all();
-			for (const row of guestResult.results) {
-				if (!guestsByEpisode[row.episode_id]) guestsByEpisode[row.episode_id] = [];
-				guestsByEpisode[row.episode_id].push(row.guest_name);
-			}
-		}
 
 		return json({
 			date: todayMmDd,
@@ -543,17 +435,15 @@ async function handleOnThisDay(url, env) {
 				title: ep.title,
 				duration_ms: ep.duration_ms,
 				summary: ep.summary,
-				guest_start_ms: ep.guest_start_ms,
-				guests: guestsByEpisode[ep.id] || [],
 				audio_file: `/audio/${ep.id}.m4a`,
 			})),
-		});
+		}, 200, request);
 	} catch (err) {
-		return json({ error: 'Failed to fetch episodes' }, 500);
+		return json({ error: 'Failed to fetch episodes' }, 500, request);
 	}
 }
 
-async function handleGuests(env) {
+async function handleGuests(env, request) {
 	try {
 		const { results } = await env.DB.prepare(`
 			SELECT g.guest_name, e.id, e.title, e.duration_ms
@@ -575,174 +465,23 @@ async function handleGuests(env) {
 		}
 
 		const guests = Array.from(guestMap.values());
-		return json({ guests, total_guests: guests.length });
+		return json({ guests, total_guests: guests.length }, 200, request);
 	} catch (err) {
-		return json({ guests: [], total_guests: 0 });
+		return json({ guests: [], total_guests: 0 }, 200, request);
 	}
 }
 
-async function handleAdminUnreviewed(env) {
-	try {
-		const { results } = await env.DB.prepare(`
-			SELECT e.id, e.title, e.published_at, g.guest_name
-			FROM episodes e
-			LEFT JOIN episode_guests g ON g.episode_id = e.id
-			WHERE e.guests_reviewed = 0
-			ORDER BY e.id DESC
-		`).all();
-
-		const episodeMap = new Map();
-		for (const row of results) {
-			if (!episodeMap.has(row.id)) {
-				episodeMap.set(row.id, {
-					id: row.id,
-					title: row.title,
-					published_at: row.published_at,
-					guests: [],
-				});
-			}
-			if (row.guest_name) {
-				episodeMap.get(row.id).guests.push(row.guest_name);
-			}
+function json(data, status = 200, request) {
+	const headers = {
+		'Content-Type': 'application/json',
+		'X-Content-Type-Options': 'nosniff',
+	};
+	if (request) {
+		const origin = getCorsOrigin(request);
+		if (origin) {
+			headers['Access-Control-Allow-Origin'] = origin;
+			headers['Vary'] = 'Origin';
 		}
-
-		return json({ episodes: Array.from(episodeMap.values()) });
-	} catch (err) {
-		return json({ episodes: [] });
 	}
-}
-
-async function handleAdminGuestRename(request, env) {
-	let body;
-	try { body = await request.json(); } catch { return json({ error: 'Invalid JSON' }, 400); }
-
-	const { old_name, new_name } = body;
-	if (!old_name || !new_name) return json({ error: 'Missing old_name or new_name' }, 400);
-
-	await env.DB.prepare(
-		'INSERT OR IGNORE INTO episode_guests SELECT episode_id, ? FROM episode_guests WHERE guest_name = ?'
-	).bind(new_name, old_name).run();
-
-	await env.DB.prepare(
-		'DELETE FROM episode_guests WHERE guest_name = ?'
-	).bind(old_name).run();
-
-	return json({ ok: true });
-}
-
-async function handleAdminGuestDelete(request, env) {
-	let body;
-	try { body = await request.json(); } catch { return json({ error: 'Invalid JSON' }, 400); }
-
-	const { guest_name } = body;
-	if (!guest_name) return json({ error: 'Missing guest_name' }, 400);
-
-	await env.DB.prepare(
-		'DELETE FROM episode_guests WHERE guest_name = ?'
-	).bind(guest_name).run();
-
-	return json({ ok: true });
-}
-
-async function handleAdminEpisodeReviewed(request, env) {
-	let body;
-	try { body = await request.json(); } catch { return json({ error: 'Invalid JSON' }, 400); }
-
-	const { episode_id } = body;
-	if (!episode_id) return json({ error: 'Missing episode_id' }, 400);
-
-	await env.DB.prepare(
-		'UPDATE episodes SET guests_reviewed = 1 WHERE id = ?'
-	).bind(episode_id).run();
-
-	return json({ ok: true });
-}
-
-async function handleAdminUpdateDuration(request, env) {
-	let body;
-	try { body = await request.json(); } catch { return json({ error: 'Invalid JSON' }, 400); }
-
-	const { episode_id, duration_ms } = body;
-	if (!episode_id || !duration_ms) return json({ error: 'Missing episode_id or duration_ms' }, 400);
-
-	await env.DB.prepare(
-		'UPDATE episodes SET duration_ms = ? WHERE id = ?'
-	).bind(Math.round(duration_ms), episode_id).run();
-
-	return json({ ok: true });
-}
-
-async function handleMapPlaces(env) {
-	const { results } = await env.DB.prepare(`
-		SELECT
-			p.id,
-			p.name,
-			p.lat,
-			p.lng,
-			COUNT(pm.episode_id) AS episode_count
-		FROM places p
-		JOIN place_mentions pm ON pm.place_id = p.id
-		GROUP BY p.id
-		ORDER BY episode_count DESC
-	`).all();
-
-	if (results.length === 0) {
-		return json({ places: [], total_mentions: 0 });
-	}
-
-	// Fetch all episode titles for mentioned episodes
-	const { results: mentions } = await env.DB.prepare(`
-		SELECT pm.place_id, pm.episode_id, e.title
-		FROM place_mentions pm
-		JOIN episodes e ON e.id = pm.episode_id
-	`).all();
-
-	const episodesByPlace = {};
-	for (const m of mentions) {
-		if (!episodesByPlace[m.place_id]) episodesByPlace[m.place_id] = [];
-		episodesByPlace[m.place_id].push({ id: m.episode_id, title: m.title });
-	}
-
-	const places = results.map(p => ({
-		name: p.name,
-		lat: p.lat,
-		lng: p.lng,
-		episode_count: p.episode_count,
-		episodes: episodesByPlace[p.id] || [],
-	}));
-
-	const total_mentions = places.reduce((s, p) => s + p.episode_count, 0);
-	return json({ places, total_mentions });
-}
-
-async function handleStars(env) {
-	try {
-		const obj = await env.AUDIO.get('data/stars.json');
-		if (!obj) {
-			return json({ error: 'Star data not generated yet' }, 404);
-		}
-		if (obj.size > 2 * 1024 * 1024) {
-			return json({ error: 'Star data too large' }, 500);
-		}
-		return new Response(obj.body, {
-			headers: {
-				'Content-Type': 'application/json',
-				'Content-Length': obj.size,
-				'Access-Control-Allow-Origin': '*',
-				'Cache-Control': 'public, max-age=86400',
-			},
-		});
-	} catch (err) {
-		return json({ error: 'Failed to load star data' }, 500);
-	}
-}
-
-function json(data, status = 200) {
-	return new Response(JSON.stringify(data), {
-		status,
-		headers: {
-			'Content-Type': 'application/json',
-			'Access-Control-Allow-Origin': '*',
-		},
-	});
+	return new Response(JSON.stringify(data), { status, headers });
 }
