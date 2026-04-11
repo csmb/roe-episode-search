@@ -30,5 +30,12 @@ scripts/*.db
 scripts/business_matches.json
 scripts/places.json
 
+# Map enrichment pipeline data (generated)
+scripts/candidates/*.json
+scripts/candidates/.*.json
+scripts/verified_places.json
+scripts/cleanup_report.json
+scripts/.crossref-checkpoint.json
+
 # Claude Code local config (may contain API keys)
 .claude/
