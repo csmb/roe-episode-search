@@ -13,7 +13,8 @@ roe-episode-search/
 │       ├── episodes.html      # Browse all episodes
 │       ├── guests.html        # Guest directory
 │       ├── admin.html         # Admin panel (guest/episode management)
-│       └── map.html           # Places mentioned map
+│       ├── map.html           # Places mentioned map
+│       └── stars.html         # Stellar Lexicon word-star visualization
 ├── roe-pipeline/              # Cloudflare Worker — serverless episode processing
 │   └── src/
 │       ├── index.js           # Queue consumer, dispatches to Durable Object
@@ -30,6 +31,14 @@ roe-episode-search/
 │   ├── discover-episodes.js   # Scan directory, parse filenames
 │   ├── generate-summaries.js  # Regenerate AI summaries
 │   ├── backfill-guests.js     # Populate episode_guests from summaries
+│   ├── candidates/            # Map enrichment: external data fetchers
+│   │   ├── fetch-datasf.js    # DataSF registered businesses (no API key)
+│   │   ├── fetch-osm.js       # OpenStreetMap parks, trails, landmarks
+│   │   ├── fetch-yelp.js      # Yelp businesses (needs YELP_API_KEY)
+│   │   └── merge-candidates.js # Merge + deduplicate all candidate sources
+│   ├── cross-reference-candidates.js  # Match candidates against transcripts via GPT-4o-mini
+│   ├── seed-verified-places.js        # Insert verified places into D1 (geocodes via Nominatim)
+│   ├── cleanup-places.js              # Remove false positive places from D1
 │   └── ...                    # ~20 more utility scripts
 ├── schema.sql                 # D1 schema (episodes, segments, FTS5, guests, places)
 ├── All episodes/              # 69GB MP3 archive (local only, not in git)
@@ -101,6 +110,30 @@ node scripts/generate-summaries.js
 node scripts/backfill-guests.js
 ```
 
+### Map enrichment pipeline
+
+Enriches the places map by fetching external data sources, cross-referencing against transcripts, and seeding verified matches to D1. Run steps in order:
+
+```
+# 1. Fetch candidates from external sources (run any/all)
+node scripts/candidates/fetch-datasf.js       # SF businesses → candidates/datasf.json
+node scripts/candidates/fetch-osm.js           # OSM parks/landmarks → candidates/osm.json
+
+# 2. Merge all candidate files into one deduplicated set
+node scripts/candidates/merge-candidates.js    # → candidates/all.json
+
+# 3. Cross-reference against transcripts (uses GPT-4o-mini, takes hours)
+node scripts/cross-reference-candidates.js     # → scripts/verified_places.json
+
+# 4. Seed verified places into D1 (geocodes missing coords via Nominatim)
+node scripts/seed-verified-places.js           # inserts into places + place_mentions
+```
+
+Notes:
+- `seed-verified-places.js` has a stoplist to filter false positives the LLM missed
+- Nominatim geocoding is rate-limited to 1 req/1.5s with exponential backoff retries
+- Generated data files (*.json in candidates/, verified_places.json) are gitignored
+
 ## Key Files
 
 | File | What's In It |
@@ -111,5 +144,7 @@ node scripts/backfill-guests.js
 | `.env` | Secrets: CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN, OPENAI_API_KEY |
 | `r2-cors.json` | R2 CORS rules (GET/HEAD from all origins) |
 | `scripts/batch-progress.json` | Checkpoint/resume state for process-all.js |
+| `scripts/verified_places.json` | LLM-verified place matches (1,466 entries, gitignored) |
+| `scripts/candidates/*.json` | Raw + merged candidate data from external APIs (gitignored) |
 | `docs/superpowers/specs/` | Design specs for major features |
 | `docs/superpowers/plans/` | Implementation plans |
