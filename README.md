@@ -1,6 +1,6 @@
 # ROE Episode Search
 
-A searchable archive of the Roll Over Easy podcast. Search for any keyword or concept and jump directly to the moment it was said. Supports both keyword search (FTS5) and semantic search (Cloudflare Vectorize).
+An archive of the Roll Over Easy podcast. Browse episodes, explore guests, and discover places mentioned on the show. Transcript search (FTS5 + Cloudflare Vectorize) is available behind the password-protected admin page.
 
 **Live:** https://rollovereasy.org
 
@@ -53,7 +53,7 @@ Upload episode.mp3 to R2
 
 **Cloudflare R2** — Audio files converted to M4A (AAC with faststart) for reliable browser streaming and seeking.
 
-**Frontend** — Three inline HTML pages: search UI (`frontend.html`), episode browser (`episodes.html`), guest directory (`guests.html`).
+**Frontend** — Six inline HTML pages: homepage (`frontend.html`), episode browser (`episodes.html`), guest directory (`guests.html`), password-protected admin panel with transcript search (`admin.html`), places map (`map.html`), and Stellar Lexicon (`stars.html`).
 
 ### Scripts
 

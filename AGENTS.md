@@ -9,10 +9,10 @@ roe-episode-search/
 ├── roe-search/                # Cloudflare Worker — search frontend + API
 │   └── src/
 │       ├── index.js           # All routes (search, audio proxy, admin)
-│       ├── frontend.html      # Main search page with player
+│       ├── frontend.html      # Homepage (On This Day, clip sharing, audio player)
 │       ├── episodes.html      # Browse all episodes
 │       ├── guests.html        # Guest directory
-│       ├── admin.html         # Admin panel (guest/episode management)
+│       ├── admin.html         # Admin panel (password-protected: guest mgmt, search)
 │       ├── map.html           # Places mentioned map
 │       └── stars.html         # Stellar Lexicon word-star visualization
 ├── roe-pipeline/              # Cloudflare Worker — serverless episode processing
