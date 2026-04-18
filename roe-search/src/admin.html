@@ -263,9 +263,189 @@
 		.alpha-bar a { width: 28px; height: 28px; font-size: 0.8rem; }
 		.tab { padding: 10px 14px; font-size: 0.9rem; }
 	}
+
+	/* Auth overlay */
+	.auth-overlay {
+		position: fixed;
+		inset: 0;
+		background: #f5f5f5;
+		z-index: 2000;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+	}
+	.auth-box {
+		text-align: center;
+		max-width: 320px;
+		padding: 2rem;
+	}
+	.auth-box h2 {
+		font-size: 1.3rem;
+		color: #2c2c2c;
+		margin-bottom: 1rem;
+	}
+	.auth-box input {
+		width: 100%;
+		padding: 10px 14px;
+		font-size: 1rem;
+		border: 1px solid #d0d0d0;
+		border-radius: 8px;
+		outline: none;
+		margin-bottom: 12px;
+		font-family: inherit;
+	}
+	.auth-box input:focus {
+		border-color: #505050;
+		box-shadow: 0 0 0 3px rgba(80,80,80,0.25);
+	}
+	.auth-box button {
+		width: 100%;
+		padding: 10px;
+		font-size: 1rem;
+		font-weight: 600;
+		background: #505050;
+		color: #fff;
+		border: none;
+		border-radius: 8px;
+		cursor: pointer;
+		font-family: inherit;
+	}
+	.auth-box button:hover { background: #303030; }
+	.auth-error {
+		color: #c0392b;
+		font-size: 0.85rem;
+		margin-top: 8px;
+		display: none;
+	}
+
+	/* Search tab */
+	.search-box {
+		display: flex;
+		gap: 10px;
+		margin-bottom: 16px;
+	}
+	.search-box input {
+		flex: 1;
+		padding: 12px 18px;
+		font-size: 1rem;
+		border: 1px solid #d0d0d0;
+		border-radius: 50px;
+		outline: none;
+		background: #fff;
+		font-family: inherit;
+	}
+	.search-box input:focus {
+		border-color: #505050;
+		box-shadow: 0 0 0 3px rgba(80,80,80,0.25);
+	}
+	.search-box button {
+		padding: 12px 24px;
+		font-size: 1rem;
+		font-weight: 600;
+		background: #505050;
+		color: #fff;
+		border: none;
+		border-radius: 50px;
+		cursor: pointer;
+		font-family: inherit;
+	}
+	.search-box button:hover { background: #303030; }
+	.search-mode {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		margin-bottom: 16px;
+		font-size: 0.9rem;
+		color: #666;
+	}
+	.mode-toggle {
+		display: inline-flex;
+		background: #e8e8e8;
+		border-radius: 50px;
+		padding: 2px;
+	}
+	.mode-toggle button {
+		padding: 6px 16px;
+		font-size: 0.85rem;
+		font-weight: 600;
+		border: none;
+		border-radius: 50px;
+		cursor: pointer;
+		background: transparent;
+		color: #636363;
+		font-family: inherit;
+	}
+	.mode-toggle button.active {
+		background: #505050;
+		color: #fff;
+	}
+	.search-result {
+		background: #fff;
+		border-radius: 10px;
+		box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+		margin-bottom: 12px;
+		padding: 16px;
+	}
+	.search-result-title {
+		font-weight: 600;
+		font-size: 1rem;
+		color: #2c2c2c;
+		margin-bottom: 6px;
+	}
+	.search-result-meta {
+		color: #767676;
+		font-size: 0.85rem;
+		margin-bottom: 8px;
+	}
+	.search-match {
+		padding: 6px 0;
+		border-top: 1px solid #eee;
+		font-size: 0.9rem;
+		line-height: 1.5;
+	}
+	.search-match:first-child { border-top: none; }
+	.search-match .timestamp {
+		font-family: monospace;
+		font-size: 0.8rem;
+		color: #505050;
+		margin-right: 8px;
+	}
+	.search-match mark {
+		background: #e0e0e0;
+		padding: 1px 3px;
+		border-radius: 2px;
+	}
+	.search-load-more {
+		display: block;
+		width: 100%;
+		padding: 12px;
+		font-size: 0.95rem;
+		font-weight: 600;
+		background: #fff;
+		color: #505050;
+		border: 1px solid #d0d0d0;
+		border-radius: 50px;
+		cursor: pointer;
+		margin-top: 8px;
+		font-family: inherit;
+	}
+	.search-load-more:hover { border-color: #999; }
+	@media (max-width: 768px) {
+		.search-box { flex-direction: column; }
+		.search-box button { width: 100%; }
+	}
 </style>
 </head>
 <body>
+
+<div id="auth-overlay" class="auth-overlay">
+	<div class="auth-box">
+		<h2>Admin Access</h2>
+		<input type="password" id="auth-password" placeholder="Password" autocomplete="current-password">
+		<button id="auth-submit">Enter</button>
+		<div id="auth-error" class="auth-error">Wrong password</div>
+	</div>
+</div>
 
 <div class="hero">
 	<img class="hero-image" src="https://akiaiq6swxkqiixrwd6qcomhaystacksoftwarearq-us-west-1.s3.us-west-1.amazonaws.com/ferry_building.png" alt="" role="presentation">
@@ -281,6 +461,7 @@
 		<button id="tab-guests" class="tab active">All Guests</button>
 		<button id="tab-queue" class="tab">Review Queue <span id="queue-badge" class="tab-badge" style="display:none;"></span></button>
 		<button id="tab-tools" class="tab">Tools</button>
+		<button id="tab-search" class="tab">Search</button>
 	</div>
 
 	<!-- Panel: All Guests -->
@@ -302,6 +483,24 @@
 		<button id="fix-durations-btn" style="padding:8px 16px;border-radius:8px;border:none;background:#505050;color:#fff;cursor:pointer;font-size:0.9rem;">Fix Durations</button>
 		<pre id="fix-durations-log" style="margin-top:12px;font-size:0.8rem;color:#666;max-height:400px;overflow:auto;white-space:pre-wrap;"></pre>
 	</div>
+
+	<!-- Panel: Search -->
+	<div id="panel-search" style="display:none;">
+		<div class="search-box">
+			<input type="text" id="search-input" placeholder="Search transcripts...">
+			<button id="search-btn">Search</button>
+		</div>
+		<div class="search-mode">
+			<span>Mode:</span>
+			<div class="mode-toggle">
+				<button id="mode-keyword" class="active">Keyword</button>
+				<button id="mode-semantic">Semantic</button>
+			</div>
+		</div>
+		<div id="search-status" class="status"></div>
+		<div id="search-results"></div>
+		<button id="search-load-more" class="search-load-more" style="display:none;">Load more results</button>
+	</div>
 </main>
 
 <script>
@@ -314,23 +513,75 @@ let activeTab = 'guests';
 document.getElementById('tab-guests').onclick = () => showTab('guests');
 document.getElementById('tab-queue').onclick  = () => showTab('queue');
 document.getElementById('tab-tools').onclick  = () => showTab('tools');
+document.getElementById('tab-search').onclick = () => showTab('search');
 
 function showTab(tab) {
 	activeTab = tab;
 	document.getElementById('panel-guests').style.display = tab === 'guests' ? '' : 'none';
 	document.getElementById('panel-queue').style.display  = tab === 'queue'  ? '' : 'none';
 	document.getElementById('panel-tools').style.display  = tab === 'tools'  ? '' : 'none';
+	document.getElementById('panel-search').style.display = tab === 'search' ? '' : 'none';
 	document.getElementById('tab-guests').classList.toggle('active', tab === 'guests');
 	document.getElementById('tab-queue').classList.toggle('active', tab === 'queue');
 	document.getElementById('tab-tools').classList.toggle('active', tab === 'tools');
+	document.getElementById('tab-search').classList.toggle('active', tab === 'search');
 }
+
+// ── Auth ──────────────────────────────────────────────────────────────
+
+function getPassword() { return sessionStorage.getItem('admin_pw') || ''; }
+
+async function verifyPassword(pw) {
+	const res = await fetch('/api/admin/unreviewed', {
+		headers: { 'X-Admin-Password': pw },
+	});
+	return res.ok;
+}
+
+(async function initAuth() {
+	const overlay = document.getElementById('auth-overlay');
+	const input = document.getElementById('auth-password');
+	const btn = document.getElementById('auth-submit');
+	const err = document.getElementById('auth-error');
+
+	// Check if already authenticated this session
+	const saved = getPassword();
+	if (saved && await verifyPassword(saved)) {
+		overlay.remove();
+		loadAndRender();
+		return;
+	}
+
+	async function tryLogin() {
+		const pw = input.value;
+		if (!pw) return;
+		btn.disabled = true;
+		err.style.display = 'none';
+		if (await verifyPassword(pw)) {
+			sessionStorage.setItem('admin_pw', pw);
+			overlay.remove();
+			loadAndRender();
+		} else {
+			err.style.display = '';
+			btn.disabled = false;
+			input.select();
+		}
+	}
+
+	btn.onclick = tryLogin;
+	input.onkeydown = (e) => { if (e.key === 'Enter') tryLogin(); };
+	input.focus();
+})();
 
 // ── API helpers ────────────────────────────────────────────────────────
 
 async function apiPost(path, body) {
 	const res = await fetch(path, {
 		method: 'POST',
-		headers: { 'Content-Type': 'application/json' },
+		headers: {
+			'Content-Type': 'application/json',
+			'X-Admin-Password': getPassword(),
+		},
 		body: JSON.stringify(body),
 	});
 	if (!res.ok) {
@@ -659,9 +910,138 @@ function getAudioDuration(url) {
 	});
 }
 
-// ── Init ───────────────────────────────────────────────────────────────
+// ── Search tab ────────────────────────────────────────────────────────
 
-loadAndRender();
+let searchQuery = '';
+let searchPage = 1;
+let searchHasMore = false;
+let searchModeVal = 'keyword';
+
+document.getElementById('mode-keyword').onclick = () => {
+	searchModeVal = 'keyword';
+	document.getElementById('mode-keyword').classList.add('active');
+	document.getElementById('mode-semantic').classList.remove('active');
+	if (searchQuery) runSearch();
+};
+document.getElementById('mode-semantic').onclick = () => {
+	searchModeVal = 'semantic';
+	document.getElementById('mode-semantic').classList.add('active');
+	document.getElementById('mode-keyword').classList.remove('active');
+	if (searchQuery) runSearch();
+};
+
+document.getElementById('search-btn').onclick = () => runSearch();
+document.getElementById('search-input').onkeydown = (e) => {
+	if (e.key === 'Enter') runSearch();
+};
+document.getElementById('search-load-more').onclick = () => {
+	searchPage++;
+	fetchSearchResults(false);
+};
+
+async function runSearch() {
+	const q = document.getElementById('search-input').value.trim();
+	if (!q) return;
+	searchQuery = q;
+	searchPage = 1;
+	document.getElementById('search-results').innerHTML = '';
+	document.getElementById('search-status').textContent = 'Searching...';
+	document.getElementById('search-load-more').style.display = 'none';
+	await fetchSearchResults(true);
+}
+
+async function fetchSearchResults(isNew) {
+	try {
+		const endpoint = searchModeVal === 'semantic' ? '/api/semantic-search' : '/api/search';
+		const res = await fetch(endpoint + '?q=' + encodeURIComponent(searchQuery) + '&page=' + searchPage);
+		const data = await res.json();
+
+		if (data.error) {
+			document.getElementById('search-status').textContent = 'Error: ' + data.error;
+			return;
+		}
+
+		searchHasMore = data.has_more;
+		document.getElementById('search-load-more').style.display = searchHasMore ? '' : 'none';
+
+		const totalMatches = data.results.reduce((sum, ep) => sum + ep.matches.length, 0);
+		if (isNew && totalMatches === 0) {
+			document.getElementById('search-status').textContent = 'No results for \u201c' + searchQuery + '\u201d';
+			return;
+		}
+		if (isNew) {
+			document.getElementById('search-status').textContent = 'Results for \u201c' + searchQuery + '\u201d';
+		}
+
+		const container = document.getElementById('search-results');
+		for (const episode of data.results) {
+			container.appendChild(renderSearchResult(episode));
+		}
+	} catch (err) {
+		document.getElementById('search-status').textContent = 'Error: ' + err.message;
+	}
+}
+
+function renderSearchResult(episode) {
+	const div = document.createElement('div');
+	div.className = 'search-result';
+
+	const title = document.createElement('div');
+	title.className = 'search-result-title';
+	title.textContent = episode.title + ' (' + episode.matches.length + ' match' + (episode.matches.length !== 1 ? 'es' : '') + ')';
+	div.appendChild(title);
+
+	const dateStr = parseSearchDate(episode.episode_id);
+	if (dateStr) {
+		const meta = document.createElement('div');
+		meta.className = 'search-result-meta';
+		meta.textContent = dateStr;
+		div.appendChild(meta);
+	}
+
+	for (const match of episode.matches) {
+		const m = document.createElement('div');
+		m.className = 'search-match';
+		const ts = document.createElement('span');
+		ts.className = 'timestamp';
+		ts.textContent = formatSearchTime(match.start_ms);
+		m.appendChild(ts);
+		const text = document.createElement('span');
+		text.innerHTML = searchModeVal === 'keyword' ? highlightSearchQuery(match.text, searchQuery) : escapeSearchHtml(match.text);
+		m.appendChild(text);
+		div.appendChild(m);
+	}
+
+	return div;
+}
+
+function parseSearchDate(id) {
+	const match = id.match(/(\d{4}-\d{2}-\d{2})/);
+	if (!match) return null;
+	const [y, m, d] = match[1].split('-');
+	return new Date(+y, +m - 1, +d).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+}
+
+function formatSearchTime(ms) {
+	const totalSeconds = Math.floor(ms / 1000);
+	const h = Math.floor(totalSeconds / 3600);
+	const m = Math.floor((totalSeconds % 3600) / 60);
+	const s = totalSeconds % 60;
+	if (h > 0) return h + ':' + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+	return m + ':' + String(s).padStart(2, '0');
+}
+
+function highlightSearchQuery(text, query) {
+	const safe = escapeSearchHtml(text);
+	const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+	return safe.replace(new RegExp('(' + escaped + ')', 'gi'), '<mark>$1</mark>');
+}
+
+function escapeSearchHtml(str) {
+	return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// ── Init ───────────────────────────────────────────────────────────────
 </script>
 
 </body>
