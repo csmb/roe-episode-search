@@ -672,7 +672,7 @@
 	<div class="hero-content">
 		<h1><a href="/">Roll Over Easy</a></h1>
 		<p class="tagline">Taking San Francisco from under the covers 'til after coffee ☕</p>
-		<nav aria-label="Main navigation"><a href="/episodes">Episodes</a> · <a href="/map">Map</a> · <a href="/" aria-current="page">Search</a></nav>
+		<nav aria-label="Main navigation"><a href="/episodes">Episodes</a> · <a href="/map">Map</a></nav>
 	</div>
 </div>
 
@@ -681,18 +681,7 @@
 	<!-- Search + Episodes tabs -->
 	<div class="content-section" id="search-episodes-section">
 		<div id="panel-search">
-			<div class="search-box">
-				<label for="search-input" class="sr-only">Search episodes</label>
-				<input type="text" id="search-input" placeholder="Search through the fog...">
-				<button id="search-btn">Search</button>
-			</div>
-			<div class="search-mode">
-				<span class="search-mode-label">Search mode:</span>
-				<div class="mode-toggle">
-					<button id="mode-keyword" class="active" onclick="setSearchMode('keyword')">Keyword</button>
-					<button id="mode-semantic" onclick="setSearchMode('semantic')">Semantic</button>
-				</div>
-			</div>
+
 			<div id="clip-card"></div>
 			<div id="on-this-day"></div>
 			<div id="status" class="status" aria-live="polite" aria-atomic="true"></div>
@@ -813,16 +802,10 @@ searchInput.addEventListener('keydown', (e) => {
 });
 loadMoreBtn.addEventListener('click', () => loadMore());
 
-// Load query, mode, and clip params from URL on page load
+// Load clip params from URL on page load
 const params = new URLSearchParams(window.location.search);
-if (params.get('mode') === 'semantic') {
-	setSearchMode('semantic');
-}
 if (params.get('episode')) {
 	loadClip(params.get('episode'), parseInt(params.get('t') || '0', 10));
-} else if (params.get('bummer-and-lazarus-fetch-me')) {
-	searchInput.value = deslugify(params.get('bummer-and-lazarus-fetch-me'));
-	doSearch();
 } else {
 	loadOnThisDay();
 }
@@ -874,7 +857,6 @@ async function loadClip(episodeId, startMs) {
 				html += '<button class="ep-btn ep-guest-btn" data-audio="' + escapeHtml(ep.audio_file) + '" data-title="' + escapeHtml(ep.title) + '" data-start="' + ep.guest_start_ms + '">&#127908; Skip to interview with ' + escapeHtml(formatGuestLabel(ep.guests)) + '</button>';
 			}
 		}
-		html += '<a class="ep-btn" href="/?q=&episode=' + encodeURIComponent(ep.id) + '">&#128269; Search</a>';
 		html += '</div>';
 		html += '</div>';
 		html += '<div class="episode-map-wrap" id="clip-map-wrap-0" style="display:none">';
@@ -932,7 +914,6 @@ async function loadOnThisDay() {
 					html += '<button class="ep-btn ep-guest-btn" data-audio="' + escapeHtml(ep.audio_file) + '" data-title="' + escapeHtml(ep.title) + '" data-start="' + ep.guest_start_ms + '">&#127908; Skip to interview with ' + escapeHtml(formatGuestLabel(ep.guests)) + '</button>';
 				}
 			}
-			html += '<a class="ep-btn" href="/?q=&episode=' + encodeURIComponent(ep.id) + '">&#128269; Search</a>';
 			html += '</div>';
 			html += '</div>';
 			html += '<div class="episode-map-wrap" id="otd-map-wrap-' + i + '" style="display:none">';
@@ -1094,11 +1075,6 @@ function renderEpisode(episode) {
 		guestBtn.onclick = () => playAt(episode.audio_file, episode.guest_start_ms, episode.title);
 		actions.appendChild(guestBtn);
 	}
-	const searchBtn = document.createElement('a');
-	searchBtn.className = 'ep-btn';
-	searchBtn.innerHTML = '&#128269; Search';
-	searchBtn.href = '/?q=&episode=' + encodeURIComponent(episode.episode_id);
-	actions.appendChild(searchBtn);
 	div.appendChild(actions);
 
 	const mapToggle = document.createElement('button');
