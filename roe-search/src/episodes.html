@@ -277,7 +277,7 @@
 	<div class="hero-content">
 		<h1><a href="/">Roll Over Easy</a></h1>
 		<div class="tagline">All Episodes</div>
-		<nav aria-label="Main navigation"><a href="/episodes" aria-current="page">Episodes</a> · <a href="/map">Map</a> · <a href="/">Search</a></nav>
+		<nav aria-label="Main navigation"><a href="/episodes" aria-current="page">Episodes</a> · <a href="/map">Map</a></nav>
 	</div>
 </div>
 
@@ -388,7 +388,6 @@ async function loadEpisodes() {
 			if (ep.guest_start_ms && ep.guests && ep.guests.length > 0) {
 				html += '<button class="ep-btn ep-skip-btn" data-audio="/audio/' + encodeURIComponent(ep.id) + '.m4a" data-title="' + escapeAttr(ep.title) + '" data-start="' + Math.floor(ep.guest_start_ms / 1000) + '">&#127908; Skip to interview with ' + escapeHtml(formatGuestLabel(ep.guests)) + '</button>';
 			}
-			html += '<a class="ep-btn" href="/?q=&episode=' + encodeURIComponent(ep.id) + '">&#128269; Search</a>';
 			html += '<button class="ep-btn ep-share-btn" data-id="' + escapeAttr(ep.id) + '">&#128279; Link</button>';
 			html += '</div>';
 			html += '</div>';
