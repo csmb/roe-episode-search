@@ -1,6 +1,7 @@
 import FRONTEND_HTML from './frontend.html';
 import EPISODES_HTML from './episodes.html';
 import GUESTS_HTML from './guests.html';
+import ADMIN_HTML from './admin.html';
 
 // ── Rate limiting ─────────────────────────────────────────────────────
 // Simple sliding-window rate limiter per IP. Limits are per Worker isolate
@@ -58,12 +59,28 @@ function getCorsOrigin(request) {
 	return null;
 }
 
+function checkAdminPassword(request, env) {
+	const password = request.headers.get('X-Admin-Password');
+	return password && password === env.ADMIN_PASSWORD;
+}
+
 // ── Router ────────────────────────────────────────────────────────────
 
 export default {
 	async fetch(request, env) {
 		const url = new URL(request.url);
 		const clientIP = request.headers.get('CF-Connecting-IP') || 'unknown';
+
+		// Admin routes — password protected
+		if (url.pathname === '/admin') {
+			return new Response(ADMIN_HTML, { headers: HTML_HEADERS });
+		}
+		if (url.pathname.startsWith('/api/admin/')) {
+			if (!checkAdminPassword(request, env)) {
+				return json({ error: 'Unauthorized' }, 401, request);
+			}
+			return handleAdminApi(url, env, request);
+		}
 
 		if (url.pathname === '/api/search') {
 			if (!checkRateLimit(clientIP, 'search', RATE_LIMIT_SEARCH)) {
@@ -469,6 +486,91 @@ async function handleGuests(env, request) {
 	} catch (err) {
 		return json({ guests: [], total_guests: 0 }, 200, request);
 	}
+}
+
+async function handleAdminApi(url, env, request) {
+	const path = url.pathname.slice('/api/admin/'.length);
+
+	if (path === 'unreviewed') {
+		try {
+			const { results } = await env.DB.prepare(`
+				SELECT e.id, e.title, e.published_at
+				FROM episodes e
+				WHERE e.guests_reviewed = 0
+				ORDER BY e.id DESC
+			`).all();
+
+			const episodes = [];
+			for (const ep of results) {
+				const { results: guests } = await env.DB.prepare(
+					'SELECT guest_name FROM episode_guests WHERE episode_id = ?1'
+				).bind(ep.id).all();
+				episodes.push({
+					id: ep.id,
+					title: ep.title,
+					published_at: ep.published_at,
+					guests: guests.map(g => g.guest_name),
+				});
+			}
+			return json({ episodes }, 200, request);
+		} catch (err) {
+			return json({ error: 'Failed to fetch unreviewed episodes' }, 500, request);
+		}
+	}
+
+	if (path === 'guest/rename' && request.method === 'POST') {
+		try {
+			const body = await request.json();
+			const { old_name, new_name } = body;
+			if (!old_name || !new_name) return json({ error: 'Missing old_name or new_name' }, 400, request);
+			await env.DB.prepare('UPDATE episode_guests SET guest_name = ?1 WHERE guest_name = ?2')
+				.bind(new_name, old_name).run();
+			return json({ ok: true }, 200, request);
+		} catch (err) {
+			return json({ error: 'Rename failed' }, 500, request);
+		}
+	}
+
+	if (path === 'guest/delete' && request.method === 'POST') {
+		try {
+			const body = await request.json();
+			const { guest_name } = body;
+			if (!guest_name) return json({ error: 'Missing guest_name' }, 400, request);
+			await env.DB.prepare('DELETE FROM episode_guests WHERE guest_name = ?1')
+				.bind(guest_name).run();
+			return json({ ok: true }, 200, request);
+		} catch (err) {
+			return json({ error: 'Delete failed' }, 500, request);
+		}
+	}
+
+	if (path === 'episode/reviewed' && request.method === 'POST') {
+		try {
+			const body = await request.json();
+			const { episode_id } = body;
+			if (!episode_id) return json({ error: 'Missing episode_id' }, 400, request);
+			await env.DB.prepare('UPDATE episodes SET guests_reviewed = 1 WHERE id = ?1')
+				.bind(episode_id).run();
+			return json({ ok: true }, 200, request);
+		} catch (err) {
+			return json({ error: 'Update failed' }, 500, request);
+		}
+	}
+
+	if (path === 'episode/duration' && request.method === 'POST') {
+		try {
+			const body = await request.json();
+			const { episode_id, duration_ms } = body;
+			if (!episode_id || !duration_ms) return json({ error: 'Missing episode_id or duration_ms' }, 400, request);
+			await env.DB.prepare('UPDATE episodes SET duration_ms = ?1 WHERE id = ?2')
+				.bind(duration_ms, episode_id).run();
+			return json({ ok: true }, 200, request);
+		} catch (err) {
+			return json({ error: 'Update failed' }, 500, request);
+		}
+	}
+
+	return json({ error: 'Not found' }, 404, request);
 }
 
 function json(data, status = 200, request) {
