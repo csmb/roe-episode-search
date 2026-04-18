@@ -7,6 +7,8 @@
 
 Remove the transcript search UI from the public site. The transcript content feels too exposing to have publicly searchable. API routes stay live (not concerned about direct API access), but the UI should not offer search.
 
+Move the search functionality to a new "Search" tab on the admin page, which is password-protected.
+
 ## Changes
 
 ### 1. `frontend.html` — Remove search bar and mode toggle
@@ -37,9 +39,28 @@ All pages with the shared nav show "Episodes · Map · Search". Change to "Episo
 - `episodes.html`
 - Any other HTML files sharing the same nav (guests.html, admin.html, map.html, stars.html)
 
+### 5. `index.js` — Add `/admin` route with password protection
+
+The admin page currently has no explicit route (the catch-all serves `frontend.html`). Add:
+
+- A `/admin` route that serves `admin.html`
+- Password protection using a Cloudflare Workers secret `ADMIN_PASSWORD`
+- The admin page shows a password prompt on load. The entered password is stored in `sessionStorage` and sent as a header (`X-Admin-Password`) with all admin API requests
+- The worker checks this header on all `/admin` and `/api/admin/*` routes, returning 401 if missing/wrong
+- After deploy, the user sets the secret via `wrangler secret put ADMIN_PASSWORD`
+
+### 6. `admin.html` — Add "Search" tab
+
+Add a fourth tab to the admin page alongside "All Guests", "Review Queue", and "Tools":
+
+- **Search tab** contains: search input box, keyword/semantic mode toggle, status line, timeline chart, and search results
+- Reuses the same search API endpoints (`/api/search`, `/api/semantic-search`, `/api/timeline`)
+- Results render with the same episode card format (title, date, matches with timestamps, audio playback)
+- The search functionality is a self-contained copy within admin.html (since the HTML files are independent inline files)
+
 ### What stays unchanged
 
 - All search-related JS/CSS in `frontend.html` (dead code, harmless, keeps change minimal and reversible)
-- All API routes (`/api/search`, `/api/semantic-search`, `/api/timeline`)
-- Audio player, On This Day, clip sharing, confetti
+- All API routes (`/api/search`, `/api/semantic-search`, `/api/timeline`) — remain publicly accessible at the API level
+- Audio player, On This Day, clip sharing, confetti on the public site
 - The homepage still serves `frontend.html` with On This Day + info cards
