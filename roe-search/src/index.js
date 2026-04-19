@@ -2,6 +2,7 @@ import FRONTEND_HTML from './frontend.html';
 import EPISODES_HTML from './episodes.html';
 import GUESTS_HTML from './guests.html';
 import ADMIN_HTML from './admin.html';
+import MAP_HTML from './map.html';
 
 // ── Rate limiting ─────────────────────────────────────────────────────
 // Simple sliding-window rate limiter per IP. Limits are per Worker isolate
@@ -80,6 +81,13 @@ export default {
 				return json({ error: 'Unauthorized' }, 401, request);
 			}
 			return handleAdminApi(url, env, request);
+		}
+
+		if (url.pathname === '/map') {
+			return new Response(MAP_HTML, { headers: HTML_HEADERS });
+		}
+		if (url.pathname === '/api/map-places') {
+			return handleMapPlaces(env, request);
 		}
 
 		if (url.pathname === '/api/search') {
@@ -486,6 +494,48 @@ async function handleGuests(env, request) {
 	} catch (err) {
 		return json({ guests: [], total_guests: 0 }, 200, request);
 	}
+}
+
+async function handleMapPlaces(env, request) {
+	const { results } = await env.DB.prepare(`
+		SELECT
+			p.id,
+			p.name,
+			p.lat,
+			p.lng,
+			COUNT(pm.episode_id) AS episode_count
+		FROM places p
+		JOIN place_mentions pm ON pm.place_id = p.id
+		GROUP BY p.id
+		ORDER BY episode_count DESC
+	`).all();
+
+	if (results.length === 0) {
+		return json({ places: [], total_mentions: 0 }, 200, request);
+	}
+
+	const { results: mentions } = await env.DB.prepare(`
+		SELECT pm.place_id, pm.episode_id, e.title
+		FROM place_mentions pm
+		JOIN episodes e ON e.id = pm.episode_id
+	`).all();
+
+	const episodesByPlace = {};
+	for (const m of mentions) {
+		if (!episodesByPlace[m.place_id]) episodesByPlace[m.place_id] = [];
+		episodesByPlace[m.place_id].push({ id: m.episode_id, title: m.title });
+	}
+
+	const places = results.map(p => ({
+		name: p.name,
+		lat: p.lat,
+		lng: p.lng,
+		episode_count: p.episode_count,
+		episodes: episodesByPlace[p.id] || [],
+	}));
+
+	const total_mentions = places.reduce((s, p) => s + p.episode_count, 0);
+	return json({ places, total_mentions }, 200, request);
 }
 
 async function handleAdminApi(url, env, request) {
