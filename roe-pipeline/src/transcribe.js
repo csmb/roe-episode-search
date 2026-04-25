@@ -44,14 +44,18 @@ export async function transcribeFromR2(bucket, key, openaiApiKey, resume) {
 
   const fileSize = head.size;
   const totalChunks = Math.ceil(fileSize / CHUNK_SIZE);
+  // Distribute evenly so the last chunk isn't a tiny leftover — Whisper rejects
+  // small mid-mp3 fragments as "Invalid file format" because it can't sync.
+  // evenChunkSize <= CHUNK_SIZE always holds (proven from the ceil arithmetic).
+  const evenChunkSize = Math.ceil(fileSize / totalChunks);
 
   let allSegments = resume?.segments || [];
   let timeOffset = resume?.timeOffset || 0;
   const startChunk = resume?.chunksCompleted || 0;
 
   for (let i = startChunk; i < totalChunks; i++) {
-    const offset = i * CHUNK_SIZE;
-    const length = Math.min(CHUNK_SIZE, fileSize - offset);
+    const offset = i * evenChunkSize;
+    const length = Math.min(evenChunkSize, fileSize - offset);
 
     const obj = await bucket.get(key, { range: { offset, length } });
     if (!obj) throw new Error(`Failed to read R2 range: offset=${offset}, length=${length}`);
@@ -75,25 +79,58 @@ export async function transcribeFromR2(bucket, key, openaiApiKey, resume) {
 
 /**
  * Send a single audio chunk to OpenAI Whisper API.
+ *
+ * Builds the multipart body by hand instead of using FormData/Blob — the
+ * Workers runtime serializes those in a way OpenAI's parser rejected with
+ * "Invalid file format" for some files (observed 2026-04-24).
  */
 async function transcribeChunk(buffer, apiKey, timeOffsetSec) {
-  const blob = new Blob([buffer], { type: 'audio/mpeg' });
-  const formData = new FormData();
-  formData.append('file', blob, 'chunk.mp3');
-  formData.append('model', 'whisper-1');
-  formData.append('response_format', 'verbose_json');
-  formData.append('timestamp_granularities[]', 'segment');
-  formData.append('prompt', SF_VOCAB_PROMPT);
+  const CRLF = '\r\n';
+  const boundary = '----roePipeline' + crypto.randomUUID().replace(/-/g, '');
+  const enc = new TextEncoder();
+
+  const textPart = (name, value) => enc.encode(
+    `--${boundary}${CRLF}` +
+    `Content-Disposition: form-data; name="${name}"${CRLF}${CRLF}` +
+    `${value}${CRLF}`
+  );
+
+  const fileHeader = enc.encode(
+    `--${boundary}${CRLF}` +
+    `Content-Disposition: form-data; name="file"; filename="chunk.mp3"${CRLF}` +
+    `Content-Type: audio/mpeg${CRLF}${CRLF}`
+  );
+  const fileTrailer = enc.encode(CRLF);
+  const fields = [
+    textPart('model', 'whisper-1'),
+    textPart('response_format', 'verbose_json'),
+    textPart('timestamp_granularities[]', 'segment'),
+    textPart('prompt', SF_VOCAB_PROMPT),
+  ];
+  const closing = enc.encode(`--${boundary}--${CRLF}`);
+
+  const fileBytes = new Uint8Array(buffer);
+  const total = fileHeader.length + fileBytes.length + fileTrailer.length
+    + fields.reduce((n, f) => n + f.length, 0) + closing.length;
+  const body = new Uint8Array(total);
+  let off = 0;
+  for (const part of [fileHeader, fileBytes, fileTrailer, ...fields, closing]) {
+    body.set(part, off);
+    off += part.length;
+  }
 
   const res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
     method: 'POST',
-    headers: { Authorization: `Bearer ${apiKey}` },
-    body: formData,
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': `multipart/form-data; boundary=${boundary}`,
+    },
+    body,
   });
 
   if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Whisper API error ${res.status}: ${body}`);
+    const errBody = await res.text();
+    throw new Error(`Whisper API error ${res.status}: ${errBody}`);
   }
 
   const data = await res.json();
