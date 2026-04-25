@@ -469,6 +469,7 @@ async function generateEmbeddings(episodeId) {
 			headers: {
 				Authorization: `Bearer ${apiToken}`,
 				'Content-Type': 'application/json',
+				'User-Agent': 'roe-pipeline',
 			},
 			body: JSON.stringify({ text: texts }),
 		});
@@ -508,6 +509,7 @@ async function generateEmbeddings(episodeId) {
 			headers: {
 				Authorization: `Bearer ${apiToken}`,
 				'Content-Type': 'application/x-ndjson',
+				'User-Agent': 'roe-pipeline',
 			},
 			body: ndjson,
 		});
