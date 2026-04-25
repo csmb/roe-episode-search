@@ -24,7 +24,7 @@
 		width: 100%;
 		height: 40vh;
 		min-height: 300px;
-		background: linear-gradient(135deg, #808080 0%, #a0a0a0 50%, #606060 100%);
+		background: linear-gradient(135deg, #2a1510 0%, #7a3a1c 45%, #1a0c08 100%);
 		display: flex;
 		align-items: center;
 		justify-content: center;
@@ -73,6 +73,16 @@
 		text-shadow: 1px 1px 4px rgba(0,0,0,0.3);
 		font-weight: 300;
 		font-style: italic;
+	}
+	.hero .subtagline {
+		font-size: 1rem;
+		color: rgba(255,255,255,0.92);
+		text-shadow: 1px 1px 3px rgba(0,0,0,0.35);
+		font-weight: 400;
+		margin-top: 0.75rem;
+		max-width: 640px;
+		margin-left: auto;
+		margin-right: auto;
 	}
 
 	/* Container */
@@ -452,6 +462,7 @@
 	#clip-card {
 		margin-bottom: 24px;
 	}
+	#clip-card:empty { display: none; }
 	#clip-card .episode {
 		border-left: 3px solid #FF4F00;
 	}
@@ -466,6 +477,7 @@
 
 	/* On This Day */
 	#on-this-day { margin-bottom: 24px; }
+	#on-this-day:empty { display: none; }
 	.otd-header {
 		font-size: 1.2rem;
 		font-weight: 600;
@@ -628,7 +640,7 @@
 	.episode-mini-map .leaflet-control-zoom { display: none; }
 	.map-places-label {
 		font-size: 0.75rem;
-		color: #999;
+		color: #6b6b6b;
 		text-align: center;
 		margin-top: 4px;
 	}
@@ -637,6 +649,7 @@
 		.hero { height: 35vh; min-height: 250px; }
 		.hero h1 { font-size: 2.5rem; }
 		.hero .tagline { font-size: 1.2rem; }
+		.hero .subtagline { font-size: 0.9rem; margin-top: 0.5rem; }
 		.container { padding: 3rem 1.5rem; }
 		.content-section { margin-bottom: 3rem; }
 		.content-section h2 { font-size: 1.75rem; }
@@ -658,6 +671,7 @@
 	@media (max-width: 480px) {
 		.hero h1 { font-size: 2rem; }
 		.hero .tagline { font-size: 1rem; }
+		.hero .subtagline { font-size: 0.82rem; }
 		.content-section h2 { font-size: 1.5rem; }
 		.timeline-year-label { font-size: 9px; }
 		.spinning-coffee { font-size: 1rem; }
@@ -672,6 +686,7 @@
 	<div class="hero-content">
 		<h1><a href="/">Roll Over Easy</a></h1>
 		<p class="tagline">Taking San Francisco from under the covers 'til after coffee ☕</p>
+		<p class="subtagline">Since 2013 on BFF.fm — every episode transcribed, searchable, and mapped.</p>
 		<nav aria-label="Main navigation"><a href="/episodes">Episodes</a> · <a href="/map">Map</a></nav>
 	</div>
 </div>
@@ -898,7 +913,10 @@ async function loadOnThisDay() {
 
 			html += '<div class="episode">';
 			if (yearsAgo !== null) {
-				html += '<div class="otd-year">' + yearsAgo + ' year' + (yearsAgo !== 1 ? 's' : '') + ' ago (' + epYear + ')</div>';
+				const label = yearsAgo === 0
+					? 'Today (' + epYear + ')'
+					: yearsAgo + ' year' + (yearsAgo !== 1 ? 's' : '') + ' ago (' + epYear + ')';
+				html += '<div class="otd-year">' + label + '</div>';
 			}
 			html += '<div class="episode-title">' + escapeHtml(ep.title) + '</div>';
 			html += '<div class="episode-body">';
