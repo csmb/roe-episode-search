@@ -4,7 +4,7 @@
  */
 
 import { cleanSegments } from './clean-segments.js';
-import { findFrameStart, findChunkEnd } from './mp3-frames.js';
+import { pickChunkSlice } from './mp3-frames.js';
 
 const TARGET_CHUNK = 20 * 1024 * 1024; // ~20MB, under the 25MB Whisper limit
 const TAIL_MARGIN  = 64 * 1024;        // extra bytes read past TARGET_CHUNK so
@@ -60,31 +60,20 @@ export async function transcribeFromR2(bucket, key, openaiApiKey, _resume) {
     if (!obj) throw new Error(`Failed to read R2 range: offset=${fileOffset}, length=${windowLen} (key: ${key})`);
     const window = new Uint8Array(await obj.arrayBuffer());
 
-    // Chunk 1 keeps offset 0 so the ID3v2 tag (if present) rides along.
-    // Subsequent chunks start at the first validated frame in the window.
-    const chunkStart = (fileOffset === 0) ? 0 : findFrameStart(window, 0);
-    if (chunkStart < 0) {
-      throw new Error(`No frame sync in window at file offset ${fileOffset} (key: ${key})`);
-    }
-
     const isLastChunk = (fileOffset + windowLen) >= fileSize;
-    const chunkEnd = isLastChunk
-      ? window.length
-      : findChunkEnd(window, chunkStart, TARGET_CHUNK);
-
-    if (chunkEnd <= chunkStart) {
-      throw new Error(
-        `Could not assemble chunk at file offset ${fileOffset}: ` +
-        `chunkStart=${chunkStart}, chunkEnd=${chunkEnd} (key: ${key})`
-      );
+    let sliceStart, sliceEnd;
+    try {
+      ({ sliceStart, sliceEnd } = pickChunkSlice(window, fileOffset, isLastChunk, TARGET_CHUNK));
+    } catch (err) {
+      throw new Error(`Chunker failed at file offset ${fileOffset} (key: ${key}): ${err.message}`);
     }
 
-    const chunkBytes = window.subarray(chunkStart, chunkEnd);
+    const chunkBytes = window.subarray(sliceStart, sliceEnd);
     const { segments, duration } = await transcribeChunk(chunkBytes, openaiApiKey, timeOffset);
 
     allSegments.push(...segments);
     timeOffset += duration;
-    fileOffset += chunkEnd;
+    fileOffset += sliceEnd;
     chunkIdx++;
 
     console.log(`  Chunk ${chunkIdx}: ${chunkBytes.length} bytes, ${segments.length} segments, +${duration.toFixed(1)}s`);

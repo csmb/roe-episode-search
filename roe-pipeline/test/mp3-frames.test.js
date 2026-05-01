@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseFrameHeader, findFrameStart, findChunkEnd } from '../src/mp3-frames.js';
+import { parseFrameHeader, findFrameStart, findChunkEnd, pickChunkSlice } from '../src/mp3-frames.js';
 
 // --- Header builder helpers --------------------------------------------------
 
@@ -196,5 +196,66 @@ describe('findChunkEnd', () => {
     // Walking from 0 with generous softLimit should consume frames 1 and 2,
     // then bail at offset 834 (the corrupt position).
     expect(findChunkEnd(buf, 0, 10_000)).toBe(834);
+  });
+});
+
+// --- pickChunkSlice ----------------------------------------------------------
+
+// Build a window with `preambleLen` bytes of ID3v2-like noise followed by
+// `frameCount` frames. Returns the buffer and the byte offset of the first frame.
+function buildWindowWithPreamble(preambleLen, frameCount) {
+  const { buf: frames } = buildFrames(frameCount);
+  const buf = new Uint8Array(preambleLen + frames.length);
+  // Fill preamble with deterministic non-sync bytes (the real ID3v2 header is
+  // arbitrary; what matters is that bytes[0] !== 0xFF so parseFrameHeader fails).
+  for (let i = 0; i < preambleLen; i++) buf[i] = (i * 17) & 0xFF;
+  buf.set(frames, preambleLen);
+  return { buf, firstFrameOffset: preambleLen };
+}
+
+describe('pickChunkSlice', () => {
+  it('chunk 1 with ID3v2 preamble: sliceStart=0 (preamble included), sliceEnd snapped to last frame fitting', () => {
+    // 1024 bytes preamble + 5 frames of 417 bytes each → first frame at 1024,
+    // softLimit 2500: from offset 1024, fits 3 frames ending at 1024+3*417=2275.
+    // Frame 4 would end at 2275+417=2692 (>2500), so chunk ends at 2275.
+    const { buf } = buildWindowWithPreamble(1024, 5);
+    const slice = pickChunkSlice(buf, /*fileOffset=*/0, /*isLastChunk=*/false, /*targetChunk=*/2500);
+    expect(slice).toEqual({ sliceStart: 0, sliceEnd: 2275 });
+  });
+
+  it('chunk 1 with no preamble (frame at offset 0): sliceStart=0, sliceEnd snapped', () => {
+    const { buf } = buildFrames(5); // frames at 0, 417, 834, 1251, 1668
+    const slice = pickChunkSlice(buf, 0, false, 1500);
+    // From offset 0, fits frames at 0, 417, 834; frame at 1251 ends at 1668 (>1500).
+    expect(slice).toEqual({ sliceStart: 0, sliceEnd: 1251 });
+  });
+
+  it('chunk N (fileOffset>0) with frame at offset 0: sliceStart=0, sliceEnd snapped', () => {
+    const { buf } = buildFrames(5);
+    const slice = pickChunkSlice(buf, /*fileOffset=*/1_000_000, false, 1500);
+    expect(slice).toEqual({ sliceStart: 0, sliceEnd: 1251 });
+  });
+
+  it('last chunk: sliceEnd = window.length', () => {
+    const { buf } = buildFrames(3); // 1251 bytes total
+    const slice = pickChunkSlice(buf, /*fileOffset=*/2_000_000, /*isLastChunk=*/true, 999_999);
+    expect(slice).toEqual({ sliceStart: 0, sliceEnd: 1251 });
+  });
+
+  it('chunk 1 + last chunk (small file with preamble): sliceStart=0, sliceEnd=window.length', () => {
+    const { buf } = buildWindowWithPreamble(1024, 3);
+    const slice = pickChunkSlice(buf, 0, true, 999_999);
+    expect(slice).toEqual({ sliceStart: 0, sliceEnd: buf.length });
+  });
+
+  it('throws when no frame sync is found in the window', () => {
+    const buf = new Uint8Array(4096);
+    for (let i = 0; i < buf.length; i++) buf[i] = (i * 13) & 0xFF;
+    expect(() => pickChunkSlice(buf, 0, false, 2000)).toThrow(/no frame sync/i);
+  });
+
+  it('throws when the first frame already exceeds targetChunk', () => {
+    const { buf } = buildFrames(2); // each frame 417 bytes
+    expect(() => pickChunkSlice(buf, 1_000_000, false, /*targetChunk=*/100)).toThrow(/could not advance/i);
   });
 });

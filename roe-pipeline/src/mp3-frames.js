@@ -131,3 +131,41 @@ export function findChunkEnd(bytes, fromOffset, softLimit) {
   }
   return offset;
 }
+
+/**
+ * Decide which slice of a window should be sent to Whisper for the chunk
+ * starting at `fileOffset` in the file. Returns window-relative offsets
+ * `{ sliceStart, sliceEnd }` so the caller does `window.subarray(sliceStart, sliceEnd)`.
+ *
+ * For chunk 1 (fileOffset === 0), `sliceStart` is 0 — the bytes before the first
+ * audio frame (typically an ID3v2 tag) ride along with the first chunk so the
+ * mp3 stream remains structurally identical. For chunks 2..N, `sliceStart`
+ * equals the first validated frame offset in the window, since there is no
+ * preamble to preserve.
+ *
+ * `sliceEnd` is `window.length` for the last chunk; otherwise it is the next
+ * frame boundary at-or-before `targetChunk`, walking from the first frame.
+ *
+ * Throws if no validated frame can be found in the window, or if even the
+ * first frame in the window cannot fit within `targetChunk`.
+ */
+export function pickChunkSlice(window, fileOffset, isLastChunk, targetChunk) {
+  const firstFrame = findFrameStart(window, 0);
+  if (firstFrame < 0) {
+    throw new Error('pickChunkSlice: no frame sync in window');
+  }
+
+  const sliceEnd = isLastChunk
+    ? window.length
+    : findChunkEnd(window, firstFrame, targetChunk);
+
+  if (sliceEnd <= firstFrame) {
+    throw new Error(
+      `pickChunkSlice: could not advance past first frame ` +
+      `(firstFrame=${firstFrame}, sliceEnd=${sliceEnd}, targetChunk=${targetChunk})`
+    );
+  }
+
+  const sliceStart = (fileOffset === 0) ? 0 : firstFrame;
+  return { sliceStart, sliceEnd };
+}
