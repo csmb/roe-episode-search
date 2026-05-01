@@ -327,6 +327,19 @@
 		font-size: 0.85rem;
 		margin-bottom: 10px;
 	}
+	.episode-guests {
+		display: inline-flex;
+		align-items: center;
+		gap: 5px;
+		background: #fff3eb;
+		color: #c14a05;
+		border-radius: 999px;
+		padding: 3px 10px;
+		font-size: 0.78rem;
+		font-weight: 500;
+		margin-bottom: 8px;
+		max-width: 100%;
+	}
 	.episode-summary {
 		font-size: 0.95rem;
 		line-height: 1.6;
@@ -852,6 +865,10 @@ async function loadClip(episodeId, startMs) {
 
 		let html = '<div class="episode"><div class="clip-label">Shared Clip</div>';
 		html += '<div class="episode-title">' + escapeHtml(ep.title) + '</div>';
+		const clipGuests = displayGuests(ep.guests);
+		if (clipGuests.length > 0) {
+			html += '<div class="episode-guests">&#127908; ' + escapeHtml(formatGuestLabel(clipGuests)) + '</div>';
+		}
 		if (dateStr || ep.duration_ms) {
 			html += '<div class="episode-meta">';
 			const parts = [];
@@ -868,8 +885,8 @@ async function loadClip(episodeId, startMs) {
 		if (ep.audio_file) {
 			html += '<button class="ep-btn ep-play-btn" data-audio="' + escapeHtml(ep.audio_file) + '" data-title="' + escapeHtml(ep.title) + '" data-start="0">&#9654; Play</button>';
 			html += '<button class="ep-btn ep-skip-btn" data-audio="' + escapeHtml(ep.audio_file) + '" data-title="' + escapeHtml(ep.title) + '" data-start="250000">&#9193; Skip intro</button>';
-			if (ep.guest_start_ms && ep.guests && ep.guests.length > 0) {
-				html += '<button class="ep-btn ep-guest-btn" data-audio="' + escapeHtml(ep.audio_file) + '" data-title="' + escapeHtml(ep.title) + '" data-start="' + ep.guest_start_ms + '">&#127908; Skip to interview with ' + escapeHtml(formatGuestLabel(ep.guests)) + '</button>';
+			if (ep.guest_start_ms && clipGuests.length > 0) {
+				html += '<button class="ep-btn ep-guest-btn" data-audio="' + escapeHtml(ep.audio_file) + '" data-title="' + escapeHtml(ep.title) + '" data-start="' + ep.guest_start_ms + '">&#127908; Skip to interview with ' + escapeHtml(formatGuestLabel(clipGuests)) + '</button>';
 			}
 		}
 		html += '</div>';
@@ -919,6 +936,10 @@ async function loadOnThisDay() {
 				html += '<div class="otd-year">' + label + '</div>';
 			}
 			html += '<div class="episode-title">' + escapeHtml(ep.title) + '</div>';
+			const otdGuests = displayGuests(ep.guests);
+			if (otdGuests.length > 0) {
+				html += '<div class="episode-guests">&#127908; ' + escapeHtml(formatGuestLabel(otdGuests)) + '</div>';
+			}
 			html += '<div class="episode-body">';
 			html += '<div class="episode-text">';
 			if (ep.summary) {
@@ -928,8 +949,8 @@ async function loadOnThisDay() {
 			if (ep.audio_file) {
 				html += '<button class="ep-btn ep-play-btn" data-audio="' + escapeHtml(ep.audio_file) + '" data-title="' + escapeHtml(ep.title) + '" data-start="0">&#9654; Play</button>';
 				html += '<button class="ep-btn ep-skip-btn" data-audio="' + escapeHtml(ep.audio_file) + '" data-title="' + escapeHtml(ep.title) + '" data-start="250000">&#9193; Skip intro</button>';
-				if (ep.guest_start_ms && ep.guests && ep.guests.length > 0) {
-					html += '<button class="ep-btn ep-guest-btn" data-audio="' + escapeHtml(ep.audio_file) + '" data-title="' + escapeHtml(ep.title) + '" data-start="' + ep.guest_start_ms + '">&#127908; Skip to interview with ' + escapeHtml(formatGuestLabel(ep.guests)) + '</button>';
+				if (ep.guest_start_ms && otdGuests.length > 0) {
+					html += '<button class="ep-btn ep-guest-btn" data-audio="' + escapeHtml(ep.audio_file) + '" data-title="' + escapeHtml(ep.title) + '" data-start="' + ep.guest_start_ms + '">&#127908; Skip to interview with ' + escapeHtml(formatGuestLabel(otdGuests)) + '</button>';
 				}
 			}
 			html += '</div>';
@@ -1086,10 +1107,11 @@ function renderEpisode(episode) {
 		skipBtn.onclick = () => playAt(episode.audio_file, 250000, episode.title);
 		actions.appendChild(skipBtn);
 	}
-	if (episode.guest_start_ms && episode.guests && episode.guests.length > 0) {
+	const epGuests = displayGuests(episode.guests);
+	if (episode.guest_start_ms && epGuests.length > 0) {
 		const guestBtn = document.createElement('button');
 		guestBtn.className = 'ep-btn';
-		guestBtn.innerHTML = '&#127908; Skip to interview with ' + escapeHtml(formatGuestLabel(episode.guests));
+		guestBtn.innerHTML = '&#127908; Skip to interview with ' + escapeHtml(formatGuestLabel(epGuests));
 		guestBtn.onclick = () => playAt(episode.audio_file, episode.guest_start_ms, episode.title);
 		actions.appendChild(guestBtn);
 	}
@@ -1404,6 +1426,13 @@ function formatDate(dateStr) {
 	return date.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
 }
 
+// Names that the auto-extraction misclassifies as guests but who are hosts.
+// Filtered out before display until the data is curated via /admin.
+const HOST_NAMES = new Set(['Christopher', 'Christopher Bunting']);
+function displayGuests(guests) {
+	if (!guests) return [];
+	return guests.filter(g => !HOST_NAMES.has(g));
+}
 function formatGuestLabel(guests) {
 	if (!guests || guests.length === 0) return '';
 	if (guests.length === 1) return guests[0];

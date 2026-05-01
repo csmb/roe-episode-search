@@ -356,11 +356,25 @@ async function handleTimeline(url, env, request) {
 }
 
 async function handleEpisodes(env, request) {
-	const { results } = await env.DB.prepare(
-		'SELECT id, title, duration_ms, published_at, summary FROM episodes ORDER BY id'
-	).all();
+	const [{ results: episodes }, { results: guestRows }] = await Promise.all([
+		env.DB.prepare(
+			'SELECT id, title, duration_ms, published_at, summary, guest_start_ms FROM episodes ORDER BY id'
+		).all(),
+		env.DB.prepare('SELECT episode_id, guest_name FROM episode_guests').all(),
+	]);
 
-	return json({ episodes: results }, 200, request);
+	const guestsByEp = new Map();
+	for (const row of guestRows) {
+		if (!guestsByEp.has(row.episode_id)) guestsByEp.set(row.episode_id, []);
+		guestsByEp.get(row.episode_id).push(row.guest_name);
+	}
+
+	const enriched = episodes.map(ep => ({
+		...ep,
+		guests: guestsByEp.get(ep.id) || [],
+	}));
+
+	return json({ episodes: enriched }, 200, request);
 }
 
 async function handleAudio(request, url, env) {
@@ -445,13 +459,26 @@ async function handleOnThisDay(url, env, request) {
 
 	try {
 		const { results } = await env.DB.prepare(`
-			SELECT id, title, duration_ms, summary
+			SELECT id, title, duration_ms, summary, guest_start_ms
 			FROM episodes
 			WHERE SUBSTR(id, 21, 5) = ?1
 			ORDER BY id DESC
 		`)
 			.bind(todayMmDd)
 			.all();
+
+		const ids = results.map(r => r.id);
+		const guestsByEp = new Map();
+		if (ids.length > 0) {
+			const placeholders = ids.map(() => '?').join(',');
+			const { results: guestRows } = await env.DB.prepare(
+				`SELECT episode_id, guest_name FROM episode_guests WHERE episode_id IN (${placeholders})`
+			).bind(...ids).all();
+			for (const row of guestRows) {
+				if (!guestsByEp.has(row.episode_id)) guestsByEp.set(row.episode_id, []);
+				guestsByEp.get(row.episode_id).push(row.guest_name);
+			}
+		}
 
 		return json({
 			date: todayMmDd,
@@ -460,6 +487,8 @@ async function handleOnThisDay(url, env, request) {
 				title: ep.title,
 				duration_ms: ep.duration_ms,
 				summary: ep.summary,
+				guest_start_ms: ep.guest_start_ms,
+				guests: guestsByEp.get(ep.id) || [],
 				audio_file: `/audio/${ep.id}.m4a`,
 			})),
 		}, 200, request);
