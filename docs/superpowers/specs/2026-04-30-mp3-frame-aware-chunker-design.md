@@ -165,7 +165,7 @@ Run: `cd roe-pipeline && npx vitest run`
 1. `cd roe-pipeline && npx wrangler deploy`
 2. Trigger the failed episode manually:
    ```
-   curl -X POST "https://roe-pipeline.<subdomain>.workers.dev/process?key=Roll%20Over%20Easy%202026-04-30.mp3"
+   curl -X POST "https://roe-pipeline.christophersbunting.workers.dev/process?key=Roll%20Over%20Easy%202026-04-30.mp3"
    ```
    The DO's existing logic overwrites the `failed` status with `processing` and restarts at `transcribe`.
 3. `npx wrangler tail roe-pipeline` to watch chunk-by-chunk progress.
