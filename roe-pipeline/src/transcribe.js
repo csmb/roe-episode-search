@@ -4,8 +4,12 @@
  */
 
 import { cleanSegments } from './clean-segments.js';
+import { findFrameStart, findChunkEnd } from './mp3-frames.js';
 
-const CHUNK_SIZE = 20 * 1024 * 1024; // 20MB per chunk (under 25MB API limit)
+const TARGET_CHUNK = 20 * 1024 * 1024; // ~20MB, under the 25MB Whisper limit
+const TAIL_MARGIN  = 64 * 1024;        // extra bytes read past TARGET_CHUNK so
+                                       // findChunkEnd can always find the next
+                                       // frame boundary just past the limit.
 
 // Whisper prompt for SF proper nouns — same as scripts/process-episode.js
 const SF_VOCAB_PROMPT = [
@@ -30,51 +34,67 @@ const SF_VOCAB_PROMPT = [
 ].join(' ');
 
 /**
- * Transcribe a full MP3 from R2, handling chunking for large files.
+ * Transcribe a full MP3 from R2, chunking on frame boundaries so each chunk
+ * is a self-contained mp3 stream that Whisper can decode in isolation.
  *
  * @param {R2Bucket} bucket - R2 bucket binding
  * @param {string} key - R2 object key
  * @param {string} openaiApiKey - OpenAI API key
- * @param {object} [resume] - Resume state: { chunksCompleted, segments, timeOffset }
- * @returns {{ segments: Array, durationMs: number }}
+ * @param {object} [_resume] - Reserved for future resume support; unused.
+ * @returns {{ segments: Array, durationMs: number, totalChunks: number }}
  */
-export async function transcribeFromR2(bucket, key, openaiApiKey, resume) {
+export async function transcribeFromR2(bucket, key, openaiApiKey, _resume) {
   const head = await bucket.head(key);
   if (!head) throw new Error(`R2 object not found: ${key}`);
-
   const fileSize = head.size;
-  const totalChunks = Math.ceil(fileSize / CHUNK_SIZE);
-  // Distribute evenly so the last chunk isn't a tiny leftover — Whisper rejects
-  // small mid-mp3 fragments as "Invalid file format" because it can't sync.
-  // evenChunkSize <= CHUNK_SIZE always holds (proven from the ceil arithmetic).
-  const evenChunkSize = Math.ceil(fileSize / totalChunks);
 
-  let allSegments = resume?.segments || [];
-  let timeOffset = resume?.timeOffset || 0;
-  const startChunk = resume?.chunksCompleted || 0;
+  const allSegments = [];
+  let timeOffset = 0;
+  let fileOffset = 0;
+  let chunkIdx = 0;
 
-  for (let i = startChunk; i < totalChunks; i++) {
-    const offset = i * evenChunkSize;
-    const length = Math.min(evenChunkSize, fileSize - offset);
+  while (fileOffset < fileSize) {
+    const windowLen = Math.min(TARGET_CHUNK + TAIL_MARGIN, fileSize - fileOffset);
 
-    const obj = await bucket.get(key, { range: { offset, length } });
-    if (!obj) throw new Error(`Failed to read R2 range: offset=${offset}, length=${length}`);
+    const obj = await bucket.get(key, { range: { offset: fileOffset, length: windowLen } });
+    if (!obj) throw new Error(`Failed to read R2 range: offset=${fileOffset}, length=${windowLen}`);
+    const window = new Uint8Array(await obj.arrayBuffer());
 
-    const buffer = await obj.arrayBuffer();
-    const { segments, duration } = await transcribeChunk(new Uint8Array(buffer), openaiApiKey, timeOffset);
+    // Chunk 1 keeps offset 0 so the ID3v2 tag (if present) rides along.
+    // Subsequent chunks start at the first validated frame in the window.
+    const chunkStart = (fileOffset === 0) ? 0 : findFrameStart(window, 0);
+    if (chunkStart < 0) {
+      throw new Error(`No frame sync in window at file offset ${fileOffset}`);
+    }
+
+    const isLastChunk = (fileOffset + windowLen) >= fileSize;
+    const chunkEnd = isLastChunk
+      ? window.length
+      : findChunkEnd(window, chunkStart, TARGET_CHUNK);
+
+    if (chunkEnd <= chunkStart) {
+      throw new Error(
+        `Could not assemble chunk at file offset ${fileOffset}: ` +
+        `chunkStart=${chunkStart}, chunkEnd=${chunkEnd}`
+      );
+    }
+
+    const chunkBytes = window.subarray(chunkStart, chunkEnd);
+    const { segments, duration } = await transcribeChunk(chunkBytes, openaiApiKey, timeOffset);
 
     allSegments.push(...segments);
     timeOffset += duration;
+    fileOffset += chunkEnd;
+    chunkIdx++;
 
-    console.log(`  Chunk ${i + 1}/${totalChunks}: ${segments.length} segments, +${duration.toFixed(1)}s`);
+    console.log(`  Chunk ${chunkIdx}: ${chunkBytes.length} bytes, ${segments.length} segments, +${duration.toFixed(1)}s`);
   }
 
   const cleaned = cleanSegments(allSegments);
   const durationMs = Math.round(timeOffset * 1000);
-
   console.log(`  Total: ${cleaned.length} segments (${allSegments.length - cleaned.length} removed by cleaning), ${durationMs}ms`);
 
-  return { segments: cleaned, durationMs, totalChunks };
+  return { segments: cleaned, durationMs, totalChunks: chunkIdx };
 }
 
 /**
