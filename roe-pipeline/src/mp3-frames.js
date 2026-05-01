@@ -109,3 +109,25 @@ export function findFrameStart(bytes, fromOffset) {
   }
   return -1;
 }
+
+/**
+ * Walk consecutive frames from a known-good `fromOffset` and return the offset
+ * of the first frame that does not fully fit within `softLimit`. The caller
+ * slices [fromOffset, returnedOffset) as the chunk and uses the returned
+ * offset as the next chunk's start.
+ *
+ * If the first frame at `fromOffset` already exceeds softLimit, returns
+ * `fromOffset` (caller treats this as an error). If a corrupt header is hit
+ * mid-walk, returns the current offset so the caller's next-chunk
+ * `findFrameStart` can resync.
+ */
+export function findChunkEnd(bytes, fromOffset, softLimit) {
+  let offset = fromOffset;
+  while (offset < softLimit) {
+    const h = parseFrameHeader(bytes, offset);
+    if (!h) return offset;
+    if (offset + h.frameSize > softLimit) return offset;
+    offset += h.frameSize;
+  }
+  return offset;
+}

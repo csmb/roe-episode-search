@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseFrameHeader } from '../src/mp3-frames.js';
+import { parseFrameHeader, findFrameStart, findChunkEnd } from '../src/mp3-frames.js';
 
 // --- Header builder helpers --------------------------------------------------
 
@@ -103,14 +103,12 @@ describe('parseFrameHeader', () => {
 
 // --- findFrameStart ----------------------------------------------------------
 
-import { findFrameStart } from '../src/mp3-frames.js';
-
 // Build a sequence of `count` identical frames (zeroed audio payload).
 function buildFrames(count, headerOpts = {}) {
   const header = buildHeader(headerOpts);
-  // For default args (MPEG-1 L3 128k 44.1k no padding) the frame size is 417.
-  // For other configurations callers should pass frameSize explicitly.
-  const frameSize = headerOpts.frameSize || 417;
+  const parsed = parseFrameHeader(header, 0);
+  if (!parsed) throw new Error('buildFrames: buildHeader produced an invalid header');
+  const frameSize = parsed.frameSize;
   const buf = new Uint8Array(frameSize * count);
   for (let i = 0; i < count; i++) {
     buf.set(header, i * frameSize);
@@ -157,5 +155,46 @@ describe('findFrameStart', () => {
   it('respects fromOffset (skips earlier frames)', () => {
     const { buf } = buildFrames(3); // 3 frames at 0, 417, 834
     expect(findFrameStart(buf, 100)).toBe(417);
+  });
+});
+
+// --- findChunkEnd --------------------------------------------------------
+
+describe('findChunkEnd', () => {
+  it('snaps back to the last frame fitting within softLimit', () => {
+    // 5 frames of 417 bytes = 2085 bytes total.
+    // softLimit 1000 should fit 2 full frames (834 bytes); the 3rd would push us to 1251.
+    const { buf } = buildFrames(5);
+    expect(findChunkEnd(buf, 0, 1000)).toBe(834);
+  });
+
+  it('returns the very end when all frames fit within softLimit', () => {
+    const { buf } = buildFrames(3); // 1251 bytes
+    expect(findChunkEnd(buf, 0, 10_000)).toBe(1251);
+  });
+
+  it('returns fromOffset when the very first frame would exceed softLimit', () => {
+    const { buf } = buildFrames(2);
+    // softLimit 100 < frameSize 417 → first frame doesn't fit
+    expect(findChunkEnd(buf, 0, 100)).toBe(0);
+  });
+
+  it('respects fromOffset (skips earlier frames)', () => {
+    const { buf } = buildFrames(5); // frames at 0, 417, 834, 1251, 1668; total 2085
+    // Starting at 417 with softLimit 1500: frame at 417 ends at 834 (≤1500, fits).
+    // Frame at 834 ends at 1251 (≤1500, fits). Frame at 1251 would end at 1668 (>1500).
+    // So we return 1251.
+    expect(findChunkEnd(buf, 417, 1500)).toBe(1251);
+  });
+
+  it('returns current offset on encountering corruption mid-walk', () => {
+    const { buf: frames } = buildFrames(3); // valid frames at 0, 417, 834
+    const buf = new Uint8Array(frames.length);
+    buf.set(frames, 0);
+    // Corrupt the third frame's header so parseFrameHeader returns null
+    buf[834] = 0x00;
+    // Walking from 0 with generous softLimit should consume frames 1 and 2,
+    // then bail at offset 834 (the corrupt position).
+    expect(findChunkEnd(buf, 0, 10_000)).toBe(834);
   });
 });
