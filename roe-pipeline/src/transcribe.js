@@ -57,14 +57,14 @@ export async function transcribeFromR2(bucket, key, openaiApiKey, _resume) {
     const windowLen = Math.min(TARGET_CHUNK + TAIL_MARGIN, fileSize - fileOffset);
 
     const obj = await bucket.get(key, { range: { offset: fileOffset, length: windowLen } });
-    if (!obj) throw new Error(`Failed to read R2 range: offset=${fileOffset}, length=${windowLen}`);
+    if (!obj) throw new Error(`Failed to read R2 range: offset=${fileOffset}, length=${windowLen} (key: ${key})`);
     const window = new Uint8Array(await obj.arrayBuffer());
 
     // Chunk 1 keeps offset 0 so the ID3v2 tag (if present) rides along.
     // Subsequent chunks start at the first validated frame in the window.
     const chunkStart = (fileOffset === 0) ? 0 : findFrameStart(window, 0);
     if (chunkStart < 0) {
-      throw new Error(`No frame sync in window at file offset ${fileOffset}`);
+      throw new Error(`No frame sync in window at file offset ${fileOffset} (key: ${key})`);
     }
 
     const isLastChunk = (fileOffset + windowLen) >= fileSize;
@@ -75,7 +75,7 @@ export async function transcribeFromR2(bucket, key, openaiApiKey, _resume) {
     if (chunkEnd <= chunkStart) {
       throw new Error(
         `Could not assemble chunk at file offset ${fileOffset}: ` +
-        `chunkStart=${chunkStart}, chunkEnd=${chunkEnd}`
+        `chunkStart=${chunkStart}, chunkEnd=${chunkEnd} (key: ${key})`
       );
     }
 
