@@ -42,6 +42,22 @@ describe('parseFrameHeader', () => {
     expect(result).toEqual({ frameSize: 208, version: 2, layer: 1, sampleRate: 22050 });
   });
 
+  it('parses MPEG-1 Layer II, 128 kbps, 44.1 kHz (frameSize=417)', () => {
+    // MPEG-1 L2 bitrate idx 8 = 128 kbps; sampleRateIdx 0 = 44100 Hz
+    // floor(144 * 128000 / 44100) = 417
+    const h = buildHeader({ layer: 2, bitrateIdx: 8, sampleRateIdx: 0 });
+    const result = parseFrameHeader(h, 0);
+    expect(result).toEqual({ frameSize: 417, version: 3, layer: 2, sampleRate: 44100 });
+  });
+
+  it('parses MPEG-1 Layer I, 128 kbps, 44.1 kHz (frameSize=136)', () => {
+    // MPEG-1 L1 bitrate idx 4 = 128 kbps; sampleRateIdx 0 = 44100 Hz
+    // (floor(12 * 128000 / 44100) + 0) * 4 = 34 * 4 = 136
+    const h = buildHeader({ layer: 3, bitrateIdx: 4, sampleRateIdx: 0 });
+    const result = parseFrameHeader(h, 0);
+    expect(result).toEqual({ frameSize: 136, version: 3, layer: 3, sampleRate: 44100 });
+  });
+
   it('returns null for reserved MPEG version (01)', () => {
     const h = buildHeader({ version: 1 });
     expect(parseFrameHeader(h, 0)).toBeNull();

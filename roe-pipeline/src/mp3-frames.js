@@ -80,6 +80,5 @@ export function parseFrameHeader(bytes, offset) {
     frameSize = Math.floor(144 * bitrateKbps * 1000 / sampleRate) + padding;
   }
 
-  if (frameSize < 4) return null;
   return { frameSize, version, layer, sampleRate };
 }
