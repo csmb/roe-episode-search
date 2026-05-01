@@ -61,7 +61,7 @@ export async function transcribeFromR2(bucket, key, openaiApiKey, resume) {
     if (!obj) throw new Error(`Failed to read R2 range: offset=${offset}, length=${length}`);
 
     const buffer = await obj.arrayBuffer();
-    const { segments, duration } = await transcribeChunk(buffer, openaiApiKey, timeOffset);
+    const { segments, duration } = await transcribeChunk(new Uint8Array(buffer), openaiApiKey, timeOffset);
 
     allSegments.push(...segments);
     timeOffset += duration;
@@ -83,8 +83,10 @@ export async function transcribeFromR2(bucket, key, openaiApiKey, resume) {
  * Builds the multipart body by hand instead of using FormData/Blob — the
  * Workers runtime serializes those in a way OpenAI's parser rejected with
  * "Invalid file format" for some files (observed 2026-04-24).
+ *
+ * @param {Uint8Array} chunkBytes - mp3 bytes (caller guarantees frame boundaries).
  */
-async function transcribeChunk(buffer, apiKey, timeOffsetSec) {
+async function transcribeChunk(chunkBytes, apiKey, timeOffsetSec) {
   const CRLF = '\r\n';
   const boundary = '----roePipeline' + crypto.randomUUID().replace(/-/g, '');
   const enc = new TextEncoder();
@@ -109,12 +111,11 @@ async function transcribeChunk(buffer, apiKey, timeOffsetSec) {
   ];
   const closing = enc.encode(`--${boundary}--${CRLF}`);
 
-  const fileBytes = new Uint8Array(buffer);
-  const total = fileHeader.length + fileBytes.length + fileTrailer.length
+  const total = fileHeader.length + chunkBytes.length + fileTrailer.length
     + fields.reduce((n, f) => n + f.length, 0) + closing.length;
   const body = new Uint8Array(total);
   let off = 0;
-  for (const part of [fileHeader, fileBytes, fileTrailer, ...fields, closing]) {
+  for (const part of [fileHeader, chunkBytes, fileTrailer, ...fields, closing]) {
     body.set(part, off);
     off += part.length;
   }
