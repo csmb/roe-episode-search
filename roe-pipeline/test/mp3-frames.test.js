@@ -100,3 +100,62 @@ describe('parseFrameHeader', () => {
     expect(parseFrameHeader(buf, 4).frameSize).toBe(417);
   });
 });
+
+// --- findFrameStart ----------------------------------------------------------
+
+import { findFrameStart } from '../src/mp3-frames.js';
+
+// Build a sequence of `count` identical frames (zeroed audio payload).
+function buildFrames(count, headerOpts = {}) {
+  const header = buildHeader(headerOpts);
+  // For default args (MPEG-1 L3 128k 44.1k no padding) the frame size is 417.
+  // For other configurations callers should pass frameSize explicitly.
+  const frameSize = headerOpts.frameSize || 417;
+  const buf = new Uint8Array(frameSize * count);
+  for (let i = 0; i < count; i++) {
+    buf.set(header, i * frameSize);
+  }
+  return { buf, frameSize };
+}
+
+describe('findFrameStart', () => {
+  it('returns 0 when a valid frame starts at offset 0 (with a second frame following)', () => {
+    const { buf } = buildFrames(2);
+    expect(findFrameStart(buf, 0)).toBe(0);
+  });
+
+  it('finds frame after a 1024-byte preamble (simulating ID3v2 tag)', () => {
+    const { buf: frames } = buildFrames(2);
+    const buf = new Uint8Array(1024 + frames.length);
+    // Preamble: deterministic non-sync bytes, but include one stray 0xFF to make
+    // sure we don't false-positive on it.
+    for (let i = 0; i < 1024; i++) buf[i] = (i * 17) & 0xFF;
+    buf[500] = 0xFF; // lone stray sync byte
+    buf[501] = 0x00; // ...followed by a non-sync byte
+    buf.set(frames, 1024);
+    expect(findFrameStart(buf, 0)).toBe(1024);
+  });
+
+  it('rejects a lone 0xFF/0xE0-mask candidate that is not followed by a real second frame', () => {
+    const { buf: frames } = buildFrames(2);
+    const buf = new Uint8Array(2048 + frames.length);
+    // Place a single fake header at offset 100 that LOOKS valid in isolation
+    // but has zeroed audio payload (so the next "frame" at 100+417 is all zeros, not a sync).
+    const fake = buildHeader();
+    buf.set(fake, 100);
+    // No matching second frame at offset 517.
+    buf.set(frames, 2048);
+    expect(findFrameStart(buf, 0)).toBe(2048);
+  });
+
+  it('returns -1 when no validated frame is present', () => {
+    const buf = new Uint8Array(4096);
+    for (let i = 0; i < buf.length; i++) buf[i] = (i * 13) & 0xFF;
+    expect(findFrameStart(buf, 0)).toBe(-1);
+  });
+
+  it('respects fromOffset (skips earlier frames)', () => {
+    const { buf } = buildFrames(3); // 3 frames at 0, 417, 834
+    expect(findFrameStart(buf, 100)).toBe(417);
+  });
+});

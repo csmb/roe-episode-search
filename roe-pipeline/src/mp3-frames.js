@@ -82,3 +82,30 @@ export function parseFrameHeader(bytes, offset) {
 
   return { frameSize, version, layer, sampleRate };
 }
+
+/**
+ * Find the offset of the first valid MPEG audio frame at-or-after `fromOffset`.
+ *
+ * Validates each candidate sync by parsing the header, then peeking at the
+ * computed next-frame offset for a second valid header. This eliminates false
+ * positives from random `0xFF` bytes in audio data.
+ *
+ * @returns offset (>= fromOffset) of the first validated frame, or -1.
+ */
+export function findFrameStart(bytes, fromOffset) {
+  for (let i = fromOffset; i + 4 <= bytes.length; i++) {
+    if (bytes[i] !== 0xFF) continue;
+    if ((bytes[i + 1] & 0xE0) !== 0xE0) continue;
+
+    const h1 = parseFrameHeader(bytes, i);
+    if (!h1) continue;
+
+    const next = i + h1.frameSize;
+    if (next + 4 > bytes.length) continue; // not enough bytes to validate
+    const h2 = parseFrameHeader(bytes, next);
+    if (!h2) continue;
+
+    return i;
+  }
+  return -1;
+}
