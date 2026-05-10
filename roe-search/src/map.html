@@ -153,6 +153,9 @@
 			maxZoom: 20,
 		}).addTo(map);
 
+		let fuseIndex = null;
+		const markersByName = new Map();
+
 		function episodeDate(episodeId) {
 			const m = episodeId.match(/(\d{4}-\d{2}-\d{2})/);
 			return m ? m[1] : '';
@@ -186,6 +189,8 @@
 					color: '#c44d02',
 					weight: 1.5,
 				}).addTo(map);
+
+				markersByName.set(place.name, circle);
 
 				const episodeItems = place.episodes
 					.sort((a, b) => b.id.localeCompare(a.id))
@@ -226,6 +231,12 @@
 					});
 				}
 			}
+			fuseIndex = new Fuse(places, {
+				keys: ['name'],
+				threshold: 0.4,
+				ignoreLocation: true,
+				minMatchCharLength: 2,
+			});
 		}
 
 		loadPlaces().catch(err => {
