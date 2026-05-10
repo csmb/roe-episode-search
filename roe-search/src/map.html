@@ -113,6 +113,63 @@
 			margin-left: 4px;
 		}
 
+		.map-search {
+			background: #fff;
+			border-radius: 6px;
+			box-shadow: 0 2px 8px rgba(0,0,0,0.18);
+			overflow: visible;
+			width: 240px;
+			font-family: inherit;
+		}
+		.map-search input {
+			width: 100%;
+			border: none;
+			outline: none;
+			padding: 8px 12px;
+			font-size: 14px;
+			border-radius: 6px;
+			background: transparent;
+			color: #2c2c2c;
+		}
+		.map-search input::-webkit-search-cancel-button { cursor: pointer; }
+		.map-search-results {
+			list-style: none;
+			margin: 0;
+			padding: 0;
+			max-height: 320px;
+			overflow-y: auto;
+			border-top: 1px solid #eee;
+			background: #fff;
+			border-bottom-left-radius: 6px;
+			border-bottom-right-radius: 6px;
+		}
+		.map-search-results.hidden { display: none; }
+		.map-search-results li {
+			padding: 8px 12px;
+			cursor: pointer;
+			font-size: 13px;
+			border-bottom: 1px solid #f0f0f0;
+		}
+		.map-search-results li:last-child { border-bottom: none; }
+		.map-search-results li.active,
+		.map-search-results li:hover { background: #f6f6f6; }
+		.map-search-results li .ep-count {
+			display: block;
+			font-size: 11px;
+			color: #777;
+			margin-top: 1px;
+		}
+		.map-search-results li.empty {
+			color: #999;
+			cursor: default;
+			font-style: italic;
+		}
+		.map-search-results li.empty:hover { background: transparent; }
+
+		@media (max-width: 640px) {
+			.map-search { width: calc(100vw - 32px); }
+		}
+
 		#loading {
 			position: absolute;
 			top: 50%;
@@ -141,6 +198,45 @@
 	<div id="loading">Loading places…</div>
 
 	<script>
+		const SearchControl = L.Control.extend({
+			options: { position: 'topleft' },
+			onAdd() {
+				const container = L.DomUtil.create('div', 'map-search leaflet-bar');
+				container.innerHTML = `
+					<input type="search" placeholder="Search a place…" autocomplete="off" spellcheck="false" aria-label="Search places">
+					<ul class="map-search-results hidden" role="listbox"></ul>
+				`;
+				L.DomEvent.disableClickPropagation(container);
+				L.DomEvent.disableScrollPropagation(container);
+				return container;
+			},
+		});
+
+		function debounce(fn, ms) {
+			let t = null;
+			return (...args) => {
+				clearTimeout(t);
+				t = setTimeout(() => fn(...args), ms);
+			};
+		}
+
+		function renderSearchResults(listEl, hits) {
+			if (hits.length === 0) {
+				listEl.innerHTML = '<li class="empty">No matching places.</li>';
+				listEl.classList.remove('hidden');
+				return;
+			}
+			listEl.innerHTML = hits.map((h, i) => {
+				const p = h.item;
+				const plural = p.episode_count === 1 ? 'episode' : 'episodes';
+				return `<li role="option" data-name="${escapeHtml(p.name)}"${i === 0 ? ' class="active"' : ''}>
+					${escapeHtml(p.name)}
+					<span class="ep-count">${p.episode_count} ${plural}</span>
+				</li>`;
+			}).join('');
+			listEl.classList.remove('hidden');
+		}
+
 		function escapeHtml(str) {
 			return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#x27;');
 		}
@@ -236,6 +332,31 @@
 				threshold: 0.4,
 				ignoreLocation: true,
 				minMatchCharLength: 2,
+			});
+
+			const searchControl = new SearchControl();
+			searchControl.addTo(map);
+			const container = searchControl.getContainer();
+			const input = container.querySelector('input');
+			const list = container.querySelector('.map-search-results');
+
+			const runSearch = debounce(() => {
+				const q = input.value.trim();
+				if (!q) {
+					list.classList.add('hidden');
+					list.innerHTML = '';
+					return;
+				}
+				const hits = fuseIndex.search(q, { limit: 8 });
+				renderSearchResults(list, hits);
+			}, 80);
+
+			input.addEventListener('input', runSearch);
+			input.addEventListener('focus', () => {
+				if (input.value.trim()) list.classList.remove('hidden');
+			});
+			document.addEventListener('click', (e) => {
+				if (!container.contains(e.target)) list.classList.add('hidden');
 			});
 		}
 
