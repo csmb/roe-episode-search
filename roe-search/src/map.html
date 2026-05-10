@@ -237,6 +237,20 @@
 			listEl.classList.remove('hidden');
 		}
 
+		function selectResult(name, input, list) {
+			const marker = markersByName.get(name);
+			if (!marker) return;
+			const latlng = marker.getLatLng();
+			map.flyTo(latlng, 17, { duration: 0.6 });
+			marker.openPopup();
+			input.value = '';
+			list.classList.add('hidden');
+			list.innerHTML = '';
+			if (!window.matchMedia('(hover: hover) and (pointer: fine)').matches) {
+				input.blur();
+			}
+		}
+
 		function escapeHtml(str) {
 			return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#x27;');
 		}
@@ -357,6 +371,11 @@
 			});
 			document.addEventListener('click', (e) => {
 				if (!container.contains(e.target)) list.classList.add('hidden');
+			});
+			list.addEventListener('click', (e) => {
+				const row = e.target.closest('li[data-name]');
+				if (!row) return;
+				selectResult(row.dataset.name, input, list);
 			});
 		}
 
