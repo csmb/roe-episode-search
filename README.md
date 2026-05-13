@@ -55,6 +55,75 @@ Upload episode.mp3 to R2
 
 **Frontend** — Six inline HTML pages: homepage (`frontend.html`), episode browser (`episodes.html`), guest directory (`guests.html`), password-protected admin panel with transcript search (`admin.html`), places map (`map.html`), and Stellar Lexicon (`stars.html`).
 
+### Map endpoint
+
+The map is a self-contained slice of the worker: two routes, two D1 tables, one HTML file. There is no separate map service, no build step, and no tile server of our own.
+
+#### Routes
+
+Both are served by `roe-search/src/index.js`:
+
+| Route | Handler | Purpose |
+|---|---|---|
+| `GET /map` | inline | Returns the imported `map.html` as `text/html`. No params, no auth, no rate limit. |
+| `GET /api/map-places` | `handleMapPlaces` | Returns every geocoded place plus its episode list in a single JSON payload. |
+
+`/api/map-places` runs two D1 queries and joins them in JS:
+
+1. **Aggregate** — `places` JOIN `place_mentions` GROUPed by `p.id`, ordered by `episode_count DESC`. One row per place with its count.
+2. **Mentions** — `place_mentions` JOIN `episodes` to pull episode titles for every mention.
+
+The handler builds a `place_id → [{id, title}, ...]` map in memory, attaches the episode list onto each place row, and returns:
+
+```json
+{
+  "places": [
+    { "name": "Tartine", "lat": 37.76, "lng": -122.42, "episode_count": 7, "episodes": [{"id": "...", "title": "..."}, ...] }
+  ],
+  "total_mentions": 1234
+}
+```
+
+The dataset is small (hundreds of places, thousands of mentions), so there's no pagination, no spatial index, no caching layer. One query, one response, every load.
+
+#### Data model
+
+Two tables in D1 back the map (`schema.sql`):
+
+- `places(id, name UNIQUE, lat, lng)` — one row per geocoded SF location. The `UNIQUE` constraint on `name` is what keeps "Tartine" from getting two rows.
+- `place_mentions(place_id, episode_id)` — composite primary key, so a place mentioned twice in one episode still counts as one mention.
+
+These are populated by step 5 of the episode pipeline (`extract-places`). The Durable Object asks GPT-4o-mini for SF place names in the transcript, then geocodes each unique name through Nominatim inside an SF bounding box at 1 request/second. Hits get inserted into `places`; the `(place, episode)` pairs go into `place_mentions`. Misses are dropped silently — the map only shows places that successfully geocoded.
+
+#### Frontend (`map.html`)
+
+A single static HTML file with everything inline. Loaded straight from the worker; no framework, no bundler. Dependencies pulled from unpkg at runtime:
+
+- **Leaflet 1.9.4** — map, markers, popups
+- **Fuse.js 7.0.0** — fuzzy place-name search
+- **CARTO Voyager raster tiles** — base layer
+
+The lifecycle is dead simple:
+
+1. `loadPlaces()` fetches `/api/map-places` once on page load.
+2. For each place it creates a `L.circleMarker`. Radius is sqrt-scaled by episode count against the dataset max (6px–28px) — sqrt because area, not radius, should feel proportional to magnitude.
+3. Each marker gets a popup with the place name, mention count, and a date-descending list of episode links that deep-link back to `frontend.html` via `?episode=<id>`.
+4. The places array is handed to Fuse.js (`keys: ['name']`, `threshold: 0.4`, `ignoreLocation: true`) to power the search box.
+
+Interaction details worth knowing:
+
+- **Hover popups on desktop only.** The code feature-detects `(hover: hover) and (pointer: fine)`. Desktop opens the popup on `mouseover` and closes it on `mouseout` with a 300ms grace timer so the cursor can travel from marker to popup without dismissing it. Mobile keeps Leaflet's default click-to-open behavior.
+- **Search.** Debounced 80ms. Renders a dropdown of up to 8 hits; the first row is pre-highlighted as "active." Arrow keys move the active row, Enter selects it, Escape clears the box. Pressing `/` anywhere outside an input focuses the search field.
+- **Selection.** Search resolves a name → marker via a `markersByName` Map (O(1)), then `map.flyTo(latlng, 17, { duration: 0.6 })` and `marker.openPopup()`.
+
+#### Why this shape
+
+The map endpoint is intentionally the cheapest possible architecture for the dataset size:
+
+- **One round-trip.** Hundreds of points fit comfortably in a single JSON payload, so there's no need for viewport-based loading or vector tiles.
+- **No server-side rendering.** The worker just hands back the static HTML; all rendering happens in the browser against the JSON.
+- **No cache layer.** D1 reads at the edge are fast enough for the query volume; if traffic grew, the next step would be putting Cloudflare Cache in front of `/api/map-places`, not restructuring the data.
+
 ### Scripts
 
 All scripts are in `scripts/` and run locally with Node.js:
