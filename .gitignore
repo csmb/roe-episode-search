@@ -39,3 +39,6 @@ scripts/.crossref-checkpoint.json
 
 # Claude Code local config (may contain API keys)
 .claude/
+
+# Local planning/spec scratchpads
+docs/superpowers/
