@@ -244,6 +244,33 @@ export async function scoreAndSeedSentiment(db, episodeId, segments, openaiApiKe
   console.log(`[${episodeId}] sentiment scored for ${mentions.length} mentions`);
 }
 
+/**
+ * Pure narrative builder for callers that already have the mention rows
+ * (e.g. the backfill script). Returns null if the threshold is not met.
+ * @param {string} placeName
+ * @param {Array<{episode_id:string,sentiment:number,sentiment_label:string,snippet:string}>} rows
+ * @param {string} apiKey
+ */
+export async function regenerateNarrativeFromRows(placeName, rows, apiKey) {
+  const series = rows.map(r => ({
+    episode_id: r.episode_id,
+    date: (String(r.episode_id).match(/(\d{4}-\d{2}-\d{2})/) || [])[1] || '',
+    score: r.sentiment,
+    label: r.sentiment_label,
+    snippet: r.snippet,
+  }));
+  if (!meetsNarrativeThreshold(series)) return null;
+  const years = series.map(s => episodeYear(s.episode_id)).filter(y => y !== null);
+  if (years.length === 0) return null;
+  const narrative = await synthesizeNarrative(placeName, series, apiKey);
+  return {
+    ...narrative,
+    episode_count: series.length,
+    year_min: Math.min(...years),
+    year_max: Math.max(...years),
+  };
+}
+
 export async function regenerateNarrative(db, placeId, openaiApiKey) {
   const place = await db.prepare('SELECT id, name FROM places WHERE id = ?').bind(placeId).first();
   if (!place) return;

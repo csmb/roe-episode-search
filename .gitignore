@@ -22,6 +22,7 @@ r2-cors.json
 
 # Batch processing checkpoint
 scripts/batch-progress.json
+scripts/backfill-sentiment-progress.json
 scripts/pipeline-errors.log
 scripts/episode-manifest.json
 

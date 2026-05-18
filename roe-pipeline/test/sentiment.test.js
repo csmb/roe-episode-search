@@ -140,6 +140,38 @@ describe('buildNarrativePrompt', () => {
   });
 });
 
+import { regenerateNarrativeFromRows } from '../src/sentiment.js';
+
+describe('regenerateNarrativeFromRows', () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('returns null below threshold without calling OpenAI', async () => {
+    const spy = vi.spyOn(global, 'fetch');
+    const out = await regenerateNarrativeFromRows('Tartine', [
+      { episode_id: 'x_2019-01-01_0', sentiment: 0.1, sentiment_label: 'neutral', snippet: 'a' },
+    ], 'sk-test');
+    expect(out).toBeNull();
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('returns narrative + span metadata when threshold met', async () => {
+    vi.spyOn(global, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ choices: [{ message: { content:
+        '{"early":"liked it","recent":"love it","arc":"warmed up"}' } }] }),
+    });
+    const out = await regenerateNarrativeFromRows('Tartine', [
+      { episode_id: 'x_2019-01-01_0', sentiment: 0.1, sentiment_label: 'neutral', snippet: 'a' },
+      { episode_id: 'x_2020-01-01_0', sentiment: 0.5, sentiment_label: 'positive', snippet: 'b' },
+      { episode_id: 'x_2021-01-01_0', sentiment: 0.8, sentiment_label: 'positive', snippet: 'c' },
+    ], 'sk-test');
+    expect(out.arc).toBe('warmed up');
+    expect(out.episode_count).toBe(3);
+    expect(out.year_min).toBe(2019);
+    expect(out.year_max).toBe(2021);
+  });
+});
+
 import { vi, beforeEach, afterEach } from 'vitest';
 import { scoreAndSeedSentiment } from '../src/sentiment.js';
 
