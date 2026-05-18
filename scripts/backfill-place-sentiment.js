@@ -32,8 +32,7 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 if (!OPENAI_API_KEY) { console.error('OPENAI_API_KEY required'); process.exit(1); }
 const REPLACE = process.argv.includes('--replace');
 
-const wranglerEnv = { ...process.env };
-delete wranglerEnv.CLOUDFLARE_API_TOKEN; // wrangler OAuth has D1 perms; the token does not
+const wranglerEnv = { ...process.env }; // CLOUDFLARE_API_TOKEN has D1 perms; used non-interactively
 
 function d1(sql) {
   const out = execSync(
