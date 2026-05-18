@@ -183,6 +183,42 @@
 			font-size: 14px;
 			color: #555;
 		}
+
+		.place-detail { font-family: inherit; }
+		.place-detail h3 { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
+		.place-detail .pd-count { font-size: 12px; color: #777; margin-bottom: 8px; }
+		.place-detail .pd-chart { width: 100%; height: 84px; margin: 6px 0 10px; }
+		.place-detail .pd-narrative { font-size: 12px; line-height: 1.45; margin-bottom: 10px; }
+		.place-detail .pd-narrative .pd-lab { font-weight: 600; color: #c44d02; }
+		.place-detail .pd-arc { font-style: italic; color: #555; margin-top: 4px; }
+		.place-detail .pd-note { font-size: 12px; color: #999; font-style: italic; margin-bottom: 8px; }
+		.place-detail ul { list-style: none; max-height: 160px; overflow-y: auto; }
+		.place-detail li { font-size: 12px; padding: 4px 0; border-bottom: 1px solid #f0f0f0; }
+		.place-detail li:last-child { border-bottom: none; }
+		.place-detail li a { color: #2563eb; text-decoration: none; }
+		.place-detail li a:hover { text-decoration: underline; }
+		.pd-chip { display: inline-block; font-size: 10px; padding: 1px 5px; border-radius: 8px;
+		  margin-left: 4px; color: #fff; vertical-align: middle; }
+		.pd-loading { font-size: 12px; color: #777; padding: 4px 0; }
+
+		#pd-sheet {
+		  position: fixed; left: 0; right: 0; bottom: 0; z-index: 2000;
+		  background: #fff; border-radius: 12px 12px 0 0;
+		  box-shadow: 0 -2px 16px rgba(0,0,0,0.25);
+		  padding: 16px 18px calc(16px + env(safe-area-inset-bottom));
+		  max-height: 75vh; overflow-y: auto;
+		  transform: translateY(100%); transition: transform 0.25s ease;
+		}
+		#pd-sheet.open { transform: translateY(0); }
+		#pd-sheet .pd-close {
+		  position: absolute; top: 8px; right: 12px; font-size: 22px;
+		  background: none; border: none; cursor: pointer; color: #777; line-height: 1;
+		}
+		#pd-backdrop {
+		  position: fixed; inset: 0; background: rgba(0,0,0,0.35); z-index: 1999;
+		  opacity: 0; pointer-events: none; transition: opacity 0.25s ease;
+		}
+		#pd-backdrop.open { opacity: 1; pointer-events: auto; }
 	</style>
 </head>
 <body>
@@ -196,6 +232,11 @@
 	</div>
 	<div id="map"></div>
 	<div id="loading">Loading places…</div>
+	<div id="pd-backdrop"></div>
+	<div id="pd-sheet" role="dialog" aria-modal="true" aria-label="Place detail">
+	  <button class="pd-close" aria-label="Close">&times;</button>
+	  <div id="pd-sheet-body"></div>
+	</div>
 
 	<script>
 		const SearchControl = L.Control.extend({
@@ -262,6 +303,108 @@
 
 		function escapeHtml(str) {
 			return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#x27;');
+		}
+
+		const SENTIMENT_COLORS = {
+		  positive: '#3a9d4a', negative: '#c0392b',
+		  neutral: '#8a8a8a', mixed: '#b8860b', unknown: '#bbb',
+		};
+
+		function scoreColor(score) {
+		  if (score == null) return '#bbb';
+		  // diverging: red (-1) -> grey (0) -> green (+1)
+		  const t = (score + 1) / 2;
+		  const r = Math.round(192 + (58 - 192) * t);
+		  const g = Math.round(57 + (157 - 57) * t);
+		  const b = Math.round(43 + (74 - 43) * t);
+		  return `rgb(${r},${g},${b})`;
+		}
+
+		function sparklineSvg(series) {
+		  const pts = series.filter(s => typeof s.score === 'number' && s.score !== null);
+		  if (pts.length < 2) return '';
+		  const W = 260, H = 84, pad = 8;
+		  const xs = i => pad + (W - 2 * pad) * (i / (pts.length - 1));
+		  const ys = v => H - pad - (H - 2 * pad) * ((v + 1) / 2);
+		  const line = pts.map((s, i) => `${i ? 'L' : 'M'}${xs(i).toFixed(1)},${ys(s.score).toFixed(1)}`).join(' ');
+		  const dots = pts.map((s, i) =>
+		    `<circle cx="${xs(i).toFixed(1)}" cy="${ys(s.score).toFixed(1)}" r="3" fill="${scoreColor(s.score)}"><title>${escapeHtml(s.date)}: ${s.score.toFixed(2)} (${escapeHtml(s.label || '')})</title></circle>`
+		  ).join('');
+		  const zero = ys(0).toFixed(1);
+		  return `<svg class="pd-chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Sentiment over time">
+		    <line x1="${pad}" y1="${zero}" x2="${W - pad}" y2="${zero}" stroke="#e0e0e0" stroke-width="1"/>
+		    <path d="${line}" fill="none" stroke="#e85d04" stroke-width="2"/>${dots}</svg>`;
+		}
+
+		function renderPlaceDetail(data) {
+		  const plural = data.episode_count === 1 ? 'episode' : 'episodes';
+		  let html = `<div class="place-detail"><h3>${escapeHtml(data.name)}</h3>` +
+		    `<div class="pd-count">Mentioned in ${data.episode_count} ${plural}</div>`;
+
+		  const chart = sparklineSvg(data.series);
+		  if (chart) html += chart;
+
+		  if (data.narrative) {
+		    html += `<div class="pd-narrative">` +
+		      `<div><span class="pd-lab">Early on:</span> ${escapeHtml(data.narrative.early)}</div>` +
+		      `<div><span class="pd-lab">Lately:</span> ${escapeHtml(data.narrative.recent)}</div>` +
+		      `<div class="pd-arc">${escapeHtml(data.narrative.arc)}</div></div>`;
+		  } else {
+		    html += `<div class="pd-note">Not enough history for a trend yet.</div>`;
+		  }
+
+		  const items = data.series.slice().sort((a, b) => b.date.localeCompare(a.date)).map(s => {
+		    const t = escapeHtml(s.title || s.date);
+		    const chip = s.label && s.label !== 'unknown'
+		      ? `<span class="pd-chip" style="background:${SENTIMENT_COLORS[s.label] || '#999'}">${escapeHtml(s.label)}</span>` : '';
+		    const href = s.snippet_start_ms != null
+		      ? `/?episode=${encodeURIComponent(s.episode_id)}&t=${Math.floor(s.snippet_start_ms / 1000)}`
+		      : `/?episode=${encodeURIComponent(s.episode_id)}`;
+		    const quote = s.snippet ? `<div style="color:#666;margin-top:2px">&ldquo;${escapeHtml(s.snippet)}&rdquo;</div>` : '';
+		    return `<li><a href="${href}" target="_blank">${t}</a> <span class="ep-date">${escapeHtml(s.date)}</span>${chip}${quote}</li>`;
+		  }).join('');
+		  html += `<ul>${items}</ul></div>`;
+		  return html;
+		}
+
+		const pdSheet = document.getElementById('pd-sheet');
+		const pdBackdrop = document.getElementById('pd-backdrop');
+		const pdSheetBody = document.getElementById('pd-sheet-body');
+		const isMobile = () => window.matchMedia('(max-width: 640px)').matches;
+
+		function closeSheet() {
+		  pdSheet.classList.remove('open');
+		  pdBackdrop.classList.remove('open');
+		}
+		document.querySelector('#pd-sheet .pd-close').addEventListener('click', closeSheet);
+		pdBackdrop.addEventListener('click', closeSheet);
+
+		async function openPlaceDetail(place, circle) {
+		  const loadingHtml = `<div class="place-detail"><h3>${escapeHtml(place.name)}</h3>` +
+		    `<div class="pd-loading">Loading insights…</div></div>`;
+
+		  if (isMobile()) {
+		    pdSheetBody.innerHTML = loadingHtml;
+		    pdSheet.classList.add('open');
+		    pdBackdrop.classList.add('open');
+		  } else {
+		    circle.bindPopup(loadingHtml, { maxWidth: 320, minWidth: 280 }).openPopup();
+		  }
+
+		  let html;
+		  try {
+		    const res = await fetch(`/api/place-detail?name=${encodeURIComponent(place.name)}`);
+		    html = renderPlaceDetail(await res.json());
+		  } catch {
+		    html = `<div class="place-detail"><h3>${escapeHtml(place.name)}</h3>` +
+		      `<div class="pd-note">Couldn't load insights.</div></div>`;
+		  }
+
+		  if (isMobile()) {
+		    pdSheetBody.innerHTML = html;
+		  } else {
+		    circle.setPopupContent(html);
+		  }
 		}
 
 		const map = L.map('map', { zoomControl: false }).setView([37.7749, -122.4194], 13);
@@ -349,6 +492,7 @@
 						}
 					});
 				}
+				circle.on('click', () => openPlaceDetail(place, circle));
 			}
 			fuseIndex = new Fuse(places, {
 				keys: ['name'],
