@@ -35,8 +35,12 @@ const REPLACE = process.argv.includes('--replace');
 const wranglerEnv = { ...process.env }; // CLOUDFLARE_API_TOKEN has D1 perms; used non-interactively
 
 function d1(sql) {
+  // Collapse newlines/indentation: a literal newline survives JSON.stringify as
+  // an escaped backslash in the shell arg, which D1's SQLite rejects. SQL is
+  // whitespace-insensitive and statements are ';'-separated, so flattening is safe.
+  const flat = String(sql).replace(/\s+/g, ' ').trim();
   const out = execSync(
-    `npx wrangler d1 execute roe-episodes --remote --json --command=${JSON.stringify(sql)}`,
+    `npx wrangler d1 execute roe-episodes --remote --json --command=${JSON.stringify(flat)}`,
     { cwd: path.join(__dirname, '..', 'roe-search'), env: wranglerEnv, maxBuffer: 64 * 1024 * 1024 }
   );
   return JSON.parse(out.toString());
