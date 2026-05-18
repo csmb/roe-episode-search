@@ -93,3 +93,45 @@ export function parseScoreResponse(content) {
   const quote = typeof obj.quote === 'string' ? obj.quote.slice(0, 600) : '';
   return { score: clamped, label, quote };
 }
+
+export function episodeYear(episodeId) {
+  const m = String(episodeId).match(/(\d{4})-\d{2}-\d{2}/);
+  return m ? parseInt(m[1], 10) : null;
+}
+
+export function meetsNarrativeThreshold(series) {
+  const scored = series.filter(s => typeof s.score === 'number' && s.score !== null);
+  if (scored.length < MIN_NARRATIVE_EPISODES) return false;
+  const years = new Set(scored.map(s => episodeYear(s.episode_id)).filter(y => y !== null));
+  return years.size >= MIN_NARRATIVE_YEAR_SPAN;
+}
+
+export function buildNarrativePrompt(placeName, series) {
+  const user = series
+    .filter(s => typeof s.score === 'number' && s.score !== null)
+    .slice()
+    .sort((a, b) => String(a.date).localeCompare(String(b.date)))
+    .map(s => `${s.date} (score ${Number(s.score).toFixed(2)}, ${s.label}): "${s.snippet || ''}"`)
+    .join('\n');
+  const system =
+    `You summarize how the hosts of "Roll Over Easy" have talked about ${placeName} over time. ` +
+    `You are given dated snippets with sentiment scores in chronological order. ` +
+    `Respond ONLY with JSON: ` +
+    `{"early":"<1-2 sentences on their earliest take>","recent":"<1-2 sentences on their most recent take>",` +
+    `"arc":"<one short sentence describing the overall change>"}. ` +
+    `Be specific and grounded in the snippets. Do not invent details.`;
+  return { system, user };
+}
+
+export function parseNarrativeResponse(content) {
+  const cleaned = String(content).trim()
+    .replace(/^```json\s*/i, '')
+    .replace(/```\s*$/, '')
+    .trim();
+  const obj = JSON.parse(cleaned);
+  return {
+    early: String(obj.early || '').slice(0, 600),
+    recent: String(obj.recent || '').slice(0, 600),
+    arc: String(obj.arc || '').slice(0, 300),
+  };
+}

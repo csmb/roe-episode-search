@@ -77,3 +77,65 @@ describe('buildScorePrompt', () => {
     expect(user).toContain('[2] b');
   });
 });
+
+import {
+  episodeYear,
+  meetsNarrativeThreshold,
+  buildNarrativePrompt,
+  parseNarrativeResponse,
+} from '../src/sentiment.js';
+
+describe('episodeYear', () => {
+  it('extracts the year from an episode id', () => {
+    expect(episodeYear('roll-over-easy_2019-03-14_07-30-00')).toBe(2019);
+  });
+  it('returns null when no date present', () => {
+    expect(episodeYear('garbage')).toBeNull();
+  });
+});
+
+describe('meetsNarrativeThreshold', () => {
+  const mk = (id, score) => ({ episode_id: id, score });
+  it('false when fewer than 3 scored episodes', () => {
+    expect(meetsNarrativeThreshold([
+      mk('x_2019-01-01_0', 0.2), mk('x_2020-01-01_0', 0.1),
+    ])).toBe(false);
+  });
+  it('false when 3 episodes but only one calendar year', () => {
+    expect(meetsNarrativeThreshold([
+      mk('x_2019-01-01_0', 0.2), mk('x_2019-06-01_0', 0.1), mk('x_2019-09-01_0', -0.1),
+    ])).toBe(false);
+  });
+  it('true with >=3 scored episodes spanning >=2 years', () => {
+    expect(meetsNarrativeThreshold([
+      mk('x_2019-01-01_0', 0.2), mk('x_2020-06-01_0', 0.1), mk('x_2021-09-01_0', -0.1),
+    ])).toBe(true);
+  });
+  it('ignores entries with null score', () => {
+    expect(meetsNarrativeThreshold([
+      mk('x_2019-01-01_0', 0.2), mk('x_2020-06-01_0', null),
+      mk('x_2021-09-01_0', null), mk('x_2022-09-01_0', null),
+    ])).toBe(false);
+  });
+});
+
+describe('parseNarrativeResponse', () => {
+  it('parses fields and strips fences', () => {
+    const r = parseNarrativeResponse('```json\n{"early":"a","recent":"b","arc":"c"}\n```');
+    expect(r).toEqual({ early: 'a', recent: 'b', arc: 'c' });
+  });
+  it('coerces missing fields to empty strings', () => {
+    expect(parseNarrativeResponse('{}')).toEqual({ early: '', recent: '', arc: '' });
+  });
+});
+
+describe('buildNarrativePrompt', () => {
+  it('lists snippets in date order with the place name in the system prompt', () => {
+    const { system, user } = buildNarrativePrompt('Tartine', [
+      { episode_id: 'x_2021-01-01_0', date: '2021-01-01', score: -0.5, label: 'negative', snippet: 'meh' },
+      { episode_id: 'x_2019-01-01_0', date: '2019-01-01', score: 0.4, label: 'positive', snippet: 'great' },
+    ]);
+    expect(system).toContain('Tartine');
+    expect(user.indexOf('2019-01-01')).toBeLessThan(user.indexOf('2021-01-01'));
+  });
+});
