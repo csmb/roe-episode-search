@@ -163,7 +163,8 @@ export async function scoreMention(placeName, passages, apiKey) {
   try {
     content = await openaiJson(system, user, apiKey);
     return parseScoreResponse(content);
-  } catch {
+  } catch (err) {
+    console.warn(`scoreMention retry for "${placeName}" after: ${err.message}`);
     // one retry, then give up (caller leaves analyzed_at so a rerun can retry)
     content = await openaiJson(system, user, apiKey);
     return parseScoreResponse(content);
@@ -267,6 +268,7 @@ export async function regenerateNarrative(db, placeId, openaiApiKey) {
   if (!meetsNarrativeThreshold(series)) return;
 
   const years = series.map(s => episodeYear(s.episode_id)).filter(y => y !== null);
+  if (years.length === 0) return;
   const narrative = await synthesizeNarrative(place.name, series, openaiApiKey);
 
   await db

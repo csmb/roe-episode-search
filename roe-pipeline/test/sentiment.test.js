@@ -227,4 +227,23 @@ describe('scoreAndSeedSentiment', () => {
     expect(upd).toBeDefined();
     expect(upd.args).toContain('unknown');
   });
+
+  it('regenerateNarrative skips upsert when no episode years parse', async () => {
+    const fetchSpy = vi.spyOn(global, 'fetch');
+    // 3 mentions, non-null sentiment, but episode ids have NO YYYY-MM-DD pattern
+    const db = makeDb(
+      [{ id: 9, name: 'Nowhere' }],
+      [
+        { place_id: 9, episode_id: 'noprefix-a', sentiment: 0.1, sentiment_label: 'neutral', snippet: 'x' },
+        { place_id: 9, episode_id: 'noprefix-b', sentiment: 0.2, sentiment_label: 'neutral', snippet: 'y' },
+        { place_id: 9, episode_id: 'noprefix-c', sentiment: 0.3, sentiment_label: 'neutral', snippet: 'z' },
+      ],
+    );
+    const { regenerateNarrative } = await import('../src/sentiment.js');
+    await regenerateNarrative(db, 9, 'sk-test');
+    // meetsNarrativeThreshold fails (no parseable years) -> early return, no OpenAI call,
+    // and crucially no INSERT INTO place_narratives with Infinity bounds
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(db.runs.find(r => r.sql.includes('INSERT INTO place_narratives'))).toBeUndefined();
+  });
 });
