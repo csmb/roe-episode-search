@@ -321,7 +321,10 @@
 		}
 
 		function sparklineSvg(series) {
-		  const pts = series.filter(s => typeof s.score === 'number' && s.score !== null);
+		  const pts = series
+		    .filter(s => typeof s.score === 'number' && s.score !== null)
+		    .slice()
+		    .sort((a, b) => String(a.date).localeCompare(String(b.date)));
 		  if (pts.length < 2) return '';
 		  const W = 260, H = 84, pad = 8;
 		  const xs = i => pad + (W - 2 * pad) * (i / (pts.length - 1));
@@ -378,12 +381,16 @@
 		}
 		document.querySelector('#pd-sheet .pd-close').addEventListener('click', closeSheet);
 		pdBackdrop.addEventListener('click', closeSheet);
+		document.addEventListener('keydown', (e) => {
+		  if (e.key === 'Escape' && pdSheet.classList.contains('open')) closeSheet();
+		});
 
 		async function openPlaceDetail(place, circle) {
+		  const mobile = isMobile();
 		  const loadingHtml = `<div class="place-detail"><h3>${escapeHtml(place.name)}</h3>` +
 		    `<div class="pd-loading">Loading insights…</div></div>`;
 
-		  if (isMobile()) {
+		  if (mobile) {
 		    pdSheetBody.innerHTML = loadingHtml;
 		    pdSheet.classList.add('open');
 		    pdBackdrop.classList.add('open');
@@ -394,13 +401,14 @@
 		  let html;
 		  try {
 		    const res = await fetch(`/api/place-detail?name=${encodeURIComponent(place.name)}`);
+		    if (!res.ok) throw new Error(`HTTP ${res.status}`);
 		    html = renderPlaceDetail(await res.json());
 		  } catch {
 		    html = `<div class="place-detail"><h3>${escapeHtml(place.name)}</h3>` +
 		      `<div class="pd-note">Couldn't load insights.</div></div>`;
 		  }
 
-		  if (isMobile()) {
+		  if (mobile) {
 		    pdSheetBody.innerHTML = html;
 		  } else {
 		    circle.setPopupContent(html);
@@ -472,6 +480,7 @@
 				`, { maxWidth: 280 });
 
 				// Desktop: show popup on hover; mobile keeps default click behavior
+				let detailOpen = false;
 				const hasHover = window.matchMedia('(hover: hover) and (pointer: fine)').matches;
 				if (hasHover) {
 					let closeTimer = null;
@@ -480,19 +489,19 @@
 						circle.openPopup();
 					});
 					circle.on('mouseout', () => {
-						closeTimer = setTimeout(() => circle.closePopup(), 300);
+						closeTimer = setTimeout(() => { if (!detailOpen) circle.closePopup(); }, 300);
 					});
 					circle.on('popupopen', () => {
 						const el = circle.getPopup().getElement();
 						if (el) {
 							el.addEventListener('mouseenter', () => clearTimeout(closeTimer));
 							el.addEventListener('mouseleave', () => {
-								closeTimer = setTimeout(() => circle.closePopup(), 300);
+								closeTimer = setTimeout(() => { if (!detailOpen) circle.closePopup(); }, 300);
 							});
 						}
 					});
 				}
-				circle.on('click', () => openPlaceDetail(place, circle));
+				circle.on('click', () => { detailOpen = true; openPlaceDetail(place, circle); });
 			}
 			fuseIndex = new Fuse(places, {
 				keys: ['name'],
