@@ -56,5 +56,21 @@ CREATE TABLE IF NOT EXISTS places (
 CREATE TABLE IF NOT EXISTS place_mentions (
     place_id INTEGER NOT NULL REFERENCES places(id),
     episode_id TEXT NOT NULL REFERENCES episodes(id),
+    sentiment REAL,
+    sentiment_label TEXT,
+    snippet TEXT,
+    snippet_start_ms INTEGER,
+    analyzed_at TEXT,
     PRIMARY KEY (place_id, episode_id)
+);
+
+CREATE TABLE IF NOT EXISTS place_narratives (
+    place_id INTEGER PRIMARY KEY REFERENCES places(id),
+    early_text TEXT,
+    recent_text TEXT,
+    arc_text TEXT,
+    episode_count INTEGER,
+    year_min INTEGER,
+    year_max INTEGER,
+    generated_at TEXT
 );
