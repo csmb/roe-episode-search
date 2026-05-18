@@ -46,8 +46,13 @@ function d1(sql) {
 function sqlStr(s) { return `'${String(s).replace(/'/g, "''")}'`; }
 
 function loadProgress() {
-  if (fs.existsSync(PROGRESS_PATH)) return JSON.parse(fs.readFileSync(PROGRESS_PATH));
-  return { doneEpisodes: [] };
+  if (fs.existsSync(PROGRESS_PATH)) {
+    const p = JSON.parse(fs.readFileSync(PROGRESS_PATH));
+    if (!p.doneEpisodes) p.doneEpisodes = [];
+    if (!p.doneNarrativePlaces) p.doneNarrativePlaces = [];
+    return p;
+  }
+  return { doneEpisodes: [], doneNarrativePlaces: [] };
 }
 function saveProgress(p) { fs.writeFileSync(PROGRESS_PATH, JSON.stringify(p, null, 2)); }
 
@@ -65,7 +70,7 @@ async function main() {
     byEpisode.get(m.episode_id).push(m);
   }
 
-  const progress = REPLACE ? { doneEpisodes: [] } : loadProgress();
+  const progress = REPLACE ? { doneEpisodes: [], doneNarrativePlaces: [] } : loadProgress();
   const doneSet = new Set(progress.doneEpisodes);
   const episodes = [...byEpisode.keys()].filter(e => !doneSet.has(e));
   console.log(`Pass 1: ${episodes.length} episodes, ${mentions.length} mentions to score`);
@@ -123,8 +128,14 @@ async function main() {
   )[0].results;
   console.log(`Pass 2: evaluating ${places.length} places for narratives`);
 
+  const narrativeDoneSet = new Set(progress.doneNarrativePlaces);
   let nDone = 0, nWritten = 0;
   for (const place of places) {
+    if (!REPLACE && narrativeDoneSet.has(place.id)) {
+      nDone++;
+      process.stdout.write(`\r  Pass 2: ${nDone}/${places.length} (${nWritten} narratives)`);
+      continue;
+    }
     try {
       const rows = d1(
         `SELECT episode_id, sentiment, sentiment_label, snippet
@@ -146,6 +157,8 @@ async function main() {
         );
         nWritten++;
       }
+      progress.doneNarrativePlaces.push(place.id);
+      saveProgress(progress);
     } catch (err) {
       console.error(`\n  narrative failed for ${place.name}: ${err.message}`);
     }
