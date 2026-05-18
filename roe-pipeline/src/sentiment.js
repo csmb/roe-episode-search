@@ -15,7 +15,7 @@ export function placeMatchVariants(name) {
   const variants = new Set();
   if (base.length >= 3) variants.add(base);
   const stripped = base
-    .replace(/\b(district|street|avenue|ave|st|park|square|plaza)\b/g, '')
+    .replace(/\b(district|street|avenue|park|square|plaza)\b/g, '')
     .replace(/\s+/g, ' ')
     .trim();
   if (stripped.length >= 3) variants.add(stripped);

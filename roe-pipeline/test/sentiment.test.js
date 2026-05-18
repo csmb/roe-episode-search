@@ -18,6 +18,11 @@ describe('placeMatchVariants', () => {
   it('drops variants shorter than 3 chars', () => {
     expect(placeMatchVariants('Q').length).toBe(0);
   });
+  it('does not mangle "St." name prefixes into junk variants', () => {
+    const v = placeMatchVariants('St. Francis Fountain');
+    expect(v).toContain('st. francis fountain');
+    expect(v.every(x => !x.startsWith('.'))).toBe(true);
+  });
 });
 
 describe('findPlacePassages', () => {
