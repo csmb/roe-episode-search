@@ -139,3 +139,92 @@ describe('buildNarrativePrompt', () => {
     expect(user.indexOf('2019-01-01')).toBeLessThan(user.indexOf('2021-01-01'));
   });
 });
+
+import { vi, beforeEach, afterEach } from 'vitest';
+import { scoreAndSeedSentiment } from '../src/sentiment.js';
+
+describe('scoreAndSeedSentiment', () => {
+  beforeEach(() => {});
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  function makeDb(places, mentions) {
+    const runs = [];
+    return {
+      runs,
+      prepare(sql) {
+        return {
+          bind(...args) {
+            return {
+              async run() { runs.push({ sql, args }); },
+              async first() {
+                if (sql.includes('FROM places WHERE id')) {
+                  return places.find(p => p.id === args[0]) || null;
+                }
+                return null;
+              },
+              async all() {
+                if (sql.includes('FROM place_mentions pm') && sql.includes('place_id = ?')) {
+                  return { results: mentions.filter(m => m.place_id === args[0]) };
+                }
+                if (sql.includes('FROM place_mentions pm') && sql.includes('episode_id = ?')) {
+                  return { results: mentions.filter(m => m.episode_id === args[0]) };
+                }
+                return { results: [] };
+              },
+            };
+          },
+          async all() {
+            if (sql.includes('FROM place_mentions') && sql.includes('episode_id')) {
+              return { results: mentions };
+            }
+            return { results: [] };
+          },
+        };
+      },
+    };
+  }
+
+  it('no-ops without an API key', async () => {
+    const db = makeDb([], []);
+    await scoreAndSeedSentiment(db, 'ep_2019-01-01_0', [], null);
+    expect(db.runs).toHaveLength(0);
+  });
+
+  it('scores a mention and writes sentiment columns', async () => {
+    vi.spyOn(global, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ choices: [{ message: { content:
+        '{"score":0.6,"label":"positive","quote":"we love Tartine"}' } }] }),
+    });
+    const db = makeDb(
+      [{ id: 7, name: 'Tartine' }],
+      [{ place_id: 7, episode_id: 'ep_2019-01-01_0', name: 'Tartine' }],
+    );
+    const segs = [
+      { start_ms: 0, text: 'intro' },
+      { start_ms: 1000, text: 'we love Tartine so much' },
+      { start_ms: 2000, text: 'best bread' },
+    ];
+    await scoreAndSeedSentiment(db, 'ep_2019-01-01_0', segs, 'sk-test');
+
+    const upd = db.runs.find(r => r.sql.includes('UPDATE place_mentions') && r.sql.includes('SET sentiment'));
+    expect(upd).toBeDefined();
+    expect(upd.args).toContain(0.6);
+    expect(upd.args).toContain('positive');
+  });
+
+  it('marks analyzed with null sentiment when no passages found', async () => {
+    const fetchSpy = vi.spyOn(global, 'fetch');
+    const db = makeDb(
+      [{ id: 7, name: 'Tartine' }],
+      [{ place_id: 7, episode_id: 'ep_2019-01-01_0', name: 'Tartine' }],
+    );
+    await scoreAndSeedSentiment(db, 'ep_2019-01-01_0',
+      [{ start_ms: 0, text: 'no place here' }], 'sk-test');
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    const upd = db.runs.find(r => r.sql.includes('UPDATE place_mentions') && r.sql.includes('SET sentiment'));
+    expect(upd).toBeDefined();
+    expect(upd.args).toContain('unknown');
+  });
+});

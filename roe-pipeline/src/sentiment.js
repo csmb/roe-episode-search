@@ -135,3 +135,154 @@ export function parseNarrativeResponse(content) {
     arc: String(obj.arc || '').slice(0, 300),
   };
 }
+
+const OPENAI_URL = 'https://api.openai.com/v1/chat/completions';
+
+async function openaiJson(system, user, apiKey) {
+  const res = await fetch(OPENAI_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: user },
+      ],
+      temperature: 0,
+      max_tokens: 500,
+    }),
+  });
+  if (!res.ok) throw new Error(`OpenAI ${res.status}: ${await res.text()}`);
+  const data = await res.json();
+  return data.choices[0].message.content;
+}
+
+export async function scoreMention(placeName, passages, apiKey) {
+  const { system, user } = buildScorePrompt(placeName, passages);
+  let content;
+  try {
+    content = await openaiJson(system, user, apiKey);
+    return parseScoreResponse(content);
+  } catch {
+    // one retry, then give up (caller leaves analyzed_at so a rerun can retry)
+    content = await openaiJson(system, user, apiKey);
+    return parseScoreResponse(content);
+  }
+}
+
+export async function synthesizeNarrative(placeName, series, apiKey) {
+  const { system, user } = buildNarrativePrompt(placeName, series);
+  const content = await openaiJson(system, user, apiKey);
+  return parseNarrativeResponse(content);
+}
+
+/**
+ * Score every place mentioned in one episode, write results to place_mentions,
+ * and (re)generate place_narratives for affected places.
+ *
+ * @param {D1Database} db
+ * @param {string} episodeId
+ * @param {Array<{start_ms:number,text:string}>} segments
+ * @param {string} openaiApiKey
+ */
+export async function scoreAndSeedSentiment(db, episodeId, segments, openaiApiKey) {
+  if (!openaiApiKey) {
+    console.warn(`[${episodeId}] OPENAI_API_KEY not set — skipping sentiment`);
+    return;
+  }
+
+  const { results: mentions } = await db
+    .prepare(
+      `SELECT pm.place_id, pm.episode_id, p.name
+       FROM place_mentions pm JOIN places p ON p.id = pm.place_id
+       WHERE pm.episode_id = ?`
+    )
+    .bind(episodeId)
+    .all();
+
+  const now = new Date().toISOString();
+  const affectedPlaceIds = new Set();
+
+  for (const m of mentions) {
+    const passages = findPlacePassages(segments, m.name);
+    let score = null;
+    let label = 'unknown';
+    let snippet = null;
+    let snippetStartMs = null;
+
+    if (passages.length > 0) {
+      try {
+        const r = await scoreMention(m.name, passages, openaiApiKey);
+        score = r.score;
+        label = r.label;
+        snippet = r.quote;
+        const hit = passages.find(p => snippet && p.text.includes(snippet)) || passages[0];
+        snippetStartMs = hit.start_ms;
+      } catch (err) {
+        console.error(`[${episodeId}] score failed for "${m.name}": ${err.message}`);
+        continue; // leave analyzed_at NULL so a later run retries
+      }
+    }
+
+    await db
+      .prepare(
+        `UPDATE place_mentions
+         SET sentiment = ?, sentiment_label = ?, snippet = ?, snippet_start_ms = ?, analyzed_at = ?
+         WHERE place_id = ? AND episode_id = ?`
+      )
+      .bind(score, label, snippet, snippetStartMs, now, m.place_id, m.episode_id)
+      .run();
+
+    affectedPlaceIds.add(m.place_id);
+  }
+
+  for (const placeId of affectedPlaceIds) {
+    await regenerateNarrative(db, placeId, openaiApiKey);
+  }
+
+  console.log(`[${episodeId}] sentiment scored for ${mentions.length} mentions`);
+}
+
+export async function regenerateNarrative(db, placeId, openaiApiKey) {
+  const place = await db.prepare('SELECT id, name FROM places WHERE id = ?').bind(placeId).first();
+  if (!place) return;
+
+  const { results: rows } = await db
+    .prepare(
+      `SELECT pm.episode_id, pm.sentiment, pm.sentiment_label, pm.snippet
+       FROM place_mentions pm
+       WHERE pm.place_id = ? AND pm.sentiment IS NOT NULL`
+    )
+    .bind(placeId)
+    .all();
+
+  const series = rows.map(r => ({
+    episode_id: r.episode_id,
+    date: (String(r.episode_id).match(/(\d{4}-\d{2}-\d{2})/) || [])[1] || '',
+    score: r.sentiment,
+    label: r.sentiment_label,
+    snippet: r.snippet,
+  }));
+
+  if (!meetsNarrativeThreshold(series)) return;
+
+  const years = series.map(s => episodeYear(s.episode_id)).filter(y => y !== null);
+  const narrative = await synthesizeNarrative(place.name, series, openaiApiKey);
+
+  await db
+    .prepare(
+      `INSERT INTO place_narratives
+         (place_id, early_text, recent_text, arc_text, episode_count, year_min, year_max, generated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(place_id) DO UPDATE SET
+         early_text=excluded.early_text, recent_text=excluded.recent_text,
+         arc_text=excluded.arc_text, episode_count=excluded.episode_count,
+         year_min=excluded.year_min, year_max=excluded.year_max,
+         generated_at=excluded.generated_at`
+    )
+    .bind(
+      placeId, narrative.early, narrative.recent, narrative.arc,
+      series.length, Math.min(...years), Math.max(...years), new Date().toISOString()
+    )
+    .run();
+}
