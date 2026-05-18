@@ -89,6 +89,12 @@ export default {
 		if (url.pathname === '/api/map-places') {
 			return handleMapPlaces(env, request);
 		}
+		if (url.pathname === '/api/place-detail') {
+			if (!checkRateLimit(clientIP, 'search', RATE_LIMIT_SEARCH)) {
+				return json({ error: 'Rate limit exceeded. Try again in a minute.' }, 429, request);
+			}
+			return handlePlaceDetail(url, env, request);
+		}
 
 		if (url.pathname === '/api/search') {
 			if (!checkRateLimit(clientIP, 'search', RATE_LIMIT_SEARCH)) {
@@ -549,6 +555,11 @@ async function handleMapPlaces(env, request) {
 		JOIN episodes e ON e.id = pm.episode_id
 	`).all();
 
+	const { results: narrativeRows } = await env.DB.prepare(
+		`SELECT place_id FROM place_narratives`
+	).all();
+	const narrativeSet = new Set(narrativeRows.map(r => r.place_id));
+
 	const episodesByPlace = {};
 	for (const m of mentions) {
 		if (!episodesByPlace[m.place_id]) episodesByPlace[m.place_id] = [];
@@ -560,11 +571,47 @@ async function handleMapPlaces(env, request) {
 		lat: p.lat,
 		lng: p.lng,
 		episode_count: p.episode_count,
+		has_narrative: narrativeSet.has(p.id),
 		episodes: episodesByPlace[p.id] || [],
 	}));
 
 	const total_mentions = places.reduce((s, p) => s + p.episode_count, 0);
 	return json({ places, total_mentions }, 200, request);
+}
+
+async function handlePlaceDetail(url, env, request) {
+	const name = url.searchParams.get('name')?.trim();
+	if (!name) return json({ error: 'Missing ?name= parameter' }, 400, request);
+
+	const place = await env.DB.prepare('SELECT id, name FROM places WHERE name = ?1')
+		.bind(name).first();
+	if (!place) return json({ error: 'Place not found' }, 404, request);
+
+	const { results: rows } = await env.DB.prepare(
+		`SELECT pm.episode_id, e.title, pm.sentiment, pm.sentiment_label,
+		        pm.snippet, pm.snippet_start_ms
+		 FROM place_mentions pm JOIN episodes e ON e.id = pm.episode_id
+		 WHERE pm.place_id = ?1`
+	).bind(place.id).all();
+
+	const series = rows.map(r => ({
+		episode_id: r.episode_id,
+		date: (String(r.episode_id).match(/(\d{4}-\d{2}-\d{2})/) || [])[1] || '',
+		title: r.title,
+		score: r.sentiment,
+		label: r.sentiment_label,
+		snippet: r.snippet,
+		snippet_start_ms: r.snippet_start_ms,
+	})).sort((a, b) => a.date.localeCompare(b.date));
+
+	const n = await env.DB.prepare(
+		'SELECT early_text, recent_text, arc_text FROM place_narratives WHERE place_id = ?1'
+	).bind(place.id).first();
+	const narrative = n
+		? { early: n.early_text, recent: n.recent_text, arc: n.arc_text }
+		: null;
+
+	return json({ name: place.name, episode_count: series.length, series, narrative }, 200, request);
 }
 
 async function handleAdminApi(url, env, request) {
