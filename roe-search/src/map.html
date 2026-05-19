@@ -625,7 +625,7 @@
 			const circle = markersByName.get(name);
 			if (!circle) { console.warn('Unknown place in URL:', name); return; }
 			map.flyTo(circle.getLatLng(), 17, { duration: 0.6 });
-			openPlaceDetail({ name }, circle);
+			circle.fire('click');
 		}
 
 		loadPlaces().then(applyDeepLink).catch(err => {
