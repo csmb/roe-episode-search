@@ -415,14 +415,15 @@
 				btn.textContent = 'Copied!';
 				setTimeout(() => { btn.textContent = prev; }, 1500);
 			} catch {
-				if (!btn.nextElementSibling || !btn.nextElementSibling.classList.contains('pd-copy-fallback')) {
+				const anchor = btn.closest('h3') || btn;
+				if (!anchor.nextElementSibling || !anchor.nextElementSibling.classList.contains('pd-copy-fallback')) {
 					const inp = document.createElement('input');
 					inp.className = 'pd-copy-fallback';
 					inp.readOnly = true;
 					inp.value = url;
-					btn.insertAdjacentElement('afterend', inp);
+					anchor.insertAdjacentElement('afterend', inp);
 				}
-				const inp = btn.nextElementSibling;
+				const inp = anchor.nextElementSibling;
 				inp.focus();
 				inp.select();
 			}
