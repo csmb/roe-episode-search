@@ -187,6 +187,12 @@
 		.place-detail { font-family: inherit; }
 		.place-detail h3 { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
 		.place-detail .pd-count { font-size: 12px; color: #777; margin-bottom: 8px; }
+		.place-detail .pd-copy-link { font: 500 11px inherit; color: #c44d02; background: none;
+			border: 1px solid #e0b89c; border-radius: 4px; padding: 1px 6px; margin-left: 6px;
+			cursor: pointer; vertical-align: middle; }
+		.place-detail .pd-copy-link:hover { background: #fbeee6; }
+		.place-detail .pd-copy-fallback { display: block; width: 100%; margin-top: 6px;
+			font-size: 11px; padding: 2px 4px; }
 		.place-detail .pd-chart { width: 100%; height: 84px; margin: 6px 0 10px; }
 		.place-detail .pd-narrative { font-size: 12px; line-height: 1.45; margin-bottom: 10px; }
 		.place-detail .pd-narrative .pd-lab { font-weight: 600; color: #c44d02; }
@@ -342,7 +348,8 @@
 
 		function renderPlaceDetail(data) {
 		  const plural = data.episode_count === 1 ? 'episode' : 'episodes';
-		  let html = `<div class="place-detail"><h3>${escapeHtml(data.name)}</h3>` +
+		  let html = `<div class="place-detail">` +
+		    `<h3>${escapeHtml(data.name)} <button type="button" class="pd-copy-link" data-place="${escapeHtml(data.name)}">Copy link</button></h3>` +
 		    `<div class="pd-count">Mentioned in ${data.episode_count} ${plural}</div>`;
 
 		  const chart = sparklineSvg(data.series);
@@ -376,18 +383,56 @@
 		const pdSheetBody = document.getElementById('pd-sheet-body');
 		const isMobile = () => window.matchMedia('(max-width: 640px)').matches;
 
+		let lastDetailName = null;
+
+		function setPlaceUrl(name) {
+			history.replaceState(null, '', '/map?place=' + encodeURIComponent(name));
+		}
+		function clearPlaceUrlIf(name) {
+			if (name != null && new URLSearchParams(location.search).get('place') === name) {
+				history.replaceState(null, '', location.pathname);
+			}
+		}
+
 		function closeSheet() {
 		  pdSheet.classList.remove('open');
 		  pdBackdrop.classList.remove('open');
+		  clearPlaceUrlIf(lastDetailName);
 		}
 		document.querySelector('#pd-sheet .pd-close').addEventListener('click', closeSheet);
 		pdBackdrop.addEventListener('click', closeSheet);
 		document.addEventListener('keydown', (e) => {
 		  if (e.key === 'Escape' && pdSheet.classList.contains('open')) closeSheet();
 		});
+		document.addEventListener('click', async (e) => {
+			const btn = e.target.closest('.pd-copy-link');
+			if (!btn) return;
+			const url = location.origin + '/map?place=' + encodeURIComponent(btn.dataset.place);
+			try {
+				if (!navigator.clipboard) throw new Error('no clipboard');
+				await navigator.clipboard.writeText(url);
+				const prev = btn.textContent;
+				btn.textContent = 'Copied!';
+				setTimeout(() => { btn.textContent = prev; }, 1500);
+			} catch {
+				const anchor = btn.closest('h3') || btn;
+				if (!anchor.nextElementSibling || !anchor.nextElementSibling.classList.contains('pd-copy-fallback')) {
+					const inp = document.createElement('input');
+					inp.className = 'pd-copy-fallback';
+					inp.readOnly = true;
+					inp.value = url;
+					anchor.insertAdjacentElement('afterend', inp);
+				}
+				const inp = anchor.nextElementSibling;
+				inp.focus();
+				inp.select();
+			}
+		});
 
 		async function openPlaceDetail(place, circle) {
 		  const mobile = isMobile();
+		  lastDetailName = place.name;
+		  setPlaceUrl(place.name);
 		  const loadingHtml = `<div class="place-detail"><h3>${escapeHtml(place.name)}</h3>` +
 		    `<div class="pd-loading">Loading insights…</div></div>`;
 
@@ -397,6 +442,7 @@
 		    pdBackdrop.classList.add('open');
 		  } else {
 		    circle.bindPopup(loadingHtml, { maxWidth: 320, minWidth: 280 }).openPopup();
+		    circle.once('popupclose', () => clearPlaceUrlIf(place.name));
 		  }
 
 		  let html;
@@ -573,7 +619,16 @@
 			});
 		}
 
-		loadPlaces().catch(err => {
+		function applyDeepLink() {
+			const name = new URLSearchParams(location.search).get('place');
+			if (!name) return;
+			const circle = markersByName.get(name);
+			if (!circle) { console.warn('Unknown place in URL:', name); return; }
+			map.flyTo(circle.getLatLng(), 17, { duration: 0.6 });
+			circle.fire('click');
+		}
+
+		loadPlaces().then(applyDeepLink).catch(err => {
 			document.getElementById('loading').textContent = 'Failed to load places.';
 			console.error(err);
 		});
