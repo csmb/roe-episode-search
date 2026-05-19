@@ -376,9 +376,21 @@
 		const pdSheetBody = document.getElementById('pd-sheet-body');
 		const isMobile = () => window.matchMedia('(max-width: 640px)').matches;
 
+		let lastDetailName = null;
+
+		function setPlaceUrl(name) {
+			history.replaceState(null, '', '/map?place=' + encodeURIComponent(name));
+		}
+		function clearPlaceUrlIf(name) {
+			if (name != null && new URLSearchParams(location.search).get('place') === name) {
+				history.replaceState(null, '', location.pathname);
+			}
+		}
+
 		function closeSheet() {
 		  pdSheet.classList.remove('open');
 		  pdBackdrop.classList.remove('open');
+		  clearPlaceUrlIf(lastDetailName);
 		}
 		document.querySelector('#pd-sheet .pd-close').addEventListener('click', closeSheet);
 		pdBackdrop.addEventListener('click', closeSheet);
@@ -388,6 +400,8 @@
 
 		async function openPlaceDetail(place, circle) {
 		  const mobile = isMobile();
+		  lastDetailName = place.name;
+		  setPlaceUrl(place.name);
 		  const loadingHtml = `<div class="place-detail"><h3>${escapeHtml(place.name)}</h3>` +
 		    `<div class="pd-loading">Loading insights…</div></div>`;
 
@@ -397,6 +411,7 @@
 		    pdBackdrop.classList.add('open');
 		  } else {
 		    circle.bindPopup(loadingHtml, { maxWidth: 320, minWidth: 280 }).openPopup();
+		    circle.once('popupclose', () => clearPlaceUrlIf(place.name));
 		  }
 
 		  let html;
@@ -573,7 +588,16 @@
 			});
 		}
 
-		loadPlaces().catch(err => {
+		function applyDeepLink() {
+			const name = new URLSearchParams(location.search).get('place');
+			if (!name) return;
+			const circle = markersByName.get(name);
+			if (!circle) { console.warn('Unknown place in URL:', name); return; }
+			map.flyTo(circle.getLatLng(), 17, { duration: 0.6 });
+			openPlaceDetail({ name }, circle);
+		}
+
+		loadPlaces().then(applyDeepLink).catch(err => {
 			document.getElementById('loading').textContent = 'Failed to load places.';
 			console.error(err);
 		});
