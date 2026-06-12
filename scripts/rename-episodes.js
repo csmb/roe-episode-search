@@ -10,11 +10,17 @@
  * Default mode: dry-run (print plan only)
  * Pass --apply to actually rename files.
  *
- * Naming scheme:
- *   - Single file for a date    → "Roll Over Easy YYYY-MM-DD.mp3"
- *   - Multiple files for a date → "Roll Over Easy YYYY-MM-DD 1.mp3", …
- *   - Unparseable filename      → "{original stem} Roll Over Easy YYYY-MM-DD.mp3"
- *                                  (using filesystem birthtime as the date)
+ * Naming scheme (canonical episode ID, the same one parseEpisodeId produces
+ * and the rest of the pipeline uses for D1 IDs / R2 keys):
+ *   - Parseable filename   → "roll-over-easy_YYYY-MM-DD_HH-MM-SS.mp3"
+ *                            (time comes from parseEpisodeId: taken from the
+ *                            source filename when present, else the show's
+ *                            standard 07-30-00 slot)
+ *   - Already canonical    → left untouched (no-op)
+ *   - Unparseable filename → "roll-over-easy_YYYY-MM-DD_07-30-00.mp3"
+ *                            (using filesystem birthtime as the date)
+ *   - Two files mapping to the same episode ID are flagged as collisions
+ *     and skipped (they need manual disambiguation, not auto-numbering).
  */
 
 import fs from 'node:fs';
@@ -49,6 +55,11 @@ function humanSize(bytes) {
 	return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+// Canonical episode ID, e.g. roll-over-easy_2014-01-09_07-30-00.
+// Must round-trip through parseEpisodeId (its canonical branch parses this
+// exact shape back to itself), so renamed files feed the pipeline correctly.
+const CANONICAL_ID_RE = /^roll-over-easy_(\d{4}-\d{2}-\d{2})_\d{2}-\d{2}-\d{2}$/;
+
 function episodeDateFromId(episodeId) {
 	const m = episodeId.match(/(\d{4}-\d{2}-\d{2})/);
 	return m ? m[1] : null;
@@ -61,34 +72,6 @@ function formatDate(d) {
 	return `${y}-${mo}-${day}`;
 }
 
-/**
- * Return a numeric sort key (minutes since midnight) when possible,
- * or a string sort key (filename) for alphabetical ordering.
- */
-function sortKey(filename) {
-	const stem = path.basename(filename, path.extname(filename));
-
-	// App Recording YYYYMMDD HHMM  /  App_Recording_YYYYMMDD_HHMM
-	const appMatch = stem.match(/App[_ ]Recording[_ ]+\d{8}[_ ]+(\d{2})(\d{2})/i);
-	if (appMatch) return parseInt(appMatch[1], 10) * 60 + parseInt(appMatch[2], 10);
-
-	// Input Device Recording YYYYMMDD HHMM
-	const inputMatch = stem.match(/Input Device Recording\s+\d{8}\s+(\d{2})(\d{2})/i);
-	if (inputMatch) return parseInt(inputMatch[1], 10) * 60 + parseInt(inputMatch[2], 10);
-
-	// roll-over-easy_YYYY-MM-DD_HH-MM-SS
-	const canonMatch = stem.match(/^roll-over-easy_\d{4}-\d{2}-\d{2}_(\d{2})-(\d{2})-\d{2}$/i);
-	if (canonMatch) return parseInt(canonMatch[1], 10) * 60 + parseInt(canonMatch[2], 10);
-
-	// Alphabetical fallback
-	return stem;
-}
-
-function compareKeys(a, b) {
-	if (typeof a === 'number' && typeof b === 'number') return a - b;
-	return String(a).localeCompare(String(b));
-}
-
 // ── Scan directory ───────────────────────────────────────────────────────────
 
 const allFiles = fs.readdirSync(dir)
@@ -96,7 +79,7 @@ const allFiles = fs.readdirSync(dir)
 	.sort();
 
 let skippedCount = 0;
-const parseable = [];   // { filename, date, key, size }
+const parseable = [];   // { filename, episodeId, size }
 const unparseable = []; // { filename, size, birthtime }
 
 for (const filename of allFiles) {
@@ -115,47 +98,31 @@ for (const filename of allFiles) {
 	const episodeId = parseEpisodeId(filePath);
 	console.warn = origWarn;
 
-	const date = episodeDateFromId(episodeId);
-
-	if (!warnCalled && date !== null) {
-		parseable.push({ filename, date, key: sortKey(filename), size: stat.size });
+	if (!warnCalled && CANONICAL_ID_RE.test(episodeId)) {
+		parseable.push({ filename, episodeId, size: stat.size });
 	} else {
 		unparseable.push({ filename, size: stat.size, birthtime: stat.birthtime });
 	}
 }
 
-// ── Group parseable files by date; sort within each group ───────────────────
-
-const byDate = new Map();
-for (const entry of parseable) {
-	if (!byDate.has(entry.date)) byDate.set(entry.date, []);
-	byDate.get(entry.date).push(entry);
-}
-
-for (const entries of byDate.values()) {
-	entries.sort((a, b) => compareKeys(a.key, b.key));
-}
-
 // ── Build rename plan ────────────────────────────────────────────────────────
+// Target stem is the canonical episode ID itself, so parseEpisodeId(dest)
+// round-trips to the same ID the pipeline will use. Files already named
+// canonically map to themselves (src === dest) and are never renamed away.
+// Multiple files resolving to one episode ID share a dest and get caught
+// by the collision check below.
 
 const plan = []; // { src, dest, size, note? }
 
-for (const [date, entries] of byDate) {
-	if (entries.length === 1) {
-		plan.push({ src: entries[0].filename, dest: `Roll Over Easy ${date}.mp3`, size: entries[0].size });
-	} else {
-		entries.forEach((entry, i) => {
-			plan.push({ src: entry.filename, dest: `Roll Over Easy ${date} ${i + 1}.mp3`, size: entry.size });
-		});
-	}
+for (const entry of parseable) {
+	plan.push({ src: entry.filename, dest: `${entry.episodeId}.mp3`, size: entry.size });
 }
 
 for (const entry of unparseable) {
-	const stem = path.basename(entry.filename, '.mp3');
 	const date = formatDate(entry.birthtime);
 	plan.push({
 		src: entry.filename,
-		dest: `${stem} Roll Over Easy ${date}.mp3`,
+		dest: `roll-over-easy_${date}_07-30-00.mp3`,
 		size: entry.size,
 		note: '[birthtime]',
 	});
@@ -198,15 +165,22 @@ if (!apply) {
 	console.log('\n=== APPLYING RENAMES ===\n');
 	let renamedCount = 0;
 	for (const item of renamePlan) {
-		fs.renameSync(path.join(dir, item.src), path.join(dir, item.dest));
+		const destPath = path.join(dir, item.dest);
+		if (fs.existsSync(destPath)) {
+			console.warn(`  SKIP (dest already exists): ${item.dest}  ←  ${item.src}`);
+			continue;
+		}
+		fs.renameSync(path.join(dir, item.src), destPath);
 		console.log(`  ${item.dest}  ←  ${item.src}`);
 		renamedCount++;
 	}
 	console.log(`\nRenamed ${renamedCount} files.`);
 }
 
+const dateCount = new Set(parseable.map((e) => episodeDateFromId(e.episodeId))).size;
+
 console.log('\n=== SUMMARY ===');
-console.log(`  Parseable:       ${parseable.length} files across ${byDate.size} dates`);
+console.log(`  Parseable:       ${parseable.length} files across ${dateCount} dates`);
 console.log(`  Unparseable:     ${unparseable.length} files (renamed using birthtime)`);
 console.log(`  Skipped:         ${skippedCount} files (SKIP_FILES)`);
 console.log(`  Collisions:      ${collisionItems.length} (skipped, see above)`);
