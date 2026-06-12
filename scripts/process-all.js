@@ -115,6 +115,30 @@ function timestamp() {
 	return new Date().toLocaleTimeString('en-US', { hour12: false });
 }
 
+// Run one process-episode.js invocation with retries.
+// Returns null on success, or the last error message.
+function runEpisodeStep(args) {
+	let lastError = null;
+	for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+		if (attempt > 0) {
+			console.log(`\n  ${timestamp()} Retry ${attempt}/${MAX_RETRIES}...`);
+		}
+		try {
+			execFileSync('node', args, {
+				encoding: 'utf-8',
+				stdio: 'inherit',
+				timeout: 0, // no timeout — transcription can take 60+ min
+				env: process.env,
+			});
+			return null;
+		} catch (err) {
+			lastError = err.message || String(err);
+			console.error(`  ${timestamp()} Error: ${lastError.slice(0, 200)}`);
+		}
+	}
+	return lastError;
+}
+
 // ── Main ───────────────────────────────────────────────────────────────
 
 function parseArgs() {
@@ -160,20 +184,20 @@ function main() {
 		process.exit(1);
 	}
 
-	// Load checkpoint
+	// Load checkpoint. Only episodes recorded as completed or quality-skipped
+	// count as done — a transcript on disk alone does NOT, because the
+	// pipeline may have failed after transcription (seed/embed/summary/
+	// upload). Such episodes are re-run; process-episode.js skips the
+	// transcription step (and any other step already done) itself.
 	const progress = loadProgress();
 	const alreadyDone = new Set([
 		...Object.keys(progress.completed),
 		...Object.keys(progress.skipped),
 	]);
 
-	// Also count existing transcripts as already processed
+	let transcriptsOnDisk = 0;
 	if (fs.existsSync(transcriptsDir)) {
-		for (const f of fs.readdirSync(transcriptsDir)) {
-			if (f.endsWith('.json')) {
-				alreadyDone.add(path.basename(f, '.json'));
-			}
-		}
+		transcriptsOnDisk = fs.readdirSync(transcriptsDir).filter((f) => f.endsWith('.json')).length;
 	}
 
 	// Discover episodes
@@ -199,7 +223,7 @@ function main() {
 	console.log(`  ${timestamp()} Unique dates: ${uniqueDates}`);
 	console.log(`  ${timestamp()} Previously completed: ${completedCount}`);
 	console.log(`  ${timestamp()} Previously failed: ${failedCount}`);
-	console.log(`  ${timestamp()} Already have transcripts: ${alreadyDone.size}`);
+	console.log(`  ${timestamp()} Transcripts on disk: ${transcriptsOnDisk}`);
 	console.log(`  ${timestamp()} To process this run: ${toProcess.length}`);
 	console.log(`  ${timestamp()} Cooldown: ${opts.cooldown}s between episodes`);
 	if (opts.startFrom) console.log(`  ${timestamp()} Starting from: ${opts.startFrom}`);
@@ -247,28 +271,21 @@ function main() {
 		console.log(`  ${timestamp()} ETA for remaining: ${etaStr}`);
 		console.log(`${'='.repeat(70)}`);
 
-		let lastError = null;
+		// Phase 1: transcribe only, so the quality gate can reject a bad
+		// transcript BEFORE anything goes live in D1/Vectorize/R2.
+		const phase1 = [processEpisodeScript, episode.filePath, '--skip', 'seed-db,embeddings,summary,upload-audio'];
+		if (opts.force) phase1.push('--force');
+		let lastError = runEpisodeStep(phase1);
 
-		for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-			if (attempt > 0) {
-				console.log(`\n  ${timestamp()} Retry ${attempt}/${MAX_RETRIES}...`);
-			}
-
-			try {
-				const episodeArgs = [processEpisodeScript, episode.filePath];
-			if (opts.force) episodeArgs.push('--force');
-			execFileSync('node', episodeArgs, {
-					encoding: 'utf-8',
-					stdio: 'inherit',
-					timeout: 0, // no timeout — transcription can take 60+ min
-					env: process.env,
-				});
-
-				lastError = null;
-				break;
-			} catch (err) {
-				lastError = err.message || String(err);
-				console.error(`  ${timestamp()} Error: ${lastError.slice(0, 200)}`);
+		// Phase 2 (only if the transcript passes the gate): remaining steps.
+		// Transcription is skipped explicitly so --force can't redo it.
+		let quality = null;
+		if (!lastError) {
+			quality = checkQuality(episode.episodeId);
+			if (quality.pass) {
+				const phase2 = [processEpisodeScript, episode.filePath, '--skip', 'transcribe'];
+				if (opts.force) phase2.push('--force');
+				lastError = runEpisodeStep(phase2);
 			}
 		}
 
@@ -285,35 +302,30 @@ function main() {
 			};
 			updateManifestStatus(episode.episodeId, 'failed');
 			failed++;
+		} else if (!quality.pass) {
+			console.error(`  ${timestamp()} QUALITY GATE FAILED (nothing seeded/uploaded):`);
+			quality.errors.forEach((e) => console.error(`    - ${e}`));
+			progress.skipped[episode.episodeId] = {
+				date: episode.date,
+				reason: quality.errors.join('; '),
+				file: path.basename(episode.filePath),
+				timestamp: new Date().toISOString(),
+			};
+			updateManifestStatus(episode.episodeId, 'skipped');
 		} else {
-			// Quality gates
-			const quality = checkQuality(episode.episodeId);
-
-			if (!quality.pass) {
-				console.error(`  ${timestamp()} QUALITY GATE FAILED:`);
-				quality.errors.forEach((e) => console.error(`    - ${e}`));
-				progress.skipped[episode.episodeId] = {
-					date: episode.date,
-					reason: quality.errors.join('; '),
-					file: path.basename(episode.filePath),
-					timestamp: new Date().toISOString(),
-				};
-				updateManifestStatus(episode.episodeId, 'skipped');
-			} else {
-				if (quality.warnings && quality.warnings.length > 0) {
-					quality.warnings.forEach((w) => console.warn(`  ${timestamp()} WARNING: ${w}`));
-				}
-				console.log(`  ${timestamp()} OK (${quality.segmentCount} segments, ${formatDuration(durationSec)})`);
-				progress.completed[episode.episodeId] = {
-					date: episode.date,
-					duration_sec: Math.round(durationSec),
-					file: path.basename(episode.filePath),
-					timestamp: new Date().toISOString(),
-				};
-				updateManifestStatus(episode.episodeId, 'completed');
-				progress.timings.push(durationSec);
-				succeeded++;
+			if (quality.warnings && quality.warnings.length > 0) {
+				quality.warnings.forEach((w) => console.warn(`  ${timestamp()} WARNING: ${w}`));
 			}
+			console.log(`  ${timestamp()} OK (${quality.segmentCount} segments, ${formatDuration(durationSec)})`);
+			progress.completed[episode.episodeId] = {
+				date: episode.date,
+				duration_sec: Math.round(durationSec),
+				file: path.basename(episode.filePath),
+				timestamp: new Date().toISOString(),
+			};
+			updateManifestStatus(episode.episodeId, 'completed');
+			progress.timings.push(durationSec);
+			succeeded++;
 		}
 
 		processed++;
