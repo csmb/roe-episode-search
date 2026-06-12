@@ -14,11 +14,11 @@
  *   With --apply:    deletes flagged places from D1.
  */
 
-import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import https from 'node:https';
 import { fileURLToPath } from 'node:url';
+import { queryJSON, runSQL } from './lib.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const TRANSCRIPTS_DIR = path.join(__dirname, '..', 'transcripts');
@@ -29,18 +29,6 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 if (!OPENAI_API_KEY) {
 	console.error('OPENAI_API_KEY is required');
 	process.exit(1);
-}
-
-// Strip CLOUDFLARE_API_TOKEN so wrangler uses its OAuth login
-const wranglerEnv = { ...process.env };
-delete wranglerEnv.CLOUDFLARE_API_TOKEN;
-
-function d1(sql) {
-	const result = execSync(
-		`npx wrangler d1 execute roe-episodes --remote --json --command=${JSON.stringify(sql)}`,
-		{ cwd: path.join(__dirname, '..', 'roe-search'), env: wranglerEnv }
-	);
-	return JSON.parse(result.toString());
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -55,7 +43,8 @@ const STOPLIST = new Set([
 	'the plant', 'the mill', 'the grove', 'the square', 'bon', 'reed',
 	'the den', 'the net', 'rogue', 'the marsh', 'the line', 'the center',
 	'the shop', 'the bar', 'haven', 'the hall', 'the bay', 'native', 'pearl',
-	'the start', 'standard', 'the independent', 'the market', 'noble',
+	// 'the independent' deliberately NOT listed — it's a real SF music venue
+	'the start', 'standard', 'the market', 'noble',
 	'anthony', 'irving', 'lyft', 'uber', 'meta', 'stripe',
 ]);
 
@@ -212,14 +201,13 @@ Use REMOVE if the name is a person's name, a generic common word, a company/bran
 async function main() {
 	// Step 1: Fetch all places with episode counts
 	console.log('Fetching places from D1...');
-	const rows = d1(`
+	const places = queryJSON(`
 		SELECT p.id, p.name, COUNT(pm.episode_id) as ep_count
 		FROM places p
 		LEFT JOIN place_mentions pm ON pm.place_id = p.id
 		GROUP BY p.id
 		ORDER BY ep_count DESC
 	`);
-	const places = rows[0]?.results || [];
 	console.log(`${places.length} places in D1`);
 
 	// Step 2: Phase 1 — Stoplist check
@@ -318,34 +306,25 @@ async function main() {
 		return;
 	}
 
-	const ids = toRemove.map(r => r.id);
+	// ids come from D1 (integer PKs), but coerce defensively before splicing into SQL
+	const ids = toRemove.map(r => Number(r.id)).filter(Number.isInteger);
 	const BATCH = 20;
 
-	console.log(`\nDeleting place_mentions for ${ids.length} places...`);
-	for (let i = 0; i < ids.length; i += BATCH) {
-		const chunk = ids.slice(i, i + BATCH);
-		const idList = chunk.join(', ');
-		try {
-			d1(`DELETE FROM place_mentions WHERE place_id IN (${idList})`);
-		} catch (err) {
-			console.error(`  Delete mentions error: ${err.message}`);
+	for (const table of ['place_mentions', 'place_narratives', 'places']) {
+		const column = table === 'places' ? 'id' : 'place_id';
+		console.log(`\nDeleting from ${table} for ${ids.length} places...`);
+		for (let i = 0; i < ids.length; i += BATCH) {
+			const idList = ids.slice(i, i + BATCH).join(', ');
+			try {
+				runSQL(`DELETE FROM ${table} WHERE ${column} IN (${idList})`);
+			} catch (err) {
+				console.error(`  Delete ${table} error: ${err.message}`);
+			}
+			process.stdout.write(`\r  ${table} deleted: ${Math.min(i + BATCH, ids.length)}/${ids.length}`);
 		}
-		process.stdout.write(`\r  Mentions deleted: ${Math.min(i + BATCH, ids.length)}/${ids.length}`);
+		console.log('');
 	}
-	console.log('');
-
-	console.log(`Deleting ${ids.length} places...`);
-	for (let i = 0; i < ids.length; i += BATCH) {
-		const chunk = ids.slice(i, i + BATCH);
-		const idList = chunk.join(', ');
-		try {
-			d1(`DELETE FROM places WHERE id IN (${idList})`);
-		} catch (err) {
-			console.error(`  Delete places error: ${err.message}`);
-		}
-		process.stdout.write(`\r  Places deleted: ${Math.min(i + BATCH, ids.length)}/${ids.length}`);
-	}
-	console.log('\nDone!');
+	console.log('Done!');
 }
 
 main().catch(err => { console.error('Fatal:', err); process.exit(1); });
