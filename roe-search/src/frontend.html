@@ -808,14 +808,6 @@ let currentAudioSrc = '';
 let pendingSeek = null;
 let searchMode = 'keyword';
 
-function setSearchMode(mode) {
-	searchMode = mode;
-	document.getElementById('mode-keyword').classList.toggle('active', mode === 'keyword');
-	document.getElementById('mode-semantic').classList.toggle('active', mode === 'semantic');
-	// Re-run search if there's a current query
-	if (currentQuery) doSearch();
-}
-
 // Seek once the browser has enough data
 audioPlayer.addEventListener('loadedmetadata', () => {
 	if (pendingSeek !== null) {
@@ -824,10 +816,7 @@ audioPlayer.addEventListener('loadedmetadata', () => {
 	}
 });
 
-searchBtn.addEventListener('click', () => doSearch());
-searchInput.addEventListener('keydown', (e) => {
-	if (e.key === 'Enter') doSearch();
-});
+// Search UI lives on /admin; search-input / search-btn no longer exist on this page.
 loadMoreBtn.addEventListener('click', () => loadMore());
 
 // Load clip params from URL on page load
