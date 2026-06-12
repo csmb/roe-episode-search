@@ -7,11 +7,19 @@
  * in milliseconds, but process-episode.js was multiplying them by 10, storing
  * 10x-too-large values everywhere.
  *
- * This script fixes the stored data in the correct order:
- *   1. Read current (wrong) transcript JSONs → compute old wrong vector IDs
- *   2. Delete old wrong-ID vectors from Vectorize
- *   3. Divide all timestamps in transcript JSONs by 10 and write back
- *   4. Re-embed all chunks with correct timestamps → upsert to Vectorize
+ * The fix is applied PER EPISODE, in a crash-safe / idempotent order:
+ *   1. Read the (wrong) transcript JSON. If it already carries the
+ *      `timestamps_fixed: true` marker, skip it entirely.
+ *   2. Compute the old wrong vector IDs from the ORIGINAL (pre-fix) content.
+ *   3. Build the fixed transcript in memory (timestamps / 10 + marker).
+ *   4. Delete old wrong-ID vectors from Vectorize (idempotent).
+ *   5. Re-embed the fixed chunks → upsert to Vectorize (idempotent).
+ *   6. Only then write the fixed transcript JSON back to disk (commit point).
+ *
+ * A crash at any point before step 6 leaves the file untouched, so a rerun
+ * simply redoes that episode from scratch (deletes/upserts are idempotent).
+ * Once the marker is on disk, the episode's remote state is already correct
+ * and the episode is skipped on rerun — timestamps can never be divided twice.
  *
  * After running this script, also run the D1 fix:
  *   npx wrangler d1 execute roe-episodes --remote \
@@ -27,13 +35,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { chunkEpisode } from './generate-embeddings.js';
+
 const ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID;
 const API_TOKEN = process.env.CLOUDFLARE_API_TOKEN;
 const INDEX_NAME = 'roe-transcripts';
 const MODEL = '@cf/baai/bge-base-en-v1.5';
 
-const WINDOW_SEC = 45;
-const STEP_SEC = 35;
 const EMBED_BATCH_SIZE = 100;
 const UPSERT_BATCH_SIZE = 1000;
 const DELETE_BATCH_SIZE = 1000;
@@ -45,48 +53,9 @@ if (!ACCOUNT_ID || !API_TOKEN) {
 
 const BASE_URL = `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}`;
 
-// Replicate the chunk-windowing logic from process-episode.js / generate-embeddings.js
-function chunkTranscript(transcript) {
-	const { episode_id, title, segments } = transcript;
-	if (!segments || segments.length === 0) return [];
-
-	const lastSegment = segments[segments.length - 1];
-	const episodeDurationMs = lastSegment.end_ms;
-	const windowMs = WINDOW_SEC * 1000;
-	const stepMs = STEP_SEC * 1000;
-
-	const chunks = [];
-
-	for (let windowStart = 0; windowStart < episodeDurationMs; windowStart += stepMs) {
-		const windowEnd = windowStart + windowMs;
-
-		const windowSegments = segments.filter(
-			(s) => s.end_ms > windowStart && s.start_ms < windowEnd
-		);
-
-		if (windowSegments.length === 0) continue;
-
-		const text = windowSegments.map((s) => s.text).join(' ');
-
-		// eslint-disable-next-line no-control-regex
-		if (!/^[\x00-\x7F]*$/.test(text)) continue;
-		if (text.trim().length < 20) continue;
-
-		const chunkStartMs = windowSegments[0].start_ms;
-		const chunkEndMs = windowSegments[windowSegments.length - 1].end_ms;
-
-		chunks.push({
-			id: `${episode_id}:${chunkStartMs}`,
-			episode_id,
-			title,
-			start_ms: chunkStartMs,
-			end_ms: chunkEndMs,
-			text: text.trim(),
-		});
-	}
-
-	return chunks;
-}
+// Chunk-windowing logic is shared with generate-embeddings.js / delete-episode.js
+// via the imported chunkEpisode() — these must stay in lockstep so recomputed
+// vector IDs match what was upserted.
 
 async function deleteVectors(ids) {
 	const res = await fetch(`${BASE_URL}/vectorize/v2/indexes/${INDEX_NAME}/delete-by-ids`, {
@@ -160,44 +129,42 @@ async function main() {
 	const files = fs.readdirSync(transcriptsDir).filter((f) => f.endsWith('.json')).sort();
 	console.log(`Found ${files.length} transcript files\n`);
 
-	// ── Step 1: Read wrong transcripts, compute old vector IDs ────────────
-	console.log('=== Step 1/4: Computing old (wrong-ID) vector IDs ===');
-	const oldIds = [];
-	const episodeData = []; // store { filePath, transcript } for later steps
+	let fixedCount = 0;
+	let skippedCount = 0;
 
 	for (const file of files) {
 		const filePath = path.join(transcriptsDir, file);
 		const transcript = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-		const chunks = chunkTranscript(transcript);
-		const ids = chunks.map((c) => c.id);
-		console.log(`  ${transcript.episode_id}: ${ids.length} wrong vectors`);
-		oldIds.push(...ids);
-		episodeData.push({ filePath, transcript });
-	}
 
-	console.log(`\nTotal old vectors to delete: ${oldIds.length}`);
+		// ── Already fixed? Skip — never divide twice, never delete good vectors.
+		if (transcript.timestamps_fixed === true) {
+			console.log(`  ${transcript.episode_id}: already fixed (timestamps_fixed marker), skipping`);
+			skippedCount++;
+			continue;
+		}
 
-	// ── Step 2: Delete old wrong-ID vectors from Vectorize ────────────────
-	console.log('\n=== Step 2/4: Deleting old wrong-ID vectors from Vectorize ===');
+		// ── Sanity guard for transcripts fixed before the marker existed (or
+		//    never broken): a real episode is a few hours at most, while the
+		//    10x bug inflates a 2h episode to ~20h. If the duration is already
+		//    plausible, the timestamps aren't inflated — don't touch them.
+		const lastSeg = transcript.segments?.[transcript.segments.length - 1];
+		if (!lastSeg || lastSeg.end_ms < 5 * 3600 * 1000) {
+			console.log(`  ${transcript.episode_id}: duration already plausible (<5h), skipping`);
+			skippedCount++;
+			continue;
+		}
 
-	for (let i = 0; i < oldIds.length; i += DELETE_BATCH_SIZE) {
-		const batch = oldIds.slice(i, i + DELETE_BATCH_SIZE);
-		const result = await deleteVectors(batch);
-		const deleted = result?.result?.count ?? batch.length;
-		console.log(
-			`  Deleted batch ${Math.floor(i / DELETE_BATCH_SIZE) + 1}: ${deleted} vectors ` +
-			`(${Math.min(i + DELETE_BATCH_SIZE, oldIds.length)}/${oldIds.length} total)`
-		);
-	}
+		console.log(`\n=== Fixing ${transcript.episode_id} ===`);
 
-	// ── Step 3: Fix transcript JSONs (divide all timestamps by 10) ────────
-	console.log('\n=== Step 3/4: Fixing transcript JSON files (dividing timestamps by 10) ===');
+		// ── 1. Compute old (wrong) vector IDs from the ORIGINAL content,
+		//       before any mutation or write.
+		const oldIds = chunkEpisode(transcript).map((c) => c.id);
+		console.log(`  Old wrong-ID vectors to delete: ${oldIds.length}`);
 
-	const fixedTranscripts = [];
-
-	for (const { filePath, transcript } of episodeData) {
+		// ── 2. Build the fixed transcript in memory only (no write yet).
 		const fixed = {
 			...transcript,
+			timestamps_fixed: true,
 			segments: transcript.segments.map((seg) => ({
 				...seg,
 				start_ms: Math.round(seg.start_ms / 10),
@@ -205,63 +172,64 @@ async function main() {
 			})),
 		};
 
+		const newChunks = chunkEpisode(fixed);
+		console.log(`  New chunks to embed: ${newChunks.length}`);
+
+		// ── 3. Delete old wrong-ID vectors (idempotent: deleting missing IDs is a no-op).
+		for (let i = 0; i < oldIds.length; i += DELETE_BATCH_SIZE) {
+			const batch = oldIds.slice(i, i + DELETE_BATCH_SIZE);
+			const result = await deleteVectors(batch);
+			const deleted = result?.result?.count ?? batch.length;
+			console.log(
+				`  Deleted ${deleted} vectors ` +
+				`(${Math.min(i + DELETE_BATCH_SIZE, oldIds.length)}/${oldIds.length} total)`
+			);
+		}
+
+		// ── 4. Re-embed and upsert (idempotent: upsert overwrites by ID).
+		const vectors = [];
+
+		for (let i = 0; i < newChunks.length; i += EMBED_BATCH_SIZE) {
+			const batch = newChunks.slice(i, i + EMBED_BATCH_SIZE);
+			const embeddings = await embedBatch(batch.map((c) => c.text));
+
+			for (let j = 0; j < batch.length; j++) {
+				vectors.push({
+					id: batch[j].id,
+					values: embeddings[j],
+					metadata: {
+						episode_id: batch[j].episode_id,
+						title: batch[j].title,
+						start_ms: batch[j].start_ms,
+						end_ms: batch[j].end_ms,
+						text: batch[j].text,
+					},
+				});
+			}
+
+			console.log(`  Embedded ${Math.min(i + EMBED_BATCH_SIZE, newChunks.length)}/${newChunks.length}`);
+		}
+
+		for (let i = 0; i < vectors.length; i += UPSERT_BATCH_SIZE) {
+			await upsertVectors(vectors.slice(i, i + UPSERT_BATCH_SIZE));
+			console.log(`  Upserted ${Math.min(i + UPSERT_BATCH_SIZE, vectors.length)}/${vectors.length}`);
+		}
+
+		// ── 5. Commit point: write the fixed transcript (with marker) only after
+		//       all remote state is correct. A crash before this line leaves the
+		//       file untouched, so a rerun redoes this episode from scratch.
 		fs.writeFileSync(filePath, JSON.stringify(fixed, null, 2));
 
 		const last = fixed.segments[fixed.segments.length - 1];
 		const durationSec = last ? (last.end_ms / 1000).toFixed(0) : '?';
-		console.log(`  ${transcript.episode_id}: ${fixed.segments.length} segs, duration ~${durationSec}s`);
-
-		fixedTranscripts.push(fixed);
+		console.log(
+			`  Wrote fixed transcript: ${fixed.segments.length} segs, duration ~${durationSec}s ` +
+			`(timestamps_fixed marker set)`
+		);
+		fixedCount++;
 	}
 
-	// ── Step 4: Re-embed with correct timestamps ──────────────────────────
-	console.log('\n=== Step 4/4: Re-embedding with correct timestamps ===');
-
-	let allChunks = [];
-	for (const transcript of fixedTranscripts) {
-		const chunks = chunkTranscript(transcript);
-		console.log(`  ${transcript.episode_id}: ${chunks.length} chunks`);
-		allChunks = allChunks.concat(chunks);
-	}
-
-	console.log(`\nTotal chunks to embed: ${allChunks.length}`);
-
-	const vectors = [];
-
-	for (let i = 0; i < allChunks.length; i += EMBED_BATCH_SIZE) {
-		const batch = allChunks.slice(i, i + EMBED_BATCH_SIZE);
-		const texts = batch.map((c) => c.text);
-
-		const embeddings = await embedBatch(texts);
-
-		for (let j = 0; j < batch.length; j++) {
-			vectors.push({
-				id: batch[j].id,
-				values: embeddings[j],
-				metadata: {
-					episode_id: batch[j].episode_id,
-					title: batch[j].title,
-					start_ms: batch[j].start_ms,
-					end_ms: batch[j].end_ms,
-					text: batch[j].text,
-				},
-			});
-		}
-
-		if ((i + EMBED_BATCH_SIZE) % 500 === 0 || i + EMBED_BATCH_SIZE >= allChunks.length) {
-			console.log(`  Embedded ${Math.min(i + EMBED_BATCH_SIZE, allChunks.length)}/${allChunks.length}`);
-		}
-	}
-
-	console.log(`\nUpserting ${vectors.length} vectors to Vectorize...`);
-
-	for (let i = 0; i < vectors.length; i += UPSERT_BATCH_SIZE) {
-		const batch = vectors.slice(i, i + UPSERT_BATCH_SIZE);
-		await upsertVectors(batch);
-		console.log(`  Upserted ${Math.min(i + UPSERT_BATCH_SIZE, vectors.length)}/${vectors.length}`);
-	}
-
-	console.log('\n✓ Vectorize and transcript JSON files fixed.');
+	console.log(`\n✓ Done: ${fixedCount} episode(s) fixed, ${skippedCount} skipped (already fixed).`);
 	console.log('\nNow fix D1 with:');
 	console.log(
 		'  npx wrangler d1 execute roe-episodes --remote ' +

@@ -59,8 +59,18 @@ export function chunkEpisode(transcript) {
 		const chunkStartMs = windowSegments[0].start_ms;
 		const chunkEndMs = windowSegments[windowSegments.length - 1].end_ms;
 
+		const id = `${episode_id}:${chunkStartMs}`;
+
+		// A single long segment can span two adjacent windows, making both
+		// windows start at the same segment and thus produce the same ID.
+		// Vectorize upserts by ID, so the later chunk would silently
+		// overwrite the earlier one — keep the first window, skip the dupe.
+		// (First-segment start_ms is non-decreasing across windows, so any
+		// duplicate is always the immediately preceding emitted chunk.)
+		if (chunks.length > 0 && chunks[chunks.length - 1].id === id) continue;
+
 		chunks.push({
-			id: `${episode_id}:${chunkStartMs}`,
+			id,
 			episode_id,
 			title,
 			start_ms: chunkStartMs,
