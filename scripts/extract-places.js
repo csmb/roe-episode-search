@@ -30,7 +30,11 @@ const REEXTRACT = process.argv.includes('--reextract');
 // SF bounding box for Nominatim
 const SF_VIEWBOX = '-122.517,37.833,-122.355,37.708'; // west,north,east,south
 
-const CONCURRENCY = 8;
+// Full transcripts are ~30-45k input tokens each; keep few in flight to stay
+// under gpt-4o-mini TPM limits. Failures retry with backoff and are never
+// checkpointed, so a re-run picks them up.
+const CONCURRENCY = 3;
+const OPENAI_RETRIES = 4;
 const NOMINATIM_DELAY_MS = 1100; // Nominatim rate limit: 1 req/sec
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -74,7 +78,7 @@ If nothing qualifies, return [].`,
 			{ role: 'user', content: text },
 		],
 		temperature: 0,
-		max_tokens: 1000,
+		max_tokens: 4000,
 	});
 
 	return new Promise((resolve, reject) => {
@@ -95,12 +99,26 @@ If nothing qualifies, return [].`,
 				res.on('end', () => {
 					try {
 						const json = JSON.parse(data);
-						const content = json.choices?.[0]?.message?.content?.trim() || '[]';
+						if (json.error) {
+							return reject(new Error(`OpenAI: ${json.error.message}`));
+						}
+						const choice = json.choices?.[0];
+						if (!choice) {
+							return reject(new Error(`OpenAI: no choices in response — ${data.slice(0, 200)}`));
+						}
+						if (choice.finish_reason === 'length') {
+							return reject(new Error('OpenAI: output truncated (finish_reason=length)'));
+						}
+						const content = (choice.message?.content || '').trim();
 						// Strip markdown code fences if present
 						const cleaned = content.replace(/^```json\s*/i, '').replace(/```\s*$/, '').trim();
-						resolve(JSON.parse(cleaned));
-					} catch {
-						resolve([]);
+						const places = JSON.parse(cleaned);
+						if (!Array.isArray(places)) {
+							return reject(new Error('OpenAI: response is not a JSON array'));
+						}
+						resolve(places);
+					} catch (e) {
+						reject(new Error(`OpenAI response parse failed: ${e.message}`));
 					}
 				});
 			}
@@ -109,6 +127,23 @@ If nothing qualifies, return [].`,
 		req.write(body);
 		req.end();
 	});
+}
+
+async function openaiExtractWithRetry(text, episodeId) {
+	let lastErr;
+	for (let attempt = 1; attempt <= OPENAI_RETRIES; attempt++) {
+		try {
+			return await openaiExtract(text);
+		} catch (err) {
+			lastErr = err;
+			if (attempt < OPENAI_RETRIES) {
+				const backoff = 2000 * Math.pow(4, attempt - 1); // 2s, 8s, 32s
+				console.warn(`\n  ${episodeId}: attempt ${attempt} failed (${err.message}), retrying in ${backoff / 1000}s`);
+				await sleep(backoff);
+			}
+		}
+	}
+	throw lastErr;
 }
 
 async function geocode(placeName) {
@@ -176,31 +211,23 @@ async function geocode(placeName) {
 }
 
 function sampleTranscript(segments) {
-	// Take 5 evenly-spaced windows across the full episode, skipping the first minute
-	const total = segments.length;
-	if (total < 50) return segments.map(s => s.text).join(' ');
-
-	const start = Math.min(40, Math.floor(total * 0.05)); // skip intro music
-	const usable = total - start;
-	const windowSize = Math.min(200, Math.floor(usable / 5));
-	const windows = [];
-	for (let i = 0; i < 5; i++) {
-		const offset = start + Math.floor((usable / 5) * i);
-		windows.push(segments.slice(offset, offset + windowSize));
-	}
-	return windows.flat().map(s => s.text).join(' ').slice(0, 12000);
+	// Send the full transcript, skipping only the very intro (likely music/jingle).
+	const start = Math.min(40, Math.floor(segments.length * 0.05));
+	return segments.slice(start).map(s => s.text).join(' ');
 }
 
-async function processChunk(files, results, done, total) {
+async function processChunk(files, results, done, total, failures) {
 	await Promise.all(files.map(async (file) => {
 		const episodeId = path.basename(file, '.json');
 		try {
 			const d = JSON.parse(fs.readFileSync(path.join(TRANSCRIPTS_DIR, file)));
 			const text = sampleTranscript(d.segments);
-			const places = await openaiExtract(text);
-			results[episodeId] = places.length > 0 ? places : [];
+			// Failures are NOT written to results, so the episode is retried
+			// on the next run instead of being checkpointed as "no places".
+			results[episodeId] = await openaiExtractWithRetry(text, episodeId);
 		} catch (err) {
-			// skip on error
+			failures.push({ episodeId, error: err.message });
+			console.warn(`\n  ${episodeId}: FAILED after ${OPENAI_RETRIES} attempts — ${err.message}`);
 		}
 		done.count++;
 		process.stdout.write(`\r  ${done.count}/${total} episodes processed`);
@@ -212,11 +239,14 @@ async function main() {
 	console.log(`Extracting SF places from ${files.length} transcripts...`);
 	if (REEXTRACT) console.log('  --reextract: re-processing all episodes');
 
-	// Check for existing partial results
+	// Check for existing partial results. The geocoded places list is loaded
+	// even with --reextract so previous geocode work is never thrown away.
 	let episodeResults = {};
-	if (!REEXTRACT && fs.existsSync(OUT_PATH)) {
+	let prevPlaces = [];
+	if (fs.existsSync(OUT_PATH)) {
 		const existing = JSON.parse(fs.readFileSync(OUT_PATH));
-		if (existing.episodeResults) {
+		if (existing.places) prevPlaces = existing.places;
+		if (!REEXTRACT && existing.episodeResults) {
 			episodeResults = existing.episodeResults;
 			console.log(`  Resuming — ${Object.keys(episodeResults).length} already done`);
 		}
@@ -225,15 +255,21 @@ async function main() {
 	const remaining = REEXTRACT ? files : files.filter(f => !episodeResults[path.basename(f, '.json')]);
 	const done = { count: REEXTRACT ? 0 : Object.keys(episodeResults).length };
 	const total = files.length;
+	const failures = [];
 
 	// Process in batches of CONCURRENCY
 	for (let i = 0; i < remaining.length; i += CONCURRENCY) {
 		const chunk = remaining.slice(i, i + CONCURRENCY);
-		await processChunk(chunk, episodeResults, done, total);
-		// Save progress after each batch
-		fs.writeFileSync(OUT_PATH, JSON.stringify({ episodeResults }, null, 2));
+		await processChunk(chunk, episodeResults, done, total, failures);
+		// Save progress after each batch, preserving the geocode cache
+		fs.writeFileSync(OUT_PATH, JSON.stringify({ episodeResults, places: prevPlaces }, null, 2));
 	}
-	console.log(`\n  Done extracting.\n`);
+	console.log(`\n  Done extracting.`);
+	if (failures.length > 0) {
+		console.warn(`  ${failures.length} episode(s) failed and were NOT checkpointed — re-run to retry:`);
+		for (const f of failures) console.warn(`    ${f.episodeId}: ${f.error}`);
+	}
+	console.log('');
 
 	// Deduplicate and count place→episodes
 	const placeMap = {}; // normalized name → Set of episode IDs
@@ -249,17 +285,10 @@ async function main() {
 	const uniquePlaces = Object.keys(placeMap).sort();
 	console.log(`Geocoding ${uniquePlaces.length} unique places via Nominatim...`);
 
-	// Load previously geocoded results to skip re-geocoding
-	let prevGeocoded = {};
-	if (fs.existsSync(OUT_PATH)) {
-		try {
-			const existing = JSON.parse(fs.readFileSync(OUT_PATH));
-			if (existing.places) {
-				for (const p of existing.places) {
-					prevGeocoded[p.name] = { lat: p.lat, lng: p.lng };
-				}
-			}
-		} catch {}
+	// Reuse previously geocoded results (loaded at startup) to skip re-geocoding
+	const prevGeocoded = {};
+	for (const p of prevPlaces) {
+		prevGeocoded[p.name] = { lat: p.lat, lng: p.lng };
 	}
 
 	const geocoded = [];
@@ -297,6 +326,7 @@ async function main() {
 	fs.writeFileSync(OUT_PATH, JSON.stringify(output, null, 2));
 	console.log(`Saved ${geocoded.length} geocoded places to ${OUT_PATH}`);
 	console.log(`Total place-episode links: ${geocoded.reduce((s, p) => s + p.episodes.length, 0)}`);
+	if (failures.length > 0) process.exitCode = 1;
 }
 
 main().catch(err => { console.error('Fatal:', err); process.exit(1); });
