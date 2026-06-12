@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 /**
- * Local ingest server — drag-and-drop UI for processing new episodes via OpenAI Whisper.
+ * Local ingest server — drag-and-drop UI for processing new episodes via the
+ * local whisper.cpp pipeline (scripts/process-episode.js).
  *
  * Usage:
  *   node scripts/ingest-server.js        # port 3001
@@ -62,7 +63,7 @@ function broadcast(job, event, data) {
 function runJob(job) {
 	return new Promise((resolve) => {
 		const scriptPath = path.join(projectRoot, 'scripts', 'process-episode.js');
-		const child = spawn('node', [scriptPath, job.tmpPath, '--openai-whisper'], {
+		const child = spawn('node', [scriptPath, job.tmpPath], {
 			cwd: projectRoot,
 			env: process.env,
 		});
