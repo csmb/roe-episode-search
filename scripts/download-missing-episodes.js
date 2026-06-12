@@ -46,19 +46,22 @@ function get(url) {
   });
 }
 
+// Downloads to destPath + '.part' and renames into place only after the
+// response completes (and matches content-length when the server sends one),
+// so a crash mid-download never leaves a truncated file at destPath.
 function downloadFile(url, destPath) {
+  const tmpPath = destPath + '.part';
   return new Promise((resolve, reject) => {
-    const file = fs.createWriteStream(destPath);
+    const file = fs.createWriteStream(tmpPath);
+    const discardTmp = () => { file.close(); fs.unlink(tmpPath, () => {}); };
     const client = url.startsWith('https') ? https : http;
     const req = client.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, res => {
       if (res.statusCode === 301 || res.statusCode === 302) {
-        file.close();
-        fs.unlink(destPath, () => {});
+        discardTmp();
         return downloadFile(res.headers.location, destPath).then(resolve).catch(reject);
       }
       if (res.statusCode !== 200) {
-        file.close();
-        fs.unlink(destPath, () => {});
+        discardTmp();
         reject(new Error(`HTTP ${res.statusCode}`));
         return;
       }
@@ -72,10 +75,38 @@ function downloadFile(url, destPath) {
         }
       });
       res.pipe(file);
-      file.on('finish', () => { file.close(); process.stdout.write('\n'); resolve(); });
+      // pipe() doesn't end the file on response failure; without these the
+      // promise would never settle and the .part would linger.
+      res.on('aborted', () => { discardTmp(); reject(new Error('Download aborted: connection closed prematurely')); });
+      res.on('error', err => { discardTmp(); reject(err); });
+      file.on('error', err => { fs.unlink(tmpPath, () => {}); reject(err); });
+      file.on('finish', () => {
+        file.close(closeErr => {
+          if (closeErr) {
+            fs.unlink(tmpPath, () => {});
+            return reject(closeErr);
+          }
+          if (total && downloaded !== total) {
+            fs.unlink(tmpPath, () => {});
+            return reject(new Error(`Incomplete download: got ${downloaded} of ${total} bytes`));
+          }
+          try {
+            fs.renameSync(tmpPath, destPath);
+          } catch (renameErr) {
+            fs.unlink(tmpPath, () => {});
+            return reject(renameErr);
+          }
+          process.stdout.write('\n');
+          resolve();
+        });
+      });
     });
-    req.on('error', err => { file.close(); fs.unlink(destPath, () => {}); reject(err); });
-    req.setTimeout(120000, () => { req.destroy(); reject(new Error('Download timeout')); });
+    req.on('error', err => { discardTmp(); reject(err); });
+    req.setTimeout(120000, () => {
+      req.destroy();
+      discardTmp();
+      reject(new Error('Download timeout'));
+    });
   });
 }
 
@@ -112,6 +143,7 @@ function getLocalDates() {
   const files = fs.readdirSync(ALL_EPISODES_DIR);
   const dates = new Set();
   for (const f of files) {
+    if (f.endsWith('.part')) continue; // incomplete download, doesn't count
     if (!fs.statSync(path.join(ALL_EPISODES_DIR, f)).isFile()) continue;
     const match = f.match(/(\d{4}-\d{2}-\d{2})/);
     if (match) dates.add(match[1]);
@@ -119,6 +151,7 @@ function getLocalDates() {
   // Also check bff-fm-downloads subdir
   if (fs.existsSync(DOWNLOAD_DIR)) {
     for (const f of fs.readdirSync(DOWNLOAD_DIR)) {
+      if (f.endsWith('.part')) continue; // incomplete download, doesn't count
       const match = f.match(/(\d{4}-\d{2}-\d{2})/);
       if (match) dates.add(match[1]);
     }
@@ -133,11 +166,24 @@ async function main() {
     console.log(`Created: ${DOWNLOAD_DIR}`);
   }
 
+  // Clean up stale partial downloads from previous interrupted runs
+  for (const f of fs.readdirSync(DOWNLOAD_DIR)) {
+    if (f.endsWith('.part')) {
+      fs.unlinkSync(path.join(DOWNLOAD_DIR, f));
+      console.log(`Removed stale partial download: ${f}`);
+    }
+  }
+
   const localDates = getLocalDates();
   console.log(`Local episodes: ${localDates.size} unique dates\n`);
 
   console.log('Scraping bff.fm show pages for broadcast IDs and dates...');
   const broadcastMap = {}; // id -> { id, date }
+  // Abort loudly if this many consecutive pages yield no broadcasts (regex
+  // no longer matching the site's markup, or persistent fetch errors) —
+  // otherwise the loop could spin forever.
+  const MAX_CONSECUTIVE_EMPTY_PAGES = 3;
+  let consecutiveEmptyPages = 0;
   let page = 1;
   while (true) {
     const url = page === 1 ? SHOW_URL : `${SHOW_URL}/page:${page}`;
@@ -147,6 +193,12 @@ async function main() {
     } catch (err) {
       if (err.message.includes('404')) break;
       console.error(`Error page ${page}: ${err.message}`);
+      consecutiveEmptyPages++;
+      if (consecutiveEmptyPages >= MAX_CONSECUTIVE_EMPTY_PAGES) {
+        throw new Error(
+          `Aborting: ${consecutiveEmptyPages} consecutive pages failed to fetch (last: ${url})`
+        );
+      }
       page++;
       await sleep(1000);
       continue;
@@ -185,6 +237,18 @@ async function main() {
     if (!foundAny && Object.keys(broadcastMap).length > 0) {
       // No more entries found, likely past last page
       break;
+    }
+
+    if (foundAny) {
+      consecutiveEmptyPages = 0;
+    } else {
+      consecutiveEmptyPages++;
+      if (consecutiveEmptyPages >= MAX_CONSECUTIVE_EMPTY_PAGES) {
+        throw new Error(
+          `Aborting: no broadcasts matched on ${consecutiveEmptyPages} consecutive pages ` +
+          `(last: ${url}). bff.fm markup may have changed — update the scraping regexes.`
+        );
+      }
     }
 
     process.stdout.write(`\r  Page ${page}: ${Object.keys(broadcastMap).length} broadcasts with dates`);
@@ -253,7 +317,10 @@ async function main() {
       downloaded++;
     } catch (err) {
       console.log(`  FAILED: ${err.message}`);
-      if (fs.existsSync(destPath)) fs.unlinkSync(destPath);
+      // downloadFile only renames onto destPath on success; clean any
+      // leftover temp file defensively.
+      const partPath = destPath + '.part';
+      if (fs.existsSync(partPath)) fs.unlinkSync(partPath);
       failed++;
     }
 
