@@ -11,27 +11,24 @@
  *   node scripts/seed-business-places.js [--dry-run]
  */
 
-import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import https from 'node:https';
 import { fileURLToPath } from 'node:url';
+import { escapeSQL, runSQL, queryJSON } from './lib.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MATCHES_PATH = path.join(__dirname, 'business_matches.json');
 const DRY_RUN = process.argv.includes('--dry-run');
 
-// Strip CLOUDFLARE_API_TOKEN so wrangler uses its OAuth login
-const wranglerEnv = { ...process.env };
-delete wranglerEnv.CLOUDFLARE_API_TOKEN;
+function run(sql) {
+	if (DRY_RUN) { console.log('  [dry-run] SQL:', sql.substring(0, 120)); return; }
+	runSQL(sql);
+}
 
-function d1(sql) {
-	if (DRY_RUN) { console.log('  [dry-run] SQL:', sql.substring(0, 120)); return [{ results: [] }]; }
-	const result = execSync(
-		`npx wrangler d1 execute roe-episodes --remote --json --command=${JSON.stringify(sql)}`,
-		{ cwd: path.join(__dirname, '..', 'roe-search'), env: wranglerEnv }
-	);
-	return JSON.parse(result.toString());
+function query(sql) {
+	if (DRY_RUN) { console.log('  [dry-run] SQL:', sql.substring(0, 120)); return []; }
+	return queryJSON(sql);
 }
 
 // SF bounding box for Nominatim
@@ -73,9 +70,9 @@ async function main() {
 	console.log(`${confirmed.length} confirmed matches (${matches.length} total)`);
 
 	// Fetch existing places from D1
-	const existingRows = d1('SELECT id, name, LOWER(name) as lower_name FROM places');
+	const existingRows = query('SELECT id, name, LOWER(name) as lower_name FROM places');
 	const existingNames = new Map();
-	for (const row of (existingRows[0]?.results || [])) {
+	for (const row of existingRows) {
 		existingNames.set(row.lower_name, row.id);
 	}
 	console.log(`${existingNames.size} existing places in D1`);
@@ -100,8 +97,10 @@ async function main() {
 
 	console.log(`${alreadyExisted} already in places, ${toInsert.length} new to insert`);
 
-	// Geocode new places
+	// Geocode new places. Anything we can't geocode is skipped — never seed
+	// fake city-center coordinates.
 	const geocoded = [];
+	let skipped = 0;
 	if (DRY_RUN) {
 		console.log('\n[dry-run] Skipping geocoding');
 		for (const match of toInsert) {
@@ -126,18 +125,27 @@ async function main() {
 				}
 			}
 
+			if (!coords) {
+				skipped++;
+				console.log(`  Skipping ${match.dba_name} (${match.address ? 'geocode failed' : 'no address'})`);
+				continue;
+			}
+
 			geocoded.push({
 				name: match.dba_name,
-				lat: coords ? coords.lat : 37.7749,
-				lng: coords ? coords.lng : -122.4194,
+				lat: coords.lat,
+				lng: coords.lng,
 				episodeIds: match.episodes.map(e => e.episode_id),
 			});
 
 			if ((i + 1) % 10 === 0 || i === toInsert.length - 1) {
-				process.stdout.write(`\r  Geocoded: ${i + 1}/${toInsert.length}`);
+				process.stdout.write(`\r  Geocoded: ${i + 1}/${toInsert.length} (${geocoded.length} found, ${skipped} skipped)`);
 			}
 		}
 		console.log('');
+		if (skipped > 0) {
+			console.log(`  ${skipped} places skipped (no address or geocode failure) — not inserted`);
+		}
 	}
 
 	if (DRY_RUN) {
@@ -156,10 +164,10 @@ async function main() {
 	for (let i = 0; i < geocoded.length; i += BATCH) {
 		const chunk = geocoded.slice(i, i + BATCH);
 		const values = chunk.map(p =>
-			`(${JSON.stringify(p.name)}, ${p.lat}, ${p.lng})`
+			`('${escapeSQL(p.name)}', ${p.lat}, ${p.lng})`
 		).join(', ');
 		try {
-			d1(`INSERT OR IGNORE INTO places (name, lat, lng) VALUES ${values}`);
+			run(`INSERT OR IGNORE INTO places (name, lat, lng) VALUES ${values}`);
 		} catch (err) {
 			console.error(`  Insert error: ${err.message}`);
 		}
@@ -169,9 +177,9 @@ async function main() {
 	console.log('');
 
 	// Fetch all place IDs (existing + new)
-	const allRows = d1('SELECT id, LOWER(name) as lower_name FROM places');
+	const allRows = query('SELECT id, LOWER(name) as lower_name FROM places');
 	const nameToId = new Map();
-	for (const row of (allRows[0]?.results || [])) {
+	for (const row of allRows) {
 		nameToId.set(row.lower_name, row.id);
 	}
 
@@ -195,10 +203,10 @@ async function main() {
 	for (let i = 0; i < mentionPairs.length; i += BATCH) {
 		const chunk = mentionPairs.slice(i, i + BATCH);
 		const values = chunk.map(([pid, eid]) =>
-			`(${pid}, ${JSON.stringify(eid)})`
+			`(${pid}, '${escapeSQL(eid)}')`
 		).join(', ');
 		try {
-			d1(`INSERT OR IGNORE INTO place_mentions (place_id, episode_id) VALUES ${values}`);
+			run(`INSERT OR IGNORE INTO place_mentions (place_id, episode_id) VALUES ${values}`);
 		} catch {
 			// episode may not exist in DB yet; skip
 		}

@@ -11,27 +11,24 @@
  *   node scripts/seed-verified-places.js [--dry-run]
  */
 
-import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import https from 'node:https';
 import { fileURLToPath } from 'node:url';
+import { escapeSQL, runSQL, queryJSON } from './lib.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const VERIFIED_PATH = path.join(__dirname, 'verified_places.json');
 const DRY_RUN = process.argv.includes('--dry-run');
 
-// Strip CLOUDFLARE_API_TOKEN so wrangler uses its OAuth login
-const wranglerEnv = { ...process.env };
-delete wranglerEnv.CLOUDFLARE_API_TOKEN;
+function run(sql) {
+	if (DRY_RUN) { console.log('  [dry-run] SQL:', sql.substring(0, 120)); return; }
+	runSQL(sql);
+}
 
-function d1(sql) {
-	if (DRY_RUN) { console.log('  [dry-run] SQL:', sql.substring(0, 120)); return [{ results: [] }]; }
-	const result = execSync(
-		`npx wrangler d1 execute roe-episodes --remote --json --command=${JSON.stringify(sql)}`,
-		{ cwd: path.join(__dirname, '..', 'roe-search'), env: wranglerEnv }
-	);
-	return JSON.parse(result.toString());
+function query(sql) {
+	if (DRY_RUN) { console.log('  [dry-run] SQL:', sql.substring(0, 120)); return []; }
+	return queryJSON(sql);
 }
 
 // SF bounding box for Nominatim
@@ -101,10 +98,10 @@ function insertPlaces(places) {
 	for (let i = 0; i < places.length; i += BATCH) {
 		const chunk = places.slice(i, i + BATCH);
 		const values = chunk.map(p =>
-			`(${JSON.stringify(p.name)}, ${p.lat}, ${p.lng})`
+			`('${escapeSQL(p.name)}', ${p.lat}, ${p.lng})`
 		).join(', ');
 		try {
-			d1(`INSERT OR IGNORE INTO places (name, lat, lng) VALUES ${values}`);
+			run(`INSERT OR IGNORE INTO places (name, lat, lng) VALUES ${values}`);
 		} catch (err) {
 			console.error(`  Insert error: ${err.message}`);
 		}
@@ -120,10 +117,10 @@ function insertMentions(pairs) {
 	for (let i = 0; i < pairs.length; i += BATCH) {
 		const chunk = pairs.slice(i, i + BATCH);
 		const values = chunk.map(([pid, eid]) =>
-			`(${pid}, ${JSON.stringify(eid)})`
+			`(${pid}, '${escapeSQL(eid)}')`
 		).join(', ');
 		try {
-			d1(`INSERT OR IGNORE INTO place_mentions (place_id, episode_id) VALUES ${values}`);
+			run(`INSERT OR IGNORE INTO place_mentions (place_id, episode_id) VALUES ${values}`);
 		} catch {
 			// episode may not exist in DB yet; skip
 		}
@@ -153,9 +150,9 @@ async function main() {
 
 	// Step 1: Fetch existing places from D1
 	console.log('\nFetching existing places from D1...');
-	const existingRows = d1('SELECT id, name, LOWER(name) as lower_name FROM places');
+	const existingRows = query('SELECT id, name, LOWER(name) as lower_name FROM places');
 	const existingNames = new Map();
-	for (const row of (existingRows[0]?.results || [])) {
+	for (const row of existingRows) {
 		existingNames.set(row.lower_name, row.id);
 	}
 	console.log(`${existingNames.size} existing places in D1`);
@@ -219,9 +216,9 @@ async function main() {
 
 	// --- Phase B: Add mentions for existing places + just-inserted places ---
 	// Fetch all place IDs after first insert
-	let allRows = d1('SELECT id, LOWER(name) as lower_name FROM places');
+	let allRows = query('SELECT id, LOWER(name) as lower_name FROM places');
 	let nameToId = new Map();
-	for (const row of (allRows[0]?.results || [])) {
+	for (const row of allRows) {
 		nameToId.set(row.lower_name, row.id);
 	}
 
@@ -284,9 +281,9 @@ async function main() {
 		insertPlaces(geocoded);
 
 		// Re-fetch IDs for mention linking
-		allRows = d1('SELECT id, LOWER(name) as lower_name FROM places');
+		allRows = query('SELECT id, LOWER(name) as lower_name FROM places');
 		nameToId = new Map();
-		for (const row of (allRows[0]?.results || [])) {
+		for (const row of allRows) {
 			nameToId.set(row.lower_name, row.id);
 		}
 
@@ -306,9 +303,9 @@ async function main() {
 	}
 
 	// Final count
-	const finalCount = d1('SELECT COUNT(*) as cnt FROM places');
-	const mentionCount = d1('SELECT COUNT(*) as cnt FROM place_mentions');
-	console.log(`\nDone! Places: ${finalCount[0]?.results?.[0]?.cnt}, Mentions: ${mentionCount[0]?.results?.[0]?.cnt}`);
+	const finalCount = query('SELECT COUNT(*) as cnt FROM places');
+	const mentionCount = query('SELECT COUNT(*) as cnt FROM place_mentions');
+	console.log(`\nDone! Places: ${finalCount[0]?.cnt}, Mentions: ${mentionCount[0]?.cnt}`);
 }
 
 main().catch(err => { console.error('Fatal:', err); process.exit(1); });
