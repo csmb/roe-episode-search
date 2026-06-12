@@ -369,7 +369,7 @@
 		    const chip = s.label && s.label !== 'unknown'
 		      ? `<span class="pd-chip" style="background:${SENTIMENT_COLORS[s.label] || '#999'}">${escapeHtml(s.label)}</span>` : '';
 		    const href = s.snippet_start_ms != null
-		      ? `/?episode=${encodeURIComponent(s.episode_id)}&t=${Math.floor(s.snippet_start_ms / 1000)}`
+		      ? `/?episode=${encodeURIComponent(s.episode_id)}&t=${s.snippet_start_ms}`
 		      : `/?episode=${encodeURIComponent(s.episode_id)}`;
 		    const quote = s.snippet ? `<div style="color:#666;margin-top:2px">&ldquo;${escapeHtml(s.snippet)}&rdquo;</div>` : '';
 		    return `<li><a href="${href}" target="_blank">${t}</a> <span class="ep-date">${escapeHtml(s.date)}</span>${chip}${quote}</li>`;
