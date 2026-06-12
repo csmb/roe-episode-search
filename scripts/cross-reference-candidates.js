@@ -253,9 +253,12 @@ async function verifyMatches(textMatches, onCheckpoint) {
 			}
 		}
 
-		// Checkpoint every 50 verified candidates
+		// Checkpoint every 50 verified candidates. Pass how many textMatches
+		// have actually been through verification so far (the loop is
+		// sequential, so that's everything up to the end of this batch) so the
+		// caller only marks those as processed.
 		if (sinceLastCheckpoint >= 50) {
-			onCheckpoint(verified);
+			onCheckpoint(verified, i + batch.length);
 			sinceLastCheckpoint = 0;
 		}
 
@@ -367,14 +370,17 @@ async function main() {
 			newMatches.push(buildOutputRecord(m.candidate, m.episodes, 'text_match'));
 		}
 	} else if (textMatches.length > 0) {
-		// Checkpoint callback: save incremental progress every 50 confirmed matches
-		const onCheckpoint = (verified) => {
+		// Checkpoint callback: save incremental progress every 50 confirmed matches.
+		// Only mark candidates whose verification has actually completed
+		// (textMatches[0..verifiedCount)) as processed, so a crash + --resume
+		// re-verifies the rest instead of silently skipping them.
+		const onCheckpoint = (verified, verifiedCount) => {
 			const currentNewMatches = verified.map(({ match, episodes }) =>
 				buildOutputRecord(match.candidate, episodes, 'llm_verified')
 			);
 			const currentProcessedNames = new Set([
 				...processedNames,
-				...textMatches.map(m => m.candidate.normalizedName),
+				...textMatches.slice(0, verifiedCount).map(m => m.candidate.normalizedName),
 			]);
 			saveCheckpoint(currentProcessedNames, [...matches, ...currentNewMatches]);
 		};

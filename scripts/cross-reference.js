@@ -198,7 +198,9 @@ async function main() {
 	if (RESUME && fs.existsSync(OUTPUT_PATH)) {
 		const existing = JSON.parse(fs.readFileSync(OUTPUT_PATH, 'utf8'));
 		matches = existing.matches || [];
-		processed = new Set(matches.map(m => m.normalized_name));
+		// Newer checkpoints persist the full processed set (including rejected
+		// and no-match candidates). Fall back to matched names for old files.
+		processed = new Set(existing.processed || matches.map(m => m.normalized_name));
 		console.log(`Resuming: ${processed.size} already processed`);
 	}
 
@@ -214,10 +216,10 @@ async function main() {
 		if (processed.has(c.normalized_name)) continue;
 
 		const ftsQuery = sanitizeFtsQuery(c.normalized_name);
-		if (!ftsQuery) { stats.no_match++; continue; }
+		if (!ftsQuery) { stats.no_match++; processed.add(c.normalized_name); continue; }
 
 		const results = searchTranscripts(indexDb, ftsQuery);
-		if (!results.length) { stats.no_match++; continue; }
+		if (!results.length) { stats.no_match++; processed.add(c.normalized_name); continue; }
 
 		// Group by episode
 		const episodeMap = new Map();
@@ -239,8 +241,10 @@ async function main() {
 
 		if (confidence === 'skip') {
 			stats.skipped_common++;
+			processed.add(c.normalized_name);
 		} else if (confidence === 'high') {
 			stats.matched++;
+			processed.add(c.normalized_name);
 			matches.push({
 				dba_name: c.dba_name,
 				normalized_name: c.normalized_name,
@@ -279,6 +283,7 @@ async function main() {
 			for (let j = 0; j < batch.length; j++) {
 				const m = batch[j];
 				const r = results[j];
+				processed.add(m.normalized_name); // verdict settled — safe to skip on resume
 				if (r.status === 'fulfilled' && r.value) {
 					stats.llm_verified++;
 					matches.push({
@@ -308,7 +313,7 @@ async function main() {
 
 			// Checkpoint every 100 LLM calls
 			if ((i + CONCURRENCY) % 100 < CONCURRENCY) {
-				fs.writeFileSync(OUTPUT_PATH, JSON.stringify({ matches, stats }, null, 2));
+				fs.writeFileSync(OUTPUT_PATH, JSON.stringify({ matches, stats, processed: [...processed] }, null, 2));
 			}
 			process.stdout.write(`\r  LLM: ${Math.min(i + CONCURRENCY, ftsMatches.length)}/${ftsMatches.length} | Verified: ${stats.llm_verified} | Rejected: ${stats.llm_rejected}`);
 		}
@@ -316,6 +321,7 @@ async function main() {
 	} else if (ftsMatches.length && SKIP_LLM) {
 		// --skip-llm: add all as unverified
 		for (const m of ftsMatches) {
+			processed.add(m.normalized_name);
 			matches.push({
 				dba_name: m.dba_name,
 				normalized_name: m.normalized_name,
@@ -332,7 +338,7 @@ async function main() {
 	// Sort matches by total mentions descending
 	matches.sort((a, b) => b.total_mentions - a.total_mentions);
 
-	fs.writeFileSync(OUTPUT_PATH, JSON.stringify({ matches, stats }, null, 2));
+	fs.writeFileSync(OUTPUT_PATH, JSON.stringify({ matches, stats, processed: [...processed] }, null, 2));
 
 	console.log(`\n\nResults:`);
 	console.log(`  Candidates searched: ${stats.total}`);
