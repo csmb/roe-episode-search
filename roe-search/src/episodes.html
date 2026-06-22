@@ -594,11 +594,35 @@ episodesEl.addEventListener('click', (e) => {
 	if (btn.classList.contains('ep-share-btn')) {
 		const epId = btn.dataset.id;
 		const url = location.origin + '/episodes#' + epId;
-		navigator.clipboard.writeText(url).then(() => {
+		const showCopied = () => {
 			btn.innerHTML = '&#10003; Copied';
 			btn.classList.add('copied');
 			setTimeout(() => { btn.innerHTML = '&#128279; Link'; btn.classList.remove('copied'); }, 2000);
-		});
+		};
+		const fallbackCopy = () => {
+			const inp = document.createElement('input');
+			inp.readOnly = true;
+			inp.value = url;
+			inp.style.position = 'fixed';
+			inp.style.opacity = '0';
+			document.body.appendChild(inp);
+			inp.focus();
+			inp.select();
+			let ok = false;
+			try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+			document.body.removeChild(inp);
+			if (ok) {
+				showCopied();
+			} else {
+				btn.innerHTML = '&#10007; Copy failed';
+				setTimeout(() => { btn.innerHTML = '&#128279; Link'; }, 2000);
+			}
+		};
+		if (navigator.clipboard) {
+			navigator.clipboard.writeText(url).then(showCopied).catch(fallbackCopy);
+		} else {
+			fallbackCopy();
+		}
 		return;
 	}
 

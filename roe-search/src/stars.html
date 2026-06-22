@@ -677,7 +677,10 @@ const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)
 document.getElementById('beginBtn').textContent = isMobile ? 'Tap to look up' : 'Explore the sky';
 document.getElementById('splashNote').textContent = isMobile ? 'Requires motion sensor access' : 'Interactive star chart';
 
+let launched = false;
 async function launchVisualization() {
+    if (launched) return;
+    launched = true;
     document.getElementById('splash').style.display = 'none';
     document.getElementById('loading').style.display = 'flex';
     document.getElementById('nav-home').style.display = 'block';
@@ -902,7 +905,7 @@ function startMobile(THREE, data) {
         const idx = i * 3;
         sprite.position.set(
             positions[idx] * 1.01,
-            positions[idx + 1] * 1.01 - size / 8,
+            positions[idx + 1] * 1.01 - sizes[i] / 24,
             positions[idx + 2] * 1.01
         );
         sprite.userData = { starIndex: i };

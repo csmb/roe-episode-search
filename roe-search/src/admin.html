@@ -1155,9 +1155,20 @@ function formatSearchTime(ms) {
 }
 
 function highlightSearchQuery(text, query) {
-	const safe = escapeSearchHtml(text);
+	if (!query) return escapeSearchHtml(text);
 	const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-	return safe.replace(new RegExp('(' + escaped + ')', 'gi'), '<mark>$1</mark>');
+	const re = new RegExp(escaped, 'gi');
+	let result = '';
+	let last = 0;
+	let m;
+	while ((m = re.exec(text)) !== null) {
+		result += escapeSearchHtml(text.slice(last, m.index));
+		result += '<mark>' + escapeSearchHtml(m[0]) + '</mark>';
+		last = m.index + m[0].length;
+		if (m.index === re.lastIndex) re.lastIndex++;
+	}
+	result += escapeSearchHtml(text.slice(last));
+	return result;
 }
 
 function escapeSearchHtml(str) {
