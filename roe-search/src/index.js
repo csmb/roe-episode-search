@@ -60,9 +60,47 @@ function getCorsOrigin(request) {
 	return null;
 }
 
-function checkAdminPassword(request, env) {
+// Constant-time string compare. Plain `===` short-circuits at the first
+// differing byte, leaking a timing signal about how many leading characters
+// matched. HMAC-ing both sides with a fresh random key reduces the comparison
+// to two fixed-length (32-byte) MACs that we diff in constant time.
+async function timingSafeEqual(a, b) {
+	const enc = new TextEncoder();
+	const key = await crypto.subtle.importKey(
+		'raw', crypto.getRandomValues(new Uint8Array(32)),
+		{ name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
+	);
+	const [macA, macB] = await Promise.all([
+		crypto.subtle.sign('HMAC', key, enc.encode(a)),
+		crypto.subtle.sign('HMAC', key, enc.encode(b)),
+	]);
+	const ua = new Uint8Array(macA), ub = new Uint8Array(macB);
+	let diff = 0;
+	for (let i = 0; i < ua.length; i++) diff |= ua[i] ^ ub[i];
+	return diff === 0;
+}
+
+async function checkAdminPassword(request, env) {
 	const password = request.headers.get('X-Admin-Password');
-	return password && password === env.ADMIN_PASSWORD;
+	if (!password || !env.ADMIN_PASSWORD) return false;
+	return timingSafeEqual(password, env.ADMIN_PASSWORD);
+}
+
+// CORS preflight. The actual responses set Allow-Origin via json(); a preflight
+// additionally needs Allow-Methods/Headers so cross-origin requests carrying
+// the custom X-Admin-Password header (e.g. www. vs apex) aren't rejected.
+function handleCorsPreflight(request) {
+	const headers = {
+		'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+		'Access-Control-Allow-Headers': 'Content-Type, X-Admin-Password',
+		'Access-Control-Max-Age': '86400',
+	};
+	const origin = getCorsOrigin(request);
+	if (origin) {
+		headers['Access-Control-Allow-Origin'] = origin;
+		headers['Vary'] = 'Origin';
+	}
+	return new Response(null, { status: 204, headers });
 }
 
 // ── Router ────────────────────────────────────────────────────────────
@@ -72,12 +110,17 @@ export default {
 		const url = new URL(request.url);
 		const clientIP = request.headers.get('CF-Connecting-IP') || 'unknown';
 
+		// CORS preflight for cross-origin API requests
+		if (request.method === 'OPTIONS') {
+			return handleCorsPreflight(request);
+		}
+
 		// Admin routes — password protected
 		if (url.pathname === '/admin') {
 			return new Response(ADMIN_HTML, { headers: HTML_HEADERS });
 		}
 		if (url.pathname.startsWith('/api/admin/')) {
-			if (!checkAdminPassword(request, env)) {
+			if (!(await checkAdminPassword(request, env))) {
 				return json({ error: 'Unauthorized' }, 401, request);
 			}
 			return handleAdminApi(url, env, request);
@@ -87,6 +130,9 @@ export default {
 			return new Response(MAP_HTML, { headers: HTML_HEADERS });
 		}
 		if (url.pathname === '/api/map-places') {
+			if (!checkRateLimit(clientIP, 'search', RATE_LIMIT_SEARCH)) {
+				return json({ error: 'Rate limit exceeded. Try again in a minute.' }, 429, request);
+			}
 			return handleMapPlaces(env, request);
 		}
 		if (url.pathname === '/api/place-detail') {
@@ -115,6 +161,9 @@ export default {
 			return handleTimeline(url, env, request);
 		}
 		if (url.pathname === '/api/episodes') {
+			if (!checkRateLimit(clientIP, 'search', RATE_LIMIT_SEARCH)) {
+				return json({ error: 'Rate limit exceeded. Try again in a minute.' }, 429, request);
+			}
 			return handleEpisodes(env, request);
 		}
 		if (url.pathname === '/api/on-this-day') {
@@ -243,68 +292,79 @@ async function handleSemanticSearch(url, env, request) {
 		return json({ error: 'Missing ?q= parameter' }, 400, request);
 	}
 
-	// Embed the query
-	const embeddingResult = await env.AI.run('@cf/baai/bge-base-en-v1.5', { text: [query] });
-	const queryVector = embeddingResult.data[0];
-
-	// Query Vectorize
-	const vectorResults = await env.VECTORIZE.query(queryVector, {
-		topK: 20,
-		returnMetadata: 'all',
-	});
-
-	// Collect unique episode IDs to enrich with D1 metadata
-	const episodeIds = [...new Set(vectorResults.matches.map((m) => m.metadata.episode_id))];
-
-	let episodeMeta = {};
-	if (episodeIds.length > 0) {
-		const placeholders = episodeIds.map(() => '?').join(', ');
-		const { results } = await env.DB.prepare(
-			`SELECT id, title, duration_ms, summary FROM episodes WHERE id IN (${placeholders})`
-		)
-			.bind(...episodeIds)
-			.all();
-		for (const row of results) {
-			episodeMeta[row.id] = row;
+	try {
+		// Embed the query
+		const embeddingResult = await env.AI.run('@cf/baai/bge-base-en-v1.5', { text: [query] });
+		const queryVector = embeddingResult?.data?.[0];
+		if (!queryVector) {
+			return json({ error: 'Could not embed the query. Try again.' }, 502, request);
 		}
-	}
 
-	// Group results by episode (same pattern as handleSearch)
-	const episodeMap = new Map();
-	for (const match of vectorResults.matches) {
-		const meta = match.metadata;
-		const epId = meta.episode_id;
+		// Query Vectorize
+		const vectorResults = await env.VECTORIZE.query(queryVector, {
+			topK: 20,
+			returnMetadata: 'all',
+		});
+		const matches = vectorResults?.matches || [];
 
-		if (!episodeMap.has(epId)) {
-			const dbMeta = episodeMeta[epId] || {};
-			episodeMap.set(epId, {
-				episode_id: epId,
-				title: dbMeta.title || meta.title,
-				duration_ms: dbMeta.duration_ms || null,
-				summary: dbMeta.summary || null,
-				audio_file: `/audio/${epId}.m4a`,
-				matches: [],
+		// Collect unique episode IDs to enrich with D1 metadata. Skip any
+		// vector that's missing metadata or an episode_id rather than letting
+		// `undefined` leak into the response (e.g. "/audio/undefined.m4a").
+		const episodeIds = [...new Set(matches.map((m) => m.metadata?.episode_id).filter(Boolean))];
+
+		let episodeMeta = {};
+		if (episodeIds.length > 0) {
+			const placeholders = episodeIds.map(() => '?').join(', ');
+			const { results } = await env.DB.prepare(
+				`SELECT id, title, duration_ms, summary FROM episodes WHERE id IN (${placeholders})`
+			)
+				.bind(...episodeIds)
+				.all();
+			for (const row of results) {
+				episodeMeta[row.id] = row;
+			}
+		}
+
+		// Group results by episode (same pattern as handleSearch)
+		const episodeMap = new Map();
+		for (const match of matches) {
+			const meta = match.metadata;
+			if (!meta || !meta.episode_id) continue;
+			const epId = meta.episode_id;
+
+			if (!episodeMap.has(epId)) {
+				const dbMeta = episodeMeta[epId] || {};
+				episodeMap.set(epId, {
+					episode_id: epId,
+					title: dbMeta.title || meta.title,
+					duration_ms: dbMeta.duration_ms || null,
+					summary: dbMeta.summary || null,
+					audio_file: `/audio/${epId}.m4a`,
+					matches: [],
+				});
+			}
+			episodeMap.get(epId).matches.push({
+				start_ms: meta.start_ms,
+				end_ms: meta.end_ms,
+				text: meta.text,
+				score: match.score,
 			});
 		}
-		episodeMap.get(epId).matches.push({
-			start_ms: meta.start_ms,
-			end_ms: meta.end_ms,
-			text: meta.text,
-			score: match.score,
-		});
-	}
 
-	// Sort matches chronologically within each episode
-	for (const ep of episodeMap.values()) {
-		ep.matches.sort((a, b) => a.start_ms - b.start_ms);
-	}
+		// Sort matches chronologically within each episode
+		for (const ep of episodeMap.values()) {
+			ep.matches.sort((a, b) => a.start_ms - b.start_ms);
+		}
 
-	return json({
-		query,
-		page: 1,
-		results: Array.from(episodeMap.values()).sort((a, b) => b.episode_id.localeCompare(a.episode_id)),
-		has_more: false,
-	}, 200, request);
+		return json({
+			query,
+			page: 1,
+			results: Array.from(episodeMap.values()).sort((a, b) => b.episode_id.localeCompare(a.episode_id)),
+			has_more: false,
+		}, 200, request);
+	} catch (err) {
+		return json({ error: 'Semantic search failed. Try again.' }, 500, request);
+	}
 }
 
 async function handleTimeline(url, env, request) {
@@ -362,25 +422,29 @@ async function handleTimeline(url, env, request) {
 }
 
 async function handleEpisodes(env, request) {
-	const [{ results: episodes }, { results: guestRows }] = await Promise.all([
-		env.DB.prepare(
-			'SELECT id, title, duration_ms, published_at, summary, guest_start_ms FROM episodes ORDER BY id'
-		).all(),
-		env.DB.prepare('SELECT episode_id, guest_name FROM episode_guests').all(),
-	]);
+	try {
+		const [{ results: episodes }, { results: guestRows }] = await Promise.all([
+			env.DB.prepare(
+				'SELECT id, title, duration_ms, published_at, summary, guest_start_ms FROM episodes ORDER BY id'
+			).all(),
+			env.DB.prepare('SELECT episode_id, guest_name FROM episode_guests').all(),
+		]);
 
-	const guestsByEp = new Map();
-	for (const row of guestRows) {
-		if (!guestsByEp.has(row.episode_id)) guestsByEp.set(row.episode_id, []);
-		guestsByEp.get(row.episode_id).push(row.guest_name);
+		const guestsByEp = new Map();
+		for (const row of guestRows) {
+			if (!guestsByEp.has(row.episode_id)) guestsByEp.set(row.episode_id, []);
+			guestsByEp.get(row.episode_id).push(row.guest_name);
+		}
+
+		const enriched = episodes.map(ep => ({
+			...ep,
+			guests: guestsByEp.get(ep.id) || [],
+		}));
+
+		return json({ episodes: enriched }, 200, request);
+	} catch (err) {
+		return json({ error: 'Failed to load episodes.' }, 500, request);
 	}
-
-	const enriched = episodes.map(ep => ({
-		...ep,
-		guests: guestsByEp.get(ep.id) || [],
-	}));
-
-	return json({ episodes: enriched }, 200, request);
 }
 
 async function handleAudio(request, url, env) {
@@ -391,40 +455,73 @@ async function handleAudio(request, url, env) {
 
 	const rangeHeader = request.headers.get('Range');
 
-	const options = {};
+	// Parse the Range header. Supports normal (bytes=START-END / bytes=START-)
+	// and suffix (bytes=-N, "last N bytes") forms. The old regex required a
+	// digit before the dash, so suffix ranges fell through to a full 200.
+	let r2Range = null;     // option passed to R2
+	let suffixLen = null;   // set when this is a suffix range
 	if (rangeHeader) {
-		// Parse "bytes=START-END"
-		const match = rangeHeader.match(/bytes=(\d+)-(\d*)/);
-		if (match) {
-			options.range = {
-				offset: parseInt(match[1], 10),
-				length: match[2] ? parseInt(match[2], 10) - parseInt(match[1], 10) + 1 : undefined,
-			};
+		const m = rangeHeader.match(/^bytes=(\d*)-(\d*)$/);
+		if (m) {
+			const start = m[1], end = m[2];
+			if (start === '' && end !== '') {
+				suffixLen = parseInt(end, 10);
+				if (suffixLen > 0) r2Range = { suffix: suffixLen };
+			} else if (start !== '') {
+				const offset = parseInt(start, 10);
+				r2Range = end !== ''
+					? { offset, length: parseInt(end, 10) - offset + 1 }
+					: { offset };
+			}
 		}
 	}
 
-	const object = await env.AUDIO.get(key, options);
+	let object;
+	try {
+		object = await env.AUDIO.get(key, r2Range ? { range: r2Range } : {});
+	} catch {
+		// R2 throws on an unsatisfiable range (e.g. offset past EOF) — answer
+		// with 416 + the object size instead of a 500.
+		const head = await env.AUDIO.head(key);
+		if (!head) return new Response('Not found', { status: 404 });
+		return new Response('Range Not Satisfiable', {
+			status: 416,
+			headers: { 'Content-Range': `bytes */${head.size}`, 'Accept-Ranges': 'bytes' },
+		});
+	}
 
 	if (!object) {
 		return new Response('Not found', { status: 404 });
 	}
 
 	const headers = new Headers();
-	const contentType = key.endsWith('.m4a') ? 'audio/mp4' : 'audio/mpeg';
-	headers.set('Content-Type', contentType);
+	headers.set('Content-Type', 'audio/mp4');
 	headers.set('Accept-Ranges', 'bytes');
 	headers.set('Cache-Control', 'public, max-age=86400');
 
-	if (rangeHeader && options.range) {
-		const offset = options.range.offset;
-		const length = options.range.length || (object.size - offset);
+	if (r2Range) {
+		const size = object.size; // full object size, not the slice length
+		let offset, length;
+		if (suffixLen !== null) {
+			length = Math.min(suffixLen, size);
+			offset = size - length;
+		} else {
+			offset = r2Range.offset;
+			length = r2Range.length != null ? Math.min(r2Range.length, size - offset) : (size - offset);
+		}
+		if (offset >= size || length <= 0) {
+			return new Response('Range Not Satisfiable', {
+				status: 416,
+				headers: { 'Content-Range': `bytes */${size}`, 'Accept-Ranges': 'bytes' },
+			});
+		}
 		const end = offset + length - 1;
-		headers.set('Content-Range', `bytes ${offset}-${end}/${object.size}`);
-		headers.set('Content-Length', length);
+		headers.set('Content-Range', `bytes ${offset}-${end}/${size}`);
+		headers.set('Content-Length', String(length));
 		return new Response(object.body, { status: 206, headers });
 	}
 
-	headers.set('Content-Length', object.size);
+	headers.set('Content-Length', String(object.size));
 	return new Response(object.body, { status: 200, headers });
 }
 
@@ -532,51 +629,55 @@ async function handleGuests(env, request) {
 }
 
 async function handleMapPlaces(env, request) {
-	const { results } = await env.DB.prepare(`
-		SELECT
-			p.id,
-			p.name,
-			p.lat,
-			p.lng,
-			COUNT(pm.episode_id) AS episode_count
-		FROM places p
-		JOIN place_mentions pm ON pm.place_id = p.id
-		GROUP BY p.id
-		ORDER BY episode_count DESC
-	`).all();
+	try {
+		const { results } = await env.DB.prepare(`
+			SELECT
+				p.id,
+				p.name,
+				p.lat,
+				p.lng,
+				COUNT(pm.episode_id) AS episode_count
+			FROM places p
+			JOIN place_mentions pm ON pm.place_id = p.id
+			GROUP BY p.id
+			ORDER BY episode_count DESC
+		`).all();
 
-	if (results.length === 0) {
-		return json({ places: [], total_mentions: 0 }, 200, request);
+		if (results.length === 0) {
+			return json({ places: [], total_mentions: 0 }, 200, request);
+		}
+
+		const { results: mentions } = await env.DB.prepare(`
+			SELECT pm.place_id, pm.episode_id, e.title
+			FROM place_mentions pm
+			JOIN episodes e ON e.id = pm.episode_id
+		`).all();
+
+		const { results: narrativeRows } = await env.DB.prepare(
+			`SELECT place_id FROM place_narratives`
+		).all();
+		const narrativeSet = new Set(narrativeRows.map(r => r.place_id));
+
+		const episodesByPlace = {};
+		for (const m of mentions) {
+			if (!episodesByPlace[m.place_id]) episodesByPlace[m.place_id] = [];
+			episodesByPlace[m.place_id].push({ id: m.episode_id, title: m.title });
+		}
+
+		const places = results.map(p => ({
+			name: p.name,
+			lat: p.lat,
+			lng: p.lng,
+			episode_count: p.episode_count,
+			has_narrative: narrativeSet.has(p.id),
+			episodes: episodesByPlace[p.id] || [],
+		}));
+
+		const total_mentions = places.reduce((s, p) => s + p.episode_count, 0);
+		return json({ places, total_mentions }, 200, request);
+	} catch (err) {
+		return json({ error: 'Failed to load places.' }, 500, request);
 	}
-
-	const { results: mentions } = await env.DB.prepare(`
-		SELECT pm.place_id, pm.episode_id, e.title
-		FROM place_mentions pm
-		JOIN episodes e ON e.id = pm.episode_id
-	`).all();
-
-	const { results: narrativeRows } = await env.DB.prepare(
-		`SELECT place_id FROM place_narratives`
-	).all();
-	const narrativeSet = new Set(narrativeRows.map(r => r.place_id));
-
-	const episodesByPlace = {};
-	for (const m of mentions) {
-		if (!episodesByPlace[m.place_id]) episodesByPlace[m.place_id] = [];
-		episodesByPlace[m.place_id].push({ id: m.episode_id, title: m.title });
-	}
-
-	const places = results.map(p => ({
-		name: p.name,
-		lat: p.lat,
-		lng: p.lng,
-		episode_count: p.episode_count,
-		has_narrative: narrativeSet.has(p.id),
-		episodes: episodesByPlace[p.id] || [],
-	}));
-
-	const total_mentions = places.reduce((s, p) => s + p.episode_count, 0);
-	return json({ places, total_mentions }, 200, request);
 }
 
 async function handlePlaceDetail(url, env, request) {
