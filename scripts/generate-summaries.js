@@ -62,7 +62,10 @@ export async function generateSummaryFromText(text, { dateStr, sunData } = {}) {
 	}
 
 	const data = await res.json();
-	const content = data.choices[0].message.content.trim();
+	const content = data.choices?.[0]?.message?.content?.trim();
+	if (!content) {
+		throw new Error(`OpenAI returned no message content (choices: ${JSON.stringify(data.choices)?.slice(0, 200)})`);
+	}
 	try {
 		const parsed = JSON.parse(content);
 		return {

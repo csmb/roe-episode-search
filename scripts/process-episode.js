@@ -86,34 +86,45 @@ const SF_VOCAB_PROMPT = [
 
 // ── Step 1: Prerequisite checks ────────────────────────────────────────
 
-function checkPrerequisites() {
+// Only checks tools the steps that will actually run depend on. Whisper (CLI +
+// models) is transcribe-only; ffmpeg is used by both transcribe and upload-audio.
+// This keeps embed/summary-only runs (e.g. process-all phase 2, merge-episode)
+// from failing on a machine without whisper installed.
+function checkPrerequisites(skip = new Set()) {
 	const timer = stepTimer('PREREQUISITES');
 	const missing = [];
 
-	try {
-		execFileSync('which', ['whisper-cli'], { stdio: 'pipe' });
-	} catch {
-		missing.push('whisper-cli — install with: brew install whisper-cpp');
+	const needsWhisper = !skip.has('transcribe');
+	const needsFfmpeg = !skip.has('transcribe') || !skip.has('upload-audio');
+
+	if (needsWhisper) {
+		try {
+			execFileSync('which', ['whisper-cli'], { stdio: 'pipe' });
+		} catch {
+			missing.push('whisper-cli — install with: brew install whisper-cpp');
+		}
+
+		if (!fs.existsSync(WHISPER_MODEL_PATH)) {
+			missing.push(
+				`Whisper model not found at ${WHISPER_MODEL_PATH}\n` +
+				'  Download with: whisper-cli --model large-v3 --download-model'
+			);
+		}
+
+		if (!fs.existsSync(VAD_MODEL_PATH)) {
+			missing.push(
+				`Silero VAD model not found at ${VAD_MODEL_PATH}\n` +
+				'  Download with: curl -L https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v6.2.0.bin -o ' + VAD_MODEL_PATH
+			);
+		}
 	}
 
-	try {
-		execFileSync('which', ['ffmpeg'], { stdio: 'pipe' });
-	} catch {
-		missing.push('ffmpeg — install with: brew install ffmpeg');
-	}
-
-	if (!fs.existsSync(WHISPER_MODEL_PATH)) {
-		missing.push(
-			`Whisper model not found at ${WHISPER_MODEL_PATH}\n` +
-			'  Download with: whisper-cli --model large-v3 --download-model'
-		);
-	}
-
-	if (!fs.existsSync(VAD_MODEL_PATH)) {
-		missing.push(
-			`Silero VAD model not found at ${VAD_MODEL_PATH}\n` +
-			'  Download with: curl -L https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v6.2.0.bin -o ' + VAD_MODEL_PATH
-		);
+	if (needsFfmpeg) {
+		try {
+			execFileSync('which', ['ffmpeg'], { stdio: 'pipe' });
+		} catch {
+			missing.push('ffmpeg — install with: brew install ffmpeg');
+		}
 	}
 
 	if (missing.length > 0) {
@@ -480,7 +491,10 @@ async function generateEmbeddings(episodeId) {
 		}
 
 		const json = await res.json();
-		const embeddings = json.result.data;
+		const embeddings = json.result?.data;
+		if (!Array.isArray(embeddings) || embeddings.length !== batch.length) {
+			throw new Error(`Embedding API returned ${embeddings?.length ?? 0} vectors for ${batch.length} inputs`);
+		}
 
 		for (let j = 0; j < batch.length; j++) {
 			vectors.push({
@@ -694,8 +708,8 @@ async function main() {
 
 	const totalStart = Date.now();
 
-	// Step 1: Prerequisites
-	checkPrerequisites();
+	// Step 1: Prerequisites (only for the tools the un-skipped steps need)
+	checkPrerequisites(skip);
 
 	// Step 2: Transcribe
 	if (!skip.has('transcribe')) {

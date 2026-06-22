@@ -98,7 +98,11 @@ async function embedBatch(texts, baseUrl, apiToken) {
 	}
 
 	const json = await res.json();
-	return json.result.data;
+	const embeddings = json.result?.data;
+	if (!Array.isArray(embeddings) || embeddings.length !== texts.length) {
+		throw new Error(`Embedding API returned ${embeddings?.length ?? 0} vectors for ${texts.length} inputs`);
+	}
+	return embeddings;
 }
 
 async function upsertVectors(vectors, baseUrl, apiToken) {
