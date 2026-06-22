@@ -361,16 +361,43 @@ const server = http.createServer((req, res) => {
 			return;
 		}
 
-		const filename = decodeURIComponent(rawFilename);
+		let filename;
+		try {
+			filename = decodeURIComponent(rawFilename);
+		} catch {
+			res.writeHead(400, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+			res.end(JSON.stringify({ error: 'Malformed X-Filename header' }));
+			return;
+		}
 		const safeFilename = path.basename(filename); // strip any path components
 
 		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), `roe-ingest-${Date.now()}-`));
 		const tmpPath = path.join(tmpDir, safeFilename);
-
 		const writeStream = fs.createWriteStream(tmpPath);
-		req.pipe(writeStream);
+
+		// Shared failure path. Without a `req` error handler, a client that
+		// disconnects mid-upload emits an unhandled 'error' on the request
+		// stream and crashes the whole server process. The `settled` guard
+		// prevents a double response if both streams error (or one errors
+		// after finish).
+		let settled = false;
+		function fail(err) {
+			if (settled) return;
+			settled = true;
+			writeStream.destroy();
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+			if (!res.headersSent) {
+				res.writeHead(500, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+				res.end(JSON.stringify({ error: `Upload failed: ${err.message}` }));
+			}
+		}
+
+		req.on('error', fail);
+		writeStream.on('error', fail);
 
 		writeStream.on('finish', () => {
+			if (settled) return;
+			settled = true;
 			const jobId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 			const job = createJob(jobId, safeFilename, tmpPath);
 
@@ -380,11 +407,7 @@ const server = http.createServer((req, res) => {
 			enqueue(() => runJob(job));
 		});
 
-		writeStream.on('error', (err) => {
-			res.writeHead(500, { 'Content-Type': 'application/json', ...CORS_HEADERS });
-			res.end(JSON.stringify({ error: err.message }));
-		});
-
+		req.pipe(writeStream);
 		return;
 	}
 
