@@ -384,6 +384,18 @@
 		const isMobile = () => window.matchMedia('(max-width: 640px)').matches;
 
 		let lastDetailName = null;
+		let detailRequestId = 0;
+		// Reset callback for the marker whose detail view is currently open
+		// (clears its per-marker `detailOpen` hover guard). Replaced/called on
+		// each open and on close so hover auto-close returns to normal.
+		let resetActiveDetailFlag = null;
+		function clearActiveDetailFlag() {
+			if (resetActiveDetailFlag) {
+				const fn = resetActiveDetailFlag;
+				resetActiveDetailFlag = null;
+				fn();
+			}
+		}
 
 		function setPlaceUrl(name) {
 			history.replaceState(null, '', '/map?place=' + encodeURIComponent(name));
@@ -398,6 +410,7 @@
 		  pdSheet.classList.remove('open');
 		  pdBackdrop.classList.remove('open');
 		  clearPlaceUrlIf(lastDetailName);
+		  clearActiveDetailFlag();
 		}
 		document.querySelector('#pd-sheet .pd-close').addEventListener('click', closeSheet);
 		pdBackdrop.addEventListener('click', closeSheet);
@@ -429,8 +442,14 @@
 			}
 		});
 
-		async function openPlaceDetail(place, circle) {
+		async function openPlaceDetail(place, circle, resetFlag) {
 		  const mobile = isMobile();
+		  // New open supersedes any in-flight one: bump the generation so a slow
+		  // earlier fetch can't overwrite this place's content/URL when it lands.
+		  const reqId = ++detailRequestId;
+		  // Reset the previously-open marker's hover guard before taking over.
+		  clearActiveDetailFlag();
+		  resetActiveDetailFlag = typeof resetFlag === 'function' ? resetFlag : null;
 		  lastDetailName = place.name;
 		  setPlaceUrl(place.name);
 		  const loadingHtml = `<div class="place-detail"><h3>${escapeHtml(place.name)}</h3>` +
@@ -442,7 +461,10 @@
 		    pdBackdrop.classList.add('open');
 		  } else {
 		    circle.bindPopup(loadingHtml, { maxWidth: 320, minWidth: 280 }).openPopup();
-		    circle.once('popupclose', () => clearPlaceUrlIf(place.name));
+		    circle.once('popupclose', () => {
+		      clearPlaceUrlIf(place.name);
+		      if (resetActiveDetailFlag === resetFlag) clearActiveDetailFlag();
+		    });
 		  }
 
 		  let html;
@@ -454,6 +476,10 @@
 		    html = `<div class="place-detail"><h3>${escapeHtml(place.name)}</h3>` +
 		      `<div class="pd-note">Couldn't load insights.</div></div>`;
 		  }
+
+		  // Bail if a newer open happened while we were awaiting — the sheet/popup,
+		  // lastDetailName and URL now belong to a different place.
+		  if (reqId !== detailRequestId) return;
 
 		  if (mobile) {
 		    pdSheetBody.innerHTML = html;
@@ -518,18 +544,22 @@
 					}).join('');
 
 				const plural = place.episode_count === 1 ? 'episode' : 'episodes';
-				circle.bindPopup(`
-					<div class="place-popup">
-						<h3>${escapeHtml(place.name)}</h3>
-						<div class="count">Mentioned in ${place.episode_count} ${plural}</div>
-						<ul>${episodeItems}</ul>
-					</div>
-				`, { maxWidth: 280 });
 
-				// Desktop: show popup on hover; mobile keeps default click behavior
+				// Desktop: hover shows the summary popup, click opens the detail.
+				// Touch/no-hover: bind NO popup so a tap opens only the bottom sheet
+				// (otherwise Leaflet's default click-to-toggle popup would surface
+				// behind the sheet backdrop). The deep-link path fires 'click', which
+				// goes straight to the sheet, so the summary popup isn't needed there.
 				let detailOpen = false;
 				const hasHover = window.matchMedia('(hover: hover) and (pointer: fine)').matches;
 				if (hasHover) {
+					circle.bindPopup(`
+						<div class="place-popup">
+							<h3>${escapeHtml(place.name)}</h3>
+							<div class="count">Mentioned in ${place.episode_count} ${plural}</div>
+							<ul>${episodeItems}</ul>
+						</div>
+					`, { maxWidth: 280 });
 					let closeTimer = null;
 					circle.on('mouseover', () => {
 						clearTimeout(closeTimer);
@@ -548,7 +578,10 @@
 						}
 					});
 				}
-				circle.on('click', () => { detailOpen = true; openPlaceDetail(place, circle); });
+				circle.on('click', () => {
+					detailOpen = true;
+					openPlaceDetail(place, circle, () => { detailOpen = false; });
+				});
 			}
 			fuseIndex = new Fuse(places, {
 				keys: ['name'],

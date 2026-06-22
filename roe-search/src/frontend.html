@@ -838,6 +838,9 @@ function playAt(audioUrl, startMs, title) {
 		audioPlayer.load();
 		audioPlayer.play().catch(() => {});
 	} else {
+		// Same src already loaded: seek now and clear any stale pendingSeek
+		// so a still-pending earlier load can't override this position.
+		pendingSeek = null;
 		audioPlayer.currentTime = startSeconds;
 		audioPlayer.play().catch(() => {});
 	}
@@ -846,6 +849,7 @@ function playAt(audioUrl, startMs, title) {
 async function loadClip(episodeId, startMs) {
 	try {
 		const res = await fetch('/api/episode/' + encodeURIComponent(episodeId));
+		if (!res.ok) return;
 		const data = await res.json();
 		if (data.error || !data.episode) return;
 
@@ -900,6 +904,7 @@ async function loadClip(episodeId, startMs) {
 async function loadOnThisDay() {
 	try {
 		const res = await fetch('/api/on-this-day');
+		if (!res.ok) return;
 		const data = await res.json();
 		if (!data.episodes || data.episodes.length === 0) return;
 
@@ -1021,11 +1026,15 @@ async function fetchResults() {
 	try {
 		const endpoint = searchMode === 'semantic' ? '/api/semantic-search' : '/api/search';
 		const res = await fetch(endpoint + '?q=' + encodeURIComponent(currentQuery) + '&page=' + currentPage);
+		if (!res.ok) {
+			statusEl.textContent = 'Error: search failed (' + res.status + ')';
+			return false;
+		}
 		const data = await res.json();
 
 		if (data.error) {
 			statusEl.textContent = 'Error: ' + data.error;
-			return;
+			return false;
 		}
 
 		hasMore = data.has_more;
@@ -1036,7 +1045,7 @@ async function fetchResults() {
 		if (currentPage === 1) {
 			if (totalMatches === 0) {
 				statusEl.textContent = 'No results found for \u201c' + currentQuery + '\u201d';
-				return;
+				return true;
 			}
 			statusEl.textContent = 'Results for \u201c' + currentQuery + '\u201d';
 		}
@@ -1044,8 +1053,10 @@ async function fetchResults() {
 		for (const episode of data.results) {
 			resultsEl.appendChild(renderEpisode(episode));
 		}
+		return true;
 	} catch (err) {
 		statusEl.textContent = 'Error: ' + err.message;
+		return false;
 	}
 }
 
@@ -1183,6 +1194,10 @@ function renderEpisode(episode) {
 async function fetchTimeline(query) {
 	try {
 		const res = await fetch('/api/timeline?q=' + encodeURIComponent(query));
+		if (!res.ok) {
+			timelineEl.innerHTML = '';
+			return;
+		}
 		const data = await res.json();
 		if (data.error || !data.timeline || data.timeline.length === 0) {
 			timelineEl.innerHTML = '';
@@ -1206,9 +1221,14 @@ function generateMonthRange(first, last) {
 	return months;
 }
 
+function currentMonth() {
+	const now = new Date();
+	return now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0');
+}
+
 function renderTimeline(data) {
-	// Fixed range: full show history 2012-2026 regardless of query results
-	const allMonths = generateMonthRange('2014-01', '2026-02');
+	// Fixed range: full show history through the current month regardless of query results
+	const allMonths = generateMonthRange('2014-01', currentMonth());
 	const mentionMap = {};
 	for (const t of data.timeline) {
 		mentionMap[t.month] = t;
@@ -1377,9 +1397,12 @@ function renderTimeline(data) {
 		const month = allMonths[idx];
 		if (!month) return;
 		let target = document.querySelector(`[data-month="${month}"]`);
-		while (!target && hasMore) {
+		let extraLoads = 0;
+		while (!target && hasMore && extraLoads < 50) {
 			currentPage++;
-			await fetchResults();
+			extraLoads++;
+			const ok = await fetchResults();
+			if (!ok) break;
 			target = document.querySelector(`[data-month="${month}"]`);
 		}
 		if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -1449,10 +1472,13 @@ function formatTime(ms) {
 }
 
 function highlightQuery(text, query) {
-	const safe = escapeHtml(text);
+	// Match against the RAW text, then escape each piece, so entities aren't
+	// corrupted (escape-then-match would match inside &amp; or miss & / < / >).
 	const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 	const regex = new RegExp('(' + escaped + ')', 'gi');
-	return safe.replace(regex, '<mark>$1</mark>');
+	return text.split(regex).map((piece, i) =>
+		i % 2 === 1 ? '<mark>' + escapeHtml(piece) + '</mark>' : escapeHtml(piece)
+	).join('');
 }
 
 function escapeHtml(str) {
