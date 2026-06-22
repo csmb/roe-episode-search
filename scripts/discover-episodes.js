@@ -22,6 +22,10 @@ const SKIP_FILES = new Set([
 	'Feb 26 - Burrito Justice Radio.mp3',
 ]);
 
+// Audio formats to scan — kept in sync with transcribe-all.js so the discovery
+// and transcription paths agree on which files count as episodes.
+const AUDIO_EXTENSIONS = new Set(['.mp3', '.m4a', '.wav', '.ogg', '.flac', '.aac', '.wma']);
+
 // Minimum file size (5 MB) — smaller files are likely fragments
 const MIN_SIZE_BYTES = 5 * 1024 * 1024;
 
@@ -70,7 +74,7 @@ export function discoverEpisodes(audioDir, opts = {}) {
 
 	// Read all MP3 files
 	const allFiles = fs.readdirSync(resolvedDir)
-		.filter((f) => f.toLowerCase().endsWith('.mp3') && !SKIP_FILES.has(f));
+		.filter((f) => AUDIO_EXTENSIONS.has(path.extname(f).toLowerCase()) && !SKIP_FILES.has(f));
 
 	// Parse each file and collect candidates
 	const candidates = [];

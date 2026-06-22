@@ -3,6 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { transcribeFile } from './transcribe.js';
+import { parseEpisodeId } from './process-episode.js';
 
 const AUDIO_EXTENSIONS = new Set(['.mp3', '.m4a', '.wav', '.ogg', '.flac', '.aac', '.wma']);
 const MAX_RETRIES = 2;
@@ -44,7 +45,10 @@ async function main() {
 	const pending = [];
 	const skipped = [];
 	for (const file of files) {
-		const episodeId = path.basename(file, path.extname(file));
+		// Canonical ID (roll-over-easy_YYYY-MM-DD_HH-MM-SS), matching the local
+		// whisper.cpp pipeline — so transcripts produced here are found by
+		// process-all.js / discover-episodes.js instead of re-transcribed.
+		const episodeId = parseEpisodeId(file);
 		const transcriptPath = path.join(transcriptsDir, `${episodeId}.json`);
 		if (fs.existsSync(transcriptPath)) {
 			skipped.push(file);
@@ -69,7 +73,7 @@ async function main() {
 
 	for (let i = 0; i < pending.length; i++) {
 		const file = pending[i];
-		const episodeId = path.basename(file, path.extname(file));
+		const episodeId = parseEpisodeId(file);
 		const audioPath = path.join(resolvedDir, file);
 		const outputPath = path.join(transcriptsDir, `${episodeId}.json`);
 
