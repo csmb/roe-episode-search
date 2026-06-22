@@ -417,6 +417,13 @@ function seedDB(episodeId, force) {
 	const transcript = JSON.parse(fs.readFileSync(transcriptPath, 'utf-8'));
 	const { segments } = transcript;
 
+	// A transcript with no segments is a failed transcription — refuse to seed
+	// an empty episode (process-all's quality gate catches this, but direct
+	// runs have no such guard). Thrown before any D1 mutation.
+	if (!Array.isArray(segments) || segments.length === 0) {
+		throw new Error(`Transcript for ${episodeId} has no segments — refusing to seed an empty episode`);
+	}
+
 	// Clear partial segments from a previously crashed seed (no-op on a
 	// clean run); under --force this also clears the old complete seed.
 	runSQL(`DELETE FROM transcript_segments WHERE episode_id = '${escapeSQL(episodeId)}'`);

@@ -306,8 +306,13 @@ async function main() {
 		return;
 	}
 
-	// ids come from D1 (integer PKs), but coerce defensively before splicing into SQL
-	const ids = toRemove.map(r => Number(r.id)).filter(Number.isInteger);
+	// ids come from D1 (integer PKs), but coerce defensively before splicing into SQL.
+	// Abort rather than silently drop a malformed id — a partial delete would
+	// leave orphaned place rows behind.
+	const ids = toRemove.map(r => Number(r.id));
+	if (!ids.every(n => Number.isInteger(n) && n > 0)) {
+		throw new Error('Refusing to delete: some place IDs are not positive integers');
+	}
 	const BATCH = 20;
 
 	for (const table of ['place_mentions', 'place_narratives', 'places']) {

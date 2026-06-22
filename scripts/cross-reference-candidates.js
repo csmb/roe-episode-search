@@ -270,6 +270,11 @@ async function verifyMatches(textMatches, onCheckpoint) {
 		}
 	}
 
+	// Final flush: the periodic checkpoint only fires on 50-confirmed boundaries,
+	// so without this the last <50 verified candidates aren't recorded as
+	// processed and would be re-verified (re-billed) on --resume.
+	if (onCheckpoint) onCheckpoint(verified, textMatches.length);
+
 	console.log('');
 	return verified;
 }

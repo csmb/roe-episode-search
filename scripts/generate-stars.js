@@ -10,41 +10,14 @@
  *   node scripts/generate-stars.js [--dry-run]
  */
 
-import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { wranglerExec, queryJSON, workerDir } from './lib.js';
 
-const DB_NAME = 'roe-episodes';
 const R2_BUCKET = 'roe-audio';
 const R2_KEY = 'data/stars.json';
 const MAX_STARS = 1500;
 const BATCH_SIZE = 5000;
-
-const workerDir = path.resolve(
-    path.dirname(decodeURIComponent(new URL(import.meta.url).pathname)),
-    '..', 'roe-search'
-);
-
-// --- Wrangler helpers (same pattern as process-episode.js) ---
-
-function wranglerExec(args, opts = {}) {
-    const env = { ...process.env };
-    delete env.CLOUDFLARE_API_TOKEN;
-    return execSync(`npx wrangler ${args}`, {
-        cwd: workerDir,
-        encoding: 'utf-8',
-        stdio: opts.stdio || 'pipe',
-        env,
-        ...opts,
-    });
-}
-
-function queryJSON(sql) {
-    const cmd = `d1 execute ${DB_NAME} --remote --json --command="${sql.replace(/"/g, '\\"')}"`;
-    const result = wranglerExec(cmd);
-    const parsed = JSON.parse(result);
-    return parsed[0]?.results ?? [];
-}
 
 // --- Stop words ---
 
@@ -177,7 +150,7 @@ if (dryRun) {
 } else {
     console.log(`\nUploading to R2: ${R2_BUCKET}/${R2_KEY}`);
     wranglerExec(
-        `r2 object put ${R2_BUCKET}/${R2_KEY} --file="${outPath}" --content-type="application/json"`,
+        ['r2', 'object', 'put', `${R2_BUCKET}/${R2_KEY}`, `--file=${outPath}`, '--content-type=application/json'],
         { stdio: 'inherit' }
     );
     console.log('Upload complete.');

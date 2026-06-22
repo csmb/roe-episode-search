@@ -27,7 +27,7 @@ async function main() {
 
 	// Create tables if not exist
 	runSQL(`CREATE TABLE IF NOT EXISTS places (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, lat REAL NOT NULL, lng REAL NOT NULL)`);
-	runSQL(`CREATE TABLE IF NOT EXISTS place_mentions (place_id INTEGER NOT NULL REFERENCES places(id), episode_id TEXT NOT NULL REFERENCES episodes(id), PRIMARY KEY (place_id, episode_id))`);
+	runSQL(`CREATE TABLE IF NOT EXISTS place_mentions (place_id INTEGER NOT NULL REFERENCES places(id), episode_id TEXT NOT NULL REFERENCES episodes(id), sentiment REAL, sentiment_label TEXT, snippet TEXT, snippet_start_ms INTEGER, analyzed_at TEXT, PRIMARY KEY (place_id, episode_id))`);
 	runSQL(`CREATE TABLE IF NOT EXISTS place_narratives (place_id INTEGER PRIMARY KEY REFERENCES places(id), early_text TEXT, recent_text TEXT, arc_text TEXT, episode_count INTEGER, year_min INTEGER, year_max INTEGER, generated_at TEXT)`);
 
 	// Clear existing data. place IDs are AUTOINCREMENT and get reassigned on
