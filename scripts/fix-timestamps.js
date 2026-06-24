@@ -44,7 +44,7 @@ const MODEL = '@cf/baai/bge-base-en-v1.5';
 
 const EMBED_BATCH_SIZE = 100;
 const UPSERT_BATCH_SIZE = 1000;
-const DELETE_BATCH_SIZE = 1000;
+const DELETE_BATCH_SIZE = 100; // Vectorize v2 delete_by_ids caps at 100 ids/request
 
 if (!ACCOUNT_ID || !API_TOKEN) {
 	console.error('Missing CLOUDFLARE_ACCOUNT_ID or CLOUDFLARE_API_TOKEN environment variables.');
@@ -53,12 +53,24 @@ if (!ACCOUNT_ID || !API_TOKEN) {
 
 const BASE_URL = `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}`;
 
+// CLI: --only id1,id2,...  restricts to specific episode IDs (the rest are
+// skipped). --dry-run computes what would change without mutating anything.
+// IMPORTANT: only run this on transcripts that are a genuine uniform 10x
+// inflation — heterogeneously corrupted transcripts must be re-transcribed,
+// not divided by 10.
+const _args = process.argv.slice(2);
+const DRY_RUN = _args.includes('--dry-run');
+const _onlyIdx = _args.indexOf('--only');
+const ONLY = (_onlyIdx >= 0 && _args[_onlyIdx + 1])
+	? new Set(_args[_onlyIdx + 1].split(',').map((s) => s.trim()).filter(Boolean))
+	: null;
+
 // Chunk-windowing logic is shared with generate-embeddings.js / delete-episode.js
 // via the imported chunkEpisode() — these must stay in lockstep so recomputed
 // vector IDs match what was upserted.
 
 async function deleteVectors(ids) {
-	const res = await fetch(`${BASE_URL}/vectorize/v2/indexes/${INDEX_NAME}/delete-by-ids`, {
+	const res = await fetch(`${BASE_URL}/vectorize/v2/indexes/${INDEX_NAME}/delete_by_ids`, {
 		method: 'POST',
 		headers: {
 			Authorization: `Bearer ${API_TOKEN}`,
@@ -91,7 +103,11 @@ async function embedBatch(texts) {
 	}
 
 	const json = await res.json();
-	return json.result.data;
+	const embeddings = json.result?.data;
+	if (!Array.isArray(embeddings) || embeddings.length !== texts.length) {
+		throw new Error(`Embedding API returned ${embeddings?.length ?? 0} vectors for ${texts.length} inputs`);
+	}
+	return embeddings;
 }
 
 async function upsertVectors(vectors) {
@@ -135,6 +151,13 @@ async function main() {
 	for (const file of files) {
 		const filePath = path.join(transcriptsDir, file);
 		const transcript = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+		const epId = transcript.episode_id || path.basename(file, '.json');
+
+		// ── --only filter: skip anything not in the explicit allowlist.
+		if (ONLY && !ONLY.has(epId)) {
+			skippedCount++;
+			continue;
+		}
 
 		// ── Already fixed? Skip — never divide twice, never delete good vectors.
 		if (transcript.timestamps_fixed === true) {
@@ -174,6 +197,14 @@ async function main() {
 
 		const newChunks = chunkEpisode(fixed);
 		console.log(`  New chunks to embed: ${newChunks.length}`);
+
+		if (DRY_RUN) {
+			const last = fixed.segments[fixed.segments.length - 1];
+			console.log(`  [dry-run] would delete ${oldIds.length} old vectors, embed+upsert ${newChunks.length} new chunks, ` +
+				`write fixed transcript (new duration ~${last ? (last.end_ms / 1000).toFixed(0) : '?'}s). No changes made.`);
+			fixedCount++;
+			continue;
+		}
 
 		// ── 3. Delete old wrong-ID vectors (idempotent: deleting missing IDs is a no-op).
 		for (let i = 0; i < oldIds.length; i += DELETE_BATCH_SIZE) {
@@ -229,22 +260,15 @@ async function main() {
 		fixedCount++;
 	}
 
-	console.log(`\n✓ Done: ${fixedCount} episode(s) fixed, ${skippedCount} skipped (already fixed).`);
-	console.log('\nNow fix D1 with:');
+	console.log(`\n✓ Done: ${fixedCount} episode(s) ${DRY_RUN ? 'would be fixed (dry-run)' : 'fixed'}, ${skippedCount} skipped.`);
+	console.log('\nThis script fixed disk transcripts + Vectorize. D1 transcript_segments are');
+	console.log('NOT touched here. Re-seed D1 ONLY for episodes whose D1 segments are still');
+	console.log('inflated, per-episode (do NOT run a blanket UPDATE — most segments are already');
+	console.log('correct and a global /10 would corrupt them). Find them with:');
 	console.log(
-		'  npx wrangler d1 execute roe-episodes --remote ' +
-		'--command="UPDATE transcript_segments SET start_ms = start_ms / 10, end_ms = end_ms / 10"'
-	);
-	console.log(
-		'  npx wrangler d1 execute roe-episodes --remote ' +
-		'--command="UPDATE episodes SET duration_ms = duration_ms / 10"'
-	);
-	console.log('\nVerification:');
-	console.log(
-		'  node -e "const fs=require(\'fs\'); ' +
-		'const t=JSON.parse(fs.readFileSync(\'transcripts/roll-over-easy_2014-08-14_07-30-00.json\')); ' +
-		'const last=t.segments[t.segments.length-1]; ' +
-		'console.log(\'last end_ms/1000 =\', last.end_ms/1000, \'s (expect ~7200)\')"'
+		'  npx wrangler d1 execute roe-episodes --remote --command="' +
+		'SELECT episode_id, MAX(end_ms)/3600000.0 AS hrs FROM transcript_segments ' +
+		'GROUP BY episode_id HAVING MAX(end_ms) > 18000000"'
 	);
 }
 
