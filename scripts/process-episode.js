@@ -620,13 +620,16 @@ async function generateSummary(episodeId, force) {
 function uploadAudio(mp3Path, episodeId, force) {
 	const timer = stepTimer('UPLOAD-AUDIO');
 
-	// Check if already uploaded
+	// Check if already uploaded. audio_file must point at this episode's
+	// .m4a — a raw-MP3 URL (e.g. from an ingest flow that stashed the
+	// original upload) does NOT count, since the player only ever requests
+	// /audio/{id}.m4a.
 	if (!force) {
 		try {
 			const existing = queryJSON(
 				`SELECT audio_file FROM episodes WHERE id = '${escapeSQL(episodeId)}' AND audio_file IS NOT NULL AND audio_file != ''`
 			);
-			if (existing.length > 0) {
+			if (existing.length > 0 && existing[0].audio_file.endsWith(`/${episodeId}.m4a`)) {
 				timer.done('audio already uploaded, skipping');
 				return;
 			}

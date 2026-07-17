@@ -67,14 +67,18 @@ async function main() {
 		process.exit(0);
 	}
 
-	// Check which episodes already have audio in the DB
+	// Check which episodes already have audio in the DB. Only an audio_file
+	// pointing at the episode's own .m4a counts — a raw-MP3 URL means the
+	// remux/upload step never ran, so the episode still needs uploading.
 	let existingAudio = new Set();
 	try {
 		const results = queryJSON(
-			"SELECT id FROM episodes WHERE audio_file IS NOT NULL AND audio_file != ''",
+			"SELECT id, audio_file FROM episodes WHERE audio_file IS NOT NULL AND audio_file != ''",
 			{ isLocal }
 		);
-		existingAudio = new Set(results.map((r) => r.id));
+		existingAudio = new Set(
+			results.filter((r) => r.audio_file.endsWith(`/${r.id}.m4a`)).map((r) => r.id)
+		);
 	} catch {
 		// Table might not exist yet
 	}
