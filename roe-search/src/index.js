@@ -172,6 +172,12 @@ export default {
 			}
 			return handleLatestEpisode(url, env, request);
 		}
+		if (url.pathname === '/api/episodes/stats') {
+			if (!checkRateLimit(clientIP, 'search', RATE_LIMIT_SEARCH)) {
+				return json({ error: 'Rate limit exceeded. Try again in a minute.' }, 429, request);
+			}
+			return handleEpisodeStats(env, request);
+		}
 		if (url.pathname === '/api/episodes') {
 			if (!checkRateLimit(clientIP, 'search', RATE_LIMIT_SEARCH)) {
 				return json({ error: 'Rate limit exceeded. Try again in a minute.' }, 429, request);
@@ -479,6 +485,41 @@ async function handleLatestEpisode(url, env, request) {
 		}, 200, null, PUBLIC);
 	} catch (err) {
 		return json({ error: 'Failed to load the latest episode.' }, 500, null,
+			{ 'Access-Control-Allow-Origin': '*' });
+	}
+}
+
+// Archive totals in one small response, for the same reason as
+// /api/episodes/latest: the alternative is pulling all 552 episodes and adding
+// them up in the client. Public CORS and caching for the same reasons too — the
+// numbers move once a week at most.
+async function handleEpisodeStats(env, request) {
+	try {
+		const [totals, guests] = await Promise.all([
+			env.DB.prepare(
+				'SELECT COUNT(*) AS episodes, SUM(duration_ms) AS total_ms, ' +
+				'MIN(id) AS first_id, MAX(id) AS last_id FROM episodes'
+			).first(),
+			env.DB.prepare('SELECT COUNT(DISTINCT guest_name) AS guests FROM episode_guests').first(),
+		]);
+
+		const dateOf = id => (id && (id.match(/_(\d{4}-\d{2}-\d{2})_/) || [])[1]) || null;
+
+		return json({
+			stats: {
+				episodes: totals?.episodes ?? 0,
+				// Rounded here so every caller shows the same number.
+				hours: Math.round((totals?.total_ms ?? 0) / 3600000),
+				guests: guests?.guests ?? 0,
+				first_date: dateOf(totals?.first_id),
+				latest_date: dateOf(totals?.last_id),
+			},
+		}, 200, null, {
+			'Access-Control-Allow-Origin': '*',
+			'Cache-Control': 'public, max-age=3600',
+		});
+	} catch (err) {
+		return json({ error: 'Failed to load archive stats.' }, 500, null,
 			{ 'Access-Control-Allow-Origin': '*' });
 	}
 }
