@@ -49,6 +49,10 @@ const HTML_HEADERS = {
 	'Referrer-Policy': 'strict-origin-when-cross-origin',
 };
 
+// Deliberately unchanged for cross-site consumers. /api/episodes/latest sets its
+// own Access-Control-Allow-Origin: * instead of adding callers here, because
+// adding an origin to this list opens *every* endpoint to it, including
+// /api/admin/*. One public endpoint should not cost that.
 const ALLOWED_ORIGINS = ['https://rollovereasy.org', 'https://www.rollovereasy.org'];
 
 function getCorsOrigin(request) {
@@ -159,6 +163,14 @@ export default {
 				return json({ error: 'Rate limit exceeded. Try again in a minute.' }, 429, request);
 			}
 			return handleTimeline(url, env, request);
+		}
+		// Ahead of /api/episodes for readability only — that route is an exact
+		// match, so it could not swallow this one.
+		if (url.pathname === '/api/episodes/latest') {
+			if (!checkRateLimit(clientIP, 'search', RATE_LIMIT_SEARCH)) {
+				return json({ error: 'Rate limit exceeded. Try again in a minute.' }, 429, request);
+			}
+			return handleLatestEpisode(url, env, request);
 		}
 		if (url.pathname === '/api/episodes') {
 			if (!checkRateLimit(clientIP, 'search', RATE_LIMIT_SEARCH)) {
@@ -418,6 +430,56 @@ async function handleTimeline(url, env, request) {
 	}, 200, request);
 	} catch (err) {
 		return json({ error: 'Search failed. Try simplifying your query.' }, 400, request);
+	}
+}
+
+// The newest episode and a link to it, and nothing else. /api/episodes is the
+// only other listing and it returns all 552 episodes — ~364KB to render one
+// line, which is why this exists rather than a limit param on that route.
+//
+// ORDER BY id DESC, not published_at: 540 of 552 rows have a null published_at,
+// so that column cannot order the table. Episode ids are
+// roll-over-easy_YYYY-MM-DD_HH-MM-SS with zero-padded dates, so sorting them as
+// text is sorting them by date — the same assumption handleEpisodes already
+// makes. The date is read back out of the id for the same reason.
+async function handleLatestEpisode(url, env, request) {
+	try {
+		const episode = await env.DB.prepare(
+			'SELECT id, title, duration_ms FROM episodes ORDER BY id DESC LIMIT 1'
+		).first();
+
+		if (!episode) {
+			return json({ error: 'No episodes found.' }, 404, request);
+		}
+
+		const date = (episode.id.match(/_(\d{4}-\d{2}-\d{2})_/) || [])[1] || null;
+
+		// Open to any origin, and deliberately not via ALLOWED_ORIGINS: this is
+		// public podcast metadata, sent with no credentials, so there is nothing
+		// here to protect — whereas listing a caller in ALLOWED_ORIGINS would
+		// hand it every other endpoint too. A plain GET with no custom headers
+		// is a simple request, so no preflight has to be answered for it.
+		//
+		// A new episode appears weekly at most, so an hour of caching costs
+		// freshness nothing and spares the database the repeat reads.
+		const PUBLIC = {
+			'Access-Control-Allow-Origin': '*',
+			'Cache-Control': 'public, max-age=3600',
+		};
+
+		return json({
+			episode: {
+				id: episode.id,
+				title: episode.title,
+				date,
+				duration_ms: episode.duration_ms,
+				// Matches the share link the episodes page builds for itself.
+				url: url.origin + '/episodes#' + episode.id,
+			},
+		}, 200, null, PUBLIC);
+	} catch (err) {
+		return json({ error: 'Failed to load the latest episode.' }, 500, null,
+			{ 'Access-Control-Allow-Origin': '*' });
 	}
 }
 
@@ -800,7 +862,7 @@ async function handleAdminApi(url, env, request) {
 	return json({ error: 'Not found' }, 404, request);
 }
 
-function json(data, status = 200, request) {
+function json(data, status = 200, request, extraHeaders) {
 	const headers = {
 		'Content-Type': 'application/json',
 		'X-Content-Type-Options': 'nosniff',
@@ -812,5 +874,8 @@ function json(data, status = 200, request) {
 			headers['Vary'] = 'Origin';
 		}
 	}
+	// Pass request as null alongside extraHeaders to opt a route out of the
+	// allowlist and set its own CORS — see handleLatestEpisode.
+	Object.assign(headers, extraHeaders || {});
 	return new Response(JSON.stringify(data), { status, headers });
 }
