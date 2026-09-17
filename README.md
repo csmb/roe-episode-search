@@ -101,7 +101,7 @@ A single static HTML file with everything inline. Loaded straight from the worke
 
 - **Leaflet 1.9.4** — map, markers, popups
 - **Fuse.js 7.0.0** — fuzzy place-name search
-- **CARTO Voyager raster tiles** — base layer
+- **Esri Light Gray Canvas raster tiles** — base layer (keyless; native tiles to z16, Leaflet upscales past that). Replaced CARTO Voyager after CARTO began watermarking anonymous tiles with "API KEY REQUIRED".
 
 The lifecycle is dead simple:
 
