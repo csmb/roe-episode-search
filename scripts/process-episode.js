@@ -6,7 +6,8 @@
  *   2. Seed D1 database
  *   3. Generate embeddings → Vectorize
  *   4. Generate AI summary
- *   5. Upload audio → R2
+ *   5. Detect guest-interview start (guest_start_ms)
+ *   6. Upload audio → R2
  *
  * Usage:
  *   node scripts/process-episode.js /path/to/roll-over-easy_2026-02-16_07-30-00.mp3
@@ -14,7 +15,7 @@
  * Options:
  *   --episode-id ID          Override auto-parsed episode ID
  *   --force                  Re-run all steps even if already done
- *   --skip step1,step2       Skip specific steps (transcribe, seed-db, embeddings, summary, upload-audio)
+ *   --skip step1,step2       Skip specific steps (transcribe, seed-db, embeddings, summary, guest-start, upload-audio)
  */
 
 import { execFileSync } from 'node:child_process';
@@ -31,6 +32,7 @@ import { buildSummarySystemPrompt } from './prompts.js';
 import { purgeEpisode } from './clean-hallucinations.js';
 import { generateSummaryFromText } from './generate-summaries.js';
 import { chunkEpisode } from './generate-embeddings.js';
+import { detectGuestStart, MIN_START_MS } from './guest-start.js';
 
 loadEnv();
 
@@ -615,7 +617,74 @@ async function generateSummary(episodeId, force) {
 	timer.done();
 }
 
-// ── Step 7: Upload audio → R2 ─────────────────────────────────────────
+// ── Step 7: Detect guest-interview start (guest_start_ms) ──────────────
+
+// Depends on the summary step having populated episode_guests. Reads the
+// local transcript for segments and the guest list from D1, then writes
+// guest_start_ms — the field that gates the "Skip to interview" button.
+function detectGuestStartStep(episodeId, force) {
+	const timer = stepTimer('GUEST-START');
+
+	// Skip if already set (unless --force)
+	if (!force) {
+		try {
+			const existing = queryJSON(
+				`SELECT guest_start_ms FROM episodes WHERE id = '${escapeSQL(episodeId)}' AND guest_start_ms IS NOT NULL`
+			);
+			if (existing.length > 0) {
+				timer.done('guest_start_ms already set, skipping');
+				return;
+			}
+		} catch (err) {
+			logWarn(`[${episodeId}] DB check failed in detectGuestStartStep: ${err.message}`);
+		}
+	}
+
+	// No guests → no interview marker
+	const guestRows = queryJSON(`SELECT guest_name FROM episode_guests WHERE episode_id = '${escapeSQL(episodeId)}'`);
+	const guests = guestRows.map((g) => g.guest_name);
+	if (guests.length === 0) {
+		timer.done('no guests, skipping');
+		return;
+	}
+
+	// Read transcript segments (written by the transcribe step)
+	const transcriptPath = path.join(transcriptsDir, `${episodeId}.json`);
+	if (!fs.existsSync(transcriptPath)) {
+		logWarn(`[${episodeId}] transcript not found, skipping guest-start detection`);
+		timer.done('no transcript, skipping');
+		return;
+	}
+	const transcript = JSON.parse(fs.readFileSync(transcriptPath, 'utf-8'));
+	const segments = transcript.segments || [];
+
+	// Duration guard: skip episodes shorter than the 50-minute detection window
+	const durationMs = segments.length > 0 ? segments[segments.length - 1].end_ms : 0;
+	if (durationMs && durationMs < MIN_START_MS) {
+		timer.done(`episode shorter than 50min (${durationMs}ms), skipping`);
+		return;
+	}
+
+	const startMs = detectGuestStart(segments, guests);
+	if (startMs == null) {
+		timer.done('no guest start detected, skipping');
+		return;
+	}
+
+	// Sanity check against inflated timestamps
+	if (durationMs && startMs > durationMs) {
+		timer.done(`detected ${startMs}ms exceeds duration ${durationMs}ms, skipping`);
+		return;
+	}
+
+	runSQL(`UPDATE episodes SET guest_start_ms = ${startMs} WHERE id = '${escapeSQL(episodeId)}'`);
+
+	const minutes = Math.floor(startMs / 60000);
+	const seconds = Math.floor((startMs % 60000) / 1000);
+	timer.done(`guest_start_ms=${startMs} (${minutes}:${String(seconds).padStart(2, '0')})`);
+}
+
+// ── Step 8: Upload audio → R2 ─────────────────────────────────────────
 
 function uploadAudio(mp3Path, episodeId, force) {
 	const timer = stepTimer('UPLOAD-AUDIO');
@@ -696,7 +765,7 @@ async function main() {
 		console.error('Options:');
 		console.error('  --episode-id ID          Override auto-parsed episode ID');
 		console.error('  --force                  Re-run all steps even if already done');
-		console.error('  --skip step1,step2       Skip steps (transcribe, seed-db, embeddings, summary, upload-audio)');
+		console.error('  --skip step1,step2       Skip steps (transcribe, seed-db, embeddings, summary, guest-start, upload-audio)');
 		process.exit(1);
 	}
 
@@ -749,7 +818,14 @@ async function main() {
 		console.log('\n[SUMMARY] Skipped');
 	}
 
-	// Step 6: Upload audio
+	// Step 6: Guest-interview start detection (needs guests from the summary step)
+	if (!skip.has('guest-start')) {
+		detectGuestStartStep(episodeId, force);
+	} else {
+		console.log('\n[GUEST-START] Skipped');
+	}
+
+	// Step 7: Upload audio
 	if (!skip.has('upload-audio')) {
 		uploadAudio(mp3Path, episodeId, force);
 	} else {
