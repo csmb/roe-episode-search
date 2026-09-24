@@ -579,28 +579,46 @@ async function handleAudio(request, url, env) {
 		}
 	}
 
-	let object;
-	try {
-		object = await env.AUDIO.get(key, r2Range ? { range: r2Range } : {});
-	} catch {
-		// R2 throws on an unsatisfiable range (e.g. offset past EOF) — answer
-		// with 416 + the object size instead of a 500.
-		const head = await env.AUDIO.head(key);
-		if (!head) return new Response('Not found', { status: 404 });
-		return new Response('Range Not Satisfiable', {
-			status: 416,
-			headers: { 'Content-Range': `bytes */${head.size}`, 'Accept-Ranges': 'bytes' },
-		});
+	// Returns the R2 object, null if the key doesn't exist, or a 416 Response.
+	const fetchObject = async (k) => {
+		try {
+			return await env.AUDIO.get(k, r2Range ? { range: r2Range } : {});
+		} catch {
+			// R2 throws on an unsatisfiable range (e.g. offset past EOF) — answer
+			// with 416 + the object size instead of a 500.
+			const head = await env.AUDIO.head(k);
+			if (!head) return null;
+			return new Response('Range Not Satisfiable', {
+				status: 416,
+				headers: { 'Content-Range': `bytes */${head.size}`, 'Accept-Ranges': 'bytes' },
+			});
+		}
+	};
+
+	let object = await fetchObject(key);
+	let isFallback = false;
+	if (!object) {
+		// Episodes ingested by the roe-pipeline Worker only have the raw MP3 in
+		// R2 (the Worker can't transcode); {id}.m4a arrives later via
+		// scripts/repair-missing-m4a.js. Until then, serve the raw MP3.
+		const rawKey = await rawMp3Key(key.slice(0, -'.m4a'.length), env);
+		if (rawKey) {
+			object = await fetchObject(rawKey);
+			isFallback = true;
+		}
 	}
 
+	if (object instanceof Response) return object;
 	if (!object) {
 		return new Response('Not found', { status: 404 });
 	}
 
 	const headers = new Headers();
-	headers.set('Content-Type', 'audio/mp4');
+	headers.set('Content-Type', isFallback ? 'audio/mpeg' : 'audio/mp4');
 	headers.set('Accept-Ranges', 'bytes');
-	headers.set('Cache-Control', 'public, max-age=86400');
+	// Don't cache the fallback: once the m4a lands, byte ranges cached from
+	// the MP3 would be spliced into the m4a stream.
+	headers.set('Cache-Control', isFallback ? 'no-store' : 'public, max-age=86400');
 
 	if (r2Range) {
 		const size = object.size; // full object size, not the slice length
@@ -626,6 +644,21 @@ async function handleAudio(request, url, env) {
 
 	headers.set('Content-Length', String(object.size));
 	return new Response(object.body, { status: 200, headers });
+}
+
+// R2 key of the episode's raw MP3, taken from the audio_file URL the
+// roe-pipeline Worker records (…/Roll%20Over%20Easy%20YYYY-MM-DD.mp3).
+async function rawMp3Key(episodeId, env) {
+	const row = await env.DB.prepare('SELECT audio_file FROM episodes WHERE id = ?1')
+		.bind(episodeId)
+		.first();
+	if (!row?.audio_file) return null;
+	try {
+		const key = decodeURIComponent(new URL(row.audio_file).pathname.slice(1));
+		return key.toLowerCase().endsWith('.mp3') ? key : null;
+	} catch {
+		return null;
+	}
 }
 
 async function handleEpisodeById(episodeId, env, request) {
