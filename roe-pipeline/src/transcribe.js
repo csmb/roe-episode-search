@@ -5,6 +5,7 @@
 
 import { cleanSegments } from './clean-segments.js';
 import { pickChunkSlice } from './mp3-frames.js';
+import { fillGaps } from './gap-retry.js';
 
 const TARGET_CHUNK = 20 * 1024 * 1024; // ~20MB, under the 25MB Whisper limit
 const TAIL_MARGIN  = 64 * 1024;        // extra bytes read past TARGET_CHUNK so
@@ -69,7 +70,10 @@ export async function transcribeFromR2(bucket, key, openaiApiKey, _resume) {
     }
 
     const chunkBytes = window.subarray(sliceStart, sliceEnd);
-    const { segments, duration } = await transcribeChunk(chunkBytes, openaiApiKey, timeOffset);
+    const first = await transcribeChunk(chunkBytes, openaiApiKey, timeOffset);
+    const duration = first.duration;
+    const segments = await fillGaps(chunkBytes, first.segments, timeOffset, duration,
+      (clip, offsetSec) => transcribeChunk(clip, openaiApiKey, offsetSec));
 
     allSegments.push(...segments);
     timeOffset += duration;
