@@ -86,7 +86,7 @@ async function main() {
 	console.log('\n=== Step 3/5: Delete R2 audio (if present) ===');
 	const r2Key = `${episodeId}.m4a`;
 	try {
-		wranglerExec(['r2', 'object', 'delete', `${R2_BUCKET}/${r2Key}`], { stdio: 'pipe' });
+		wranglerExec(['r2', 'object', 'delete', '--remote', `${R2_BUCKET}/${r2Key}`], { stdio: 'pipe' });
 		console.log(`  Deleted R2 object: ${r2Key}`);
 	} catch (err) {
 		console.log(`  No R2 object to delete (or delete failed): ${err.message.split('\n')[0]}`);

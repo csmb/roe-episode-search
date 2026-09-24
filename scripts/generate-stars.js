@@ -150,7 +150,7 @@ if (dryRun) {
 } else {
     console.log(`\nUploading to R2: ${R2_BUCKET}/${R2_KEY}`);
     wranglerExec(
-        ['r2', 'object', 'put', `${R2_BUCKET}/${R2_KEY}`, `--file=${outPath}`, '--content-type=application/json'],
+        ['r2', 'object', 'put', '--remote', `${R2_BUCKET}/${R2_KEY}`, `--file=${outPath}`, '--content-type=application/json'],
         { stdio: 'inherit' }
     );
     console.log('Upload complete.');

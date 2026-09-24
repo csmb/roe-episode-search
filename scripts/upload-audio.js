@@ -127,7 +127,7 @@ async function main() {
 				// Upload to R2
 				console.log('  Uploading to R2...');
 				wranglerExec([
-					'r2', 'object', 'put', `${R2_BUCKET}/${r2Key}`,
+					'r2', 'object', 'put', '--remote', `${R2_BUCKET}/${r2Key}`,
 					`--file=${convertedPath}`, '--content-type=audio/mp4',
 				]);
 

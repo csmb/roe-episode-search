@@ -721,7 +721,7 @@ function uploadAudio(mp3Path, episodeId, force) {
 		const r2Key = `${episodeId}.m4a`;
 		const publicUrl = `${R2_PUBLIC_URL}/${r2Key}`;
 		console.log('  Uploading to R2...');
-		wranglerExec(['r2', 'object', 'put', `${R2_BUCKET}/${r2Key}`, `--file=${m4aPath}`, '--content-type=audio/mp4']);
+		wranglerExec(['r2', 'object', 'put', '--remote', `${R2_BUCKET}/${r2Key}`, `--file=${m4aPath}`, '--content-type=audio/mp4']);
 
 		// Update DB
 		console.log('  Updating database...');

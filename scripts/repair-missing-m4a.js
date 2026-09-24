@@ -158,7 +158,7 @@ async function main() {
 
 				const r2Key = `${job.id}.m4a`;
 				console.log('  Uploading to R2...');
-				wranglerExec(['r2', 'object', 'put', `${R2_BUCKET}/${r2Key}`, `--file=${m4aPath}`, '--content-type=audio/mp4']);
+				wranglerExec(['r2', 'object', 'put', '--remote', `${R2_BUCKET}/${r2Key}`, `--file=${m4aPath}`, '--content-type=audio/mp4']);
 
 				console.log('  Updating database...');
 				runSQL(`UPDATE episodes SET audio_file = '${escapeSQL(`${R2_PUBLIC_URL}/${r2Key}`)}' WHERE id = '${escapeSQL(job.id)}'`);
