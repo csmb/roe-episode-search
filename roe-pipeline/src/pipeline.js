@@ -9,6 +9,7 @@ import { transcribeFromR2 } from './transcribe.js';
 import { seedDatabase } from './seed-db.js';
 import { generateEmbeddings } from './embeddings.js';
 import { generateSummary } from './summary.js';
+import { seedGuestStart } from './guest-start.js';
 import { extractAndSeedPlaces } from './places.js';
 import { scoreAndSeedSentiment } from './sentiment.js';
 
@@ -111,6 +112,19 @@ export class EpisodePipeline {
         case 'summary': {
           const segments = await this.loadSegments();
           await generateSummary(this.env.DB, episodeId, segments, this.env.OPENAI_API_KEY);
+          await this.advanceStep('guest-start');
+          break;
+        }
+
+        case 'guest-start': {
+          const segments = await this.loadSegments();
+          const durationMs = await this.state.storage.get('durationMs');
+          // Soft-fail: a missing "Skip to interview" button shouldn't abort ingest.
+          try {
+            await seedGuestStart(this.env.DB, episodeId, segments, durationMs);
+          } catch (err) {
+            console.error(`[${episodeId}] Guest-start detection failed (soft): ${err.message}`);
+          }
           await this.advanceStep('extract-places');
           break;
         }
