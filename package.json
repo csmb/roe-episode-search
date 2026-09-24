@@ -1,8 +1,5 @@
 {
   "type": "module",
-  "devDependencies": {
-    "wrangler": "^4.56.0"
-  },
   "dependencies": {
     "openai": "^6.22.0"
   }
