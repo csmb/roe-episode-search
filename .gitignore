@@ -43,3 +43,6 @@ scripts/.crossref-checkpoint.json
 
 # Local planning/spec scratchpads
 docs/superpowers/
+
+# superpowers plugin local state
+.superpowers/
