@@ -15,6 +15,8 @@ const DB_BATCH_SIZE = 20; // D1 has ~100 SQL variable limit; 20 rows × 4 params
  * The row is upserted, never deleted: transcript lines and guests reference it,
  * and D1 enforces those foreign keys. guests_reviewed and guest_start_ms are
  * left as they are, and an audio link already on the row (a repaired .m4a) wins.
+ * So do the title and summary of a reviewed episode, or of one that already
+ * has a summary: those may have been written by hand (e.g. "Recording Lost").
  *
  * @param {D1Database} db
  * @param {object} ep
@@ -32,9 +34,12 @@ export function seedStatements(db, { episodeId, title, summary, guests, audioUrl
   const dateMatch = episodeId.match(/(\d{4}-\d{2}-\d{2})/);
   const publishedAt = dateMatch ? dateMatch[1] : null;
 
+  const keepText = "episodes.guests_reviewed = 1 OR TRIM(COALESCE(episodes.summary, '')) <> ''";
   const statements = [
     db.prepare(`INSERT INTO episodes (id, title, audio_file, duration_ms, published_at, summary) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-      ON CONFLICT(id) DO UPDATE SET title = excluded.title, summary = excluded.summary,
+      ON CONFLICT(id) DO UPDATE SET
+        title = CASE WHEN ${keepText} THEN episodes.title ELSE excluded.title END,
+        summary = CASE WHEN ${keepText} THEN episodes.summary ELSE excluded.summary END,
         duration_ms = excluded.duration_ms, published_at = excluded.published_at,
         audio_file = COALESCE(episodes.audio_file, excluded.audio_file)`)
       .bind(episodeId, title, audioUrl, durationMs, publishedAt, summary),

@@ -63,6 +63,18 @@ describe('seedEpisode', () => {
     expect(db.rows('SELECT guest_name FROM episode_guests')).toEqual([{ guest_name: 'Curated Name' }]);
   });
 
+  it('keeps the title and summary of a reviewed episode, or one written by hand', async () => {
+    db.sqlite.prepare('INSERT INTO episodes (id, title, summary, guests_reviewed) VALUES (?, ?, ?, 1)').run(EP, 'Edited Title', 'Edited summary.');
+    await seedEpisode(db, episode());
+    expect(db.rows('SELECT title, summary, duration_ms FROM episodes')).toEqual([{ title: 'Edited Title', summary: 'Edited summary.', duration_ms: 7_200_000 }]);
+    expect(count('transcript_segments')).toBe(100);
+
+    db.sqlite.exec('DELETE FROM transcript_segments; DELETE FROM episodes;');
+    db.sqlite.prepare('INSERT INTO episodes (id, title, summary) VALUES (?, ?, ?)').run(EP, 'Guac-Off Week (Recording Lost)', 'Only the opening song survived.');
+    await seedEpisode(db, episode());
+    expect(db.rows('SELECT title, summary FROM episodes')).toEqual([{ title: 'Guac-Off Week (Recording Lost)', summary: 'Only the opening song survived.' }]);
+  });
+
   it('changes nothing when any statement in the batch fails', async () => {
     await seedEpisode(db, episode({ segments: lines(40) }));
     const before = db.rows('SELECT * FROM transcript_segments');

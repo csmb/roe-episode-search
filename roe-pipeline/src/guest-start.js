@@ -113,8 +113,15 @@ export async function seedGuestStart(db, episodeId, segments, durationMs) {
     return null;
   }
 
-  await db.prepare('UPDATE episodes SET guest_start_ms = ? WHERE id = ?')
-    .bind(startMs, episodeId).run();
+  // Only an empty time is filled, and never on a reviewed episode: a time set
+  // (or cleared) by hand in admin stays as it is.
+  const { meta } = await db.prepare(
+    'UPDATE episodes SET guest_start_ms = ? WHERE id = ? AND guest_start_ms IS NULL AND COALESCE(guests_reviewed, 0) = 0'
+  ).bind(startMs, episodeId).run();
+  if (meta?.changes === 0) {
+    console.log(`  [${episodeId}] interview time already set or reviewed — leaving it`);
+    return null;
+  }
 
   const minutes = Math.floor(startMs / 60000);
   const seconds = Math.floor((startMs % 60000) / 1000);
