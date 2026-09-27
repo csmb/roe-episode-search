@@ -34,7 +34,6 @@ roe-episode-search/
 │   ├── candidates/            # Map enrichment: external data fetchers
 │   │   ├── fetch-datasf.js    # DataSF registered businesses (no API key)
 │   │   ├── fetch-osm.js       # OpenStreetMap parks, trails, landmarks
-│   │   ├── fetch-yelp.js      # Yelp businesses (needs YELP_API_KEY)
 │   │   └── merge-candidates.js # Merge + deduplicate all candidate sources
 │   ├── cross-reference-candidates.js  # Match candidates against transcripts via GPT-4o-mini
 │   ├── seed-verified-places.js        # Insert verified places into D1 (geocodes via Nominatim)

@@ -135,7 +135,6 @@ All scripts are in `scripts/` and run locally with Node.js:
 | `discover-episodes.js` | Scan an audio directory, parse filenames, deduplicate by date. |
 | `audit-episodes.js` | Audit for non-Thursday dates, missing Thursdays, duplicates, unparseable filenames. |
 | `clean-hallucinations.js` | Remove hallucinated repeated-phrase segments from D1. |
-| `generate-manifest.js` / `manifest-status.js` | Build and inspect the episode manifest. |
 
 ### Batch processing
 
