@@ -2,6 +2,11 @@
   "name": "roe-episode-search",
   "main": "src/index.js",
   "compatibility_date": "2024-12-01",
+  // Serve only on rollovereasy.org (custom domain, set in the dashboard). The
+  // default *.workers.dev copy and preview URLs would bypass anything set up on
+  // that zone, such as Cloudflare Access on /admin.
+  "workers_dev": false,
+  "preview_urls": false,
   "d1_databases": [
     {
       "binding": "DB",
