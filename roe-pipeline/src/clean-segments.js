@@ -1,7 +1,34 @@
 /**
  * Clean Whisper transcription artifacts from segments.
- * Removes: zero-duration, consecutive duplicates, internal loops, hallucinations.
+ * Removes: zero-duration, consecutive duplicates, internal loops, hallucinations,
+ * wrong-language lines and read-back spelling hints.
  */
+
+import { PROMPT_TERMS, normalizeTerm } from './whisper-prompt.js';
+
+/**
+ * True when most of the letters are outside the Latin alphabet. Whisper returns
+ * gibberish in another script (Sinhala, seen on 9 episodes) when it guesses the
+ * wrong language, e.g. from a chunk that starts on music. Accented Latin
+ * ("Café") is fine.
+ */
+export function isMostlyNonLatin(text) {
+  const letters = text.match(/\p{L}/gu) || [];
+  if (letters.length < 3) return false;
+  const latin = text.match(/\p{Script=Latin}/gu) || [];
+  return latin.length / letters.length < 0.5;
+}
+
+/**
+ * True when a line is mostly the spelling-hint prompt read back as speech
+ * ("Tartine, Humphry Slocombe, Lazy Bear, …"), which Whisper does during music.
+ */
+export function isPromptEcho(text) {
+  const items = text.split(',').map(normalizeTerm).filter(Boolean);
+  if (items.length < 4) return false;
+  const hits = items.filter(t => PROMPT_TERMS.has(t)).length;
+  return hits / items.length >= 0.6;
+}
 
 export function cleanSegments(segments) {
   // Build hallucination frequency map from original segments before any dedup.
@@ -36,6 +63,9 @@ export function cleanSegments(segments) {
 
     // Drop hallucinated short phrases
     if (hallucinated.has(seg.text.trim().toLowerCase())) continue;
+
+    // Drop wrong-language gibberish and read-back spelling hints
+    if (isMostlyNonLatin(seg.text) || isPromptEcho(seg.text)) continue;
 
     cleaned.push(seg);
   }

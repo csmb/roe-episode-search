@@ -3,36 +3,15 @@
  * Handles files >25MB by chunking and stitching timestamps.
  */
 
-import { cleanSegments } from './clean-segments.js';
+import { cleanSegments, isMostlyNonLatin, isPromptEcho } from './clean-segments.js';
 import { pickChunkSlice } from './mp3-frames.js';
 import { fillGaps } from './gap-retry.js';
+import { SF_VOCAB_PROMPT } from './whisper-prompt.js';
 
 const TARGET_CHUNK = 20 * 1024 * 1024; // ~20MB, under the 25MB Whisper limit
 const TAIL_MARGIN  = 64 * 1024;        // extra bytes read past TARGET_CHUNK so
                                        // findChunkEnd can always find the next
                                        // frame boundary just past the limit.
-
-// Whisper prompt for SF proper nouns — same as scripts/process-episode.js
-const SF_VOCAB_PROMPT = [
-  'Roll Over Easy, BFF.fm, Stroll Over Easy,',
-  'SoMa, the Tenderloin, Dogpatch, Bernal Heights, Japantown, Visitacion Valley,',
-  'Haight-Ashbury, Pac Heights, Noe Valley, Potrero Hill, the Fillmore, Bayview,',
-  'the Ferry Building, Golden Gate Park, Sutro Baths, Lands End, McLaren Park,',
-  'JFK Promenade, Crosstown Trail, Pier 70, Wave Organ, Transamerica Pyramid,',
-  'Conservatory of Flowers, the Botanical Garden, Salesforce Park,',
-  'Hamburger Haven, Club Fugazi, Manny\'s, The Lab, Spin City, Parklab,',
-  'La Cocina, Bi-Rite, Tartine, Humphry Slocombe, Lazy Bear, Toronado,',
-  'Wesburger, The New Wheel, Laughing Monk,',
-  'Sequoia, The Early Bird,',
-  'Emperor Norton, Herb Caen, Cosmic Amanda, Dr. Guacamole,',
-  'Muni Diaries, Noise Pop, Litquake, Litcrawl, KQED, KALW, Hoodline,',
-  'Mission Local, SFGate, Tablehopper, Total SF, Bay City Beacon,',
-  'BAYCAT, ODC, YBCA, Gray Area, SFMOMA, the Exploratorium,',
-  'Sisters of Perpetual Indulgence, Cacophony Society,',
-  'Muni, BART, Caltrain, the N-Judah, the F-Market,',
-  'Eichler Homes, Compton\'s Cafeteria, Critical Mass, Sketch Fest, Karl the Fog,',
-  'NIMBYism, YIMBYism, Dungeness crab, cioppino, dim sum, sourdough,',
-].join(' ');
 
 /**
  * Transcribe a full MP3 from R2, chunking on frame boundaries so each chunk
@@ -97,9 +76,12 @@ export async function transcribeFromR2(bucket, key, openaiApiKey, _resume) {
  * Workers runtime serializes those in a way OpenAI's parser rejected with
  * "Invalid file format" for some files (observed 2026-04-24).
  *
+ * Segments in the wrong script or that read the prompt back are dropped here,
+ * so fillGaps sees those stretches as holes and retries them.
+ *
  * @param {Uint8Array} chunkBytes - mp3 bytes (caller guarantees frame boundaries).
  */
-async function transcribeChunk(chunkBytes, apiKey, timeOffsetSec) {
+export async function transcribeChunk(chunkBytes, apiKey, timeOffsetSec) {
   const CRLF = '\r\n';
   const boundary = '----roePipeline' + crypto.randomUUID().replace(/-/g, '');
   const enc = new TextEncoder();
@@ -118,6 +100,9 @@ async function transcribeChunk(chunkBytes, apiKey, timeOffsetSec) {
   const fileTrailer = enc.encode(CRLF);
   const fields = [
     textPart('model', 'whisper-1'),
+    // Without this Whisper guesses the language from the first 30 s, which is
+    // often music, and sometimes returns a chunk in the wrong language.
+    textPart('language', 'en'),
     textPart('response_format', 'verbose_json'),
     textPart('timestamp_granularities[]', 'segment'),
     textPart('prompt', SF_VOCAB_PROMPT),
@@ -153,7 +138,7 @@ async function transcribeChunk(chunkBytes, apiKey, timeOffsetSec) {
     start_ms: Math.round((seg.start + timeOffsetSec) * 1000),
     end_ms: Math.round((seg.end + timeOffsetSec) * 1000),
     text: seg.text.trim(),
-  })).filter(seg => seg.text.length > 0);
+  })).filter(seg => seg.text.length > 0 && !isMostlyNonLatin(seg.text) && !isPromptEcho(seg.text));
 
   return { segments, duration: data.duration || 0 };
 }
