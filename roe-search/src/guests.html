@@ -163,6 +163,12 @@ const statusEl = document.getElementById('status');
 const guestsEl = document.getElementById('guests');
 const alphaBarEl = document.getElementById('alpha-bar');
 
+// Hosts, not guests: hidden here, but /api/guests still returns them so /admin can clean
+// them up. The list mirrors HOST_NAMES in roe-pipeline/src/hosts.js (pages can't import it).
+const HOST_NAMES = new Set(['Sequoia', 'Papa Sequoia', 'The Early Bird', 'Early Bird', 'Christopher', 'Christopher Bunting']);
+// '#' holds names that don't start with A–Z ("2K"); 'num' keeps the anchor plain.
+const anchorId = l => 'letter-' + (l === '#' ? 'num' : l);
+
 function parseEpisodeDate(id) {
 	const match = id.match(/(\d{4}-\d{2}-\d{2})/);
 	if (!match) return null;
@@ -184,30 +190,32 @@ async function loadGuests() {
 	try {
 		const res = await fetch('/api/guests');
 		const data = await res.json();
+		const guests = (data.guests || []).filter(g => !HOST_NAMES.has(g.name));
 
-		if (!data.guests || data.guests.length === 0) {
+		if (guests.length === 0) {
 			statusEl.textContent = 'No guests found yet.';
 			return;
 		}
 
-		statusEl.textContent = data.total_guests + ' guest' + (data.total_guests !== 1 ? 's' : '');
+		statusEl.textContent = guests.length + ' guest' + (guests.length !== 1 ? 's' : '');
 
 		// Group by first letter
 		const letterGroups = {};
 		const letters = new Set();
-		for (const guest of data.guests) {
-			const letter = guest.name.charAt(0).toUpperCase();
+		for (const guest of guests) {
+			const first = guest.name.charAt(0).toUpperCase();
+			const letter = first >= 'A' && first <= 'Z' ? first : '#';
 			letters.add(letter);
 			if (!letterGroups[letter]) letterGroups[letter] = [];
 			letterGroups[letter].push(guest);
 		}
 
 		// Alphabet bar
-		const allLetters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
+		const allLetters = '#ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
 		let barHtml = '';
 		for (const l of allLetters) {
 			if (letters.has(l)) {
-				barHtml += '<a href="#letter-' + l + '">' + l + '</a>';
+				barHtml += '<a href="#' + anchorId(l) + '">' + l + '</a>';
 			} else {
 				barHtml += '<a class="disabled">' + l + '</a>';
 			}
@@ -215,12 +223,12 @@ async function loadGuests() {
 		alphaBarEl.innerHTML = barHtml;
 		alphaBarEl.style.display = 'flex';
 
-		// Render guest cards by letter
+		// Render guest cards by letter ('#' sorts before 'A', as in the bar)
 		const sortedLetters = Array.from(letters).sort();
 		for (const letter of sortedLetters) {
 			const heading = document.createElement('h2');
 			heading.className = 'letter-heading';
-			heading.id = 'letter-' + letter;
+			heading.id = anchorId(letter);
 			heading.textContent = letter;
 			guestsEl.appendChild(heading);
 

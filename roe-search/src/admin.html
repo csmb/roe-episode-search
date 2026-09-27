@@ -756,20 +756,22 @@ function renderGuests() {
 
 	status.textContent = allGuests.length + ' guest' + (allGuests.length !== 1 ? 's' : '');
 
-	// Group by first letter
+	// Group by first letter ('#' for names that don't start with A–Z, like "2K", as on /guests)
 	const letterGroups = {};
 	const letters = new Set();
 	for (const guest of allGuests) {
-		const letter = guest.name.charAt(0).toUpperCase();
+		const first = guest.name.charAt(0).toUpperCase();
+		const letter = first >= 'A' && first <= 'Z' ? first : '#';
 		letters.add(letter);
 		if (!letterGroups[letter]) letterGroups[letter] = [];
 		letterGroups[letter].push(guest);
 	}
+	const anchorId = l => 'ag-' + (l === '#' ? 'num' : l);
 
 	// Alpha bar
-	alphaBar.innerHTML = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map(l =>
+	alphaBar.innerHTML = '#ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map(l =>
 		letters.has(l)
-			? `<a href="#ag-${l}">${l}</a>`
+			? `<a href="#${anchorId(l)}">${l}</a>`
 			: `<a class="disabled">${l}</a>`
 	).join('');
 	alphaBar.style.display = 'flex';
@@ -779,7 +781,7 @@ function renderGuests() {
 	for (const letter of Array.from(letters).sort()) {
 		const h = document.createElement('h2');
 		h.className = 'letter-heading';
-		h.id = 'ag-' + letter;
+		h.id = anchorId(letter);
 		h.textContent = letter;
 		frag.appendChild(h);
 
