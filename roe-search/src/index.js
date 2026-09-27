@@ -836,7 +836,9 @@ async function handleMapPlaces(env, request) {
 		}));
 
 		const total_mentions = places.reduce((s, p) => s + p.episode_count, 0);
-		return json({ places, total_mentions }, 200, request);
+		// About 1 MB that changes when an episode is added (weekly at most): an hour
+		// in the browser's cache spares repeat visits the download and the queries.
+		return json({ places, total_mentions }, 200, request, { 'Cache-Control': 'public, max-age=3600' });
 	} catch (err) {
 		return json({ error: 'Failed to load places.' }, 500, request);
 	}

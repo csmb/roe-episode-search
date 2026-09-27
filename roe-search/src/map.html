@@ -517,6 +517,25 @@
 			return minR + (maxR - minR) * Math.sqrt(count / maxCount);
 		}
 
+		// The desktop hover popup: the place's episodes, newest first.
+		function summaryPopupHtml(place) {
+			const episodeItems = place.episodes
+				.sort((a, b) => b.id.localeCompare(a.id))
+				.map(ep => {
+					const date = episodeDate(ep.id);
+					const title = escapeHtml(ep.title || date);
+					return `<li><a href="/?episode=${encodeURIComponent(ep.id)}" target="_blank">${title}</a><span class="ep-date">${escapeHtml(date)}</span></li>`;
+				}).join('');
+			const plural = place.episode_count === 1 ? 'episode' : 'episodes';
+			return `
+				<div class="place-popup">
+					<h3>${escapeHtml(place.name)}</h3>
+					<div class="count">Mentioned in ${place.episode_count} ${plural}</div>
+					<ul>${episodeItems}</ul>
+				</div>
+			`;
+		}
+
 		async function loadPlaces() {
 			const res = await fetch('/api/map-places');
 			// A 429 or 500 still has a JSON body, just no places: stop while the loading box can say so.
@@ -531,6 +550,7 @@
 			if (places.length === 0) return;
 
 			const maxCount = Math.max(...places.map(p => p.episode_count));
+			const hasHover = window.matchMedia('(hover: hover) and (pointer: fine)').matches;
 
 			for (const place of places) {
 				const radius = circleRadius(place.episode_count, maxCount);
@@ -544,31 +564,16 @@
 
 				markersByName.set(place.name, circle);
 
-				const episodeItems = place.episodes
-					.sort((a, b) => b.id.localeCompare(a.id))
-					.map(ep => {
-						const date = episodeDate(ep.id);
-						const title = escapeHtml(ep.title || date);
-						return `<li><a href="/?episode=${encodeURIComponent(ep.id)}" target="_blank">${title}</a><span class="ep-date">${escapeHtml(date)}</span></li>`;
-					}).join('');
-
-				const plural = place.episode_count === 1 ? 'episode' : 'episodes';
-
 				// Desktop: hover shows the summary popup, click opens the detail.
 				// Touch/no-hover: bind NO popup so a tap opens only the bottom sheet
 				// (otherwise Leaflet's default click-to-toggle popup would surface
 				// behind the sheet backdrop). The deep-link path fires 'click', which
 				// goes straight to the sheet, so the summary popup isn't needed there.
 				let detailOpen = false;
-				const hasHover = window.matchMedia('(hover: hover) and (pointer: fine)').matches;
 				if (hasHover) {
-					circle.bindPopup(`
-						<div class="place-popup">
-							<h3>${escapeHtml(place.name)}</h3>
-							<div class="count">Mentioned in ${place.episode_count} ${plural}</div>
-							<ul>${episodeItems}</ul>
-						</div>
-					`, { maxWidth: 280 });
+					// A function, so Leaflet builds the list when the popup opens rather
+					// than for every place on load.
+					circle.bindPopup(() => summaryPopupHtml(place), { maxWidth: 280 });
 					let closeTimer = null;
 					circle.on('mouseover', () => {
 						clearTimeout(closeTimer);
