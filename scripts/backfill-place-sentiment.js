@@ -10,15 +10,14 @@
  *         narrative yet, synthesize the "then vs now" narrative and upsert
  *         place_narratives.
  *
- * Usage:
- *   OPENAI_API_KEY=... node scripts/backfill-place-sentiment.js [--replace] [--episode <id>]
+ * Usage (OPENAI_API_KEY comes from .env):
+ *   node scripts/backfill-place-sentiment.js [--replace] [--episode <id>]
  *
  *   --replace         Re-score mentions even if analyzed_at is already set, and
  *                     rewrite every qualifying narrative.
  *   --episode <id>    Only this episode in pass 1.
  */
 
-import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -27,11 +26,13 @@ import {
   scoreMention,
   regenerateNarrativeFromRows,
 } from '../roe-pipeline/src/sentiment.js';
+import { loadEnv, wranglerExec } from './lib.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const TRANSCRIPTS_DIR = path.join(__dirname, '..', 'transcripts');
 const PROGRESS_PATH = path.join(__dirname, 'backfill-sentiment-progress.json');
 
+loadEnv();
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 if (!OPENAI_API_KEY) { console.error('OPENAI_API_KEY required'); process.exit(1); }
 const REPLACE = process.argv.includes('--replace');
@@ -39,18 +40,10 @@ const episodeArg = process.argv.indexOf('--episode');
 const ONLY_EPISODE = episodeArg > -1 ? process.argv[episodeArg + 1] : null;
 if (episodeArg > -1 && !ONLY_EPISODE) { console.error('--episode needs an episode id'); process.exit(1); }
 
-const wranglerEnv = { ...process.env }; // CLOUDFLARE_API_TOKEN has D1 perms; used non-interactively
-
+// Through lib.js, which runs wrangler without a shell. Through a shell, "$5.50"
+// in a quote became ".50" and anything in backticks would run as a command.
 function d1(sql) {
-  // Collapse newlines/indentation: a literal newline survives JSON.stringify as
-  // an escaped backslash in the shell arg, which D1's SQLite rejects. SQL is
-  // whitespace-insensitive and statements are ';'-separated, so flattening is safe.
-  const flat = String(sql).replace(/\s+/g, ' ').trim();
-  const out = execSync(
-    `npx wrangler d1 execute roe-episodes --remote --json --command=${JSON.stringify(flat)}`,
-    { cwd: path.join(__dirname, '..', 'roe-search'), env: wranglerEnv, maxBuffer: 64 * 1024 * 1024 }
-  );
-  return JSON.parse(out.toString());
+  return JSON.parse(wranglerExec(['d1', 'execute', 'roe-episodes', '--remote', '--json', `--command=${sql}`]));
 }
 
 function sqlStr(s) { return `'${String(s).replace(/'/g, "''")}'`; }

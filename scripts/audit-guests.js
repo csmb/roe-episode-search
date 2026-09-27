@@ -8,7 +8,7 @@
  *   node scripts/audit-guests.js --local   # local D1
  */
 
-import { execSync } from 'node:child_process';
+import { queryJSON as libQueryJSON } from './lib.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -27,29 +27,9 @@ if (fs.existsSync(envPath)) {
 	}
 }
 
-const DB_NAME = 'roe-episodes';
-
-function workerCwd() {
-	return path.resolve(path.dirname(decodeURIComponent(new URL(import.meta.url).pathname)), '..', 'roe-search');
-}
-
-function wranglerEnv() {
-	const env = { ...process.env };
-	delete env.CLOUDFLARE_API_TOKEN;
-	return env;
-}
-
+// lib.js runs wrangler without a shell, so a name with "$" or backticks stays as typed.
 function queryJSON(sql, isLocal) {
-	const flag = isLocal ? '--local' : '--remote';
-	const cmd = `npx wrangler d1 execute ${DB_NAME} ${flag} --json --command="${sql.replace(/"/g, '\\"')}"`;
-	const result = execSync(cmd, {
-		cwd: workerCwd(),
-		encoding: 'utf-8',
-		stdio: 'pipe',
-		env: wranglerEnv(),
-	});
-	const parsed = JSON.parse(result);
-	return parsed[0]?.results ?? [];
+	return libQueryJSON(sql, { isLocal });
 }
 
 // ── Levenshtein similarity ────────────────────────────────────────────
