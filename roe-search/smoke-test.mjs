@@ -2,7 +2,9 @@
 /**
  * Smoke test for the live site: requests every route the pages rely on and
  * checks the fields they read, so a deploy that silently drops a route (as
- * 34357ed did in April) fails loudly. Read-only; about 17 requests.
+ * 34357ed did in April) fails loudly. A few checks also pin behaviour: search
+ * ranking, the On This Day fallback and /latest skipping unfinished episodes.
+ * Read-only; about 20 requests.
  *
  *   npm run smoke                 # https://rollovereasy.org
  *   node smoke-test.mjs http://roe.localhost:8791
@@ -62,6 +64,18 @@ if (latest) {
 }
 await check('/api/on-this-day', '/api/on-this-day', (res, body) =>
 	res.status !== 200 ? `status ${res.status}` : !Array.isArray(body?.episodes) ? 'no episodes array' : null);
+// No show has aired on January 2, so the section falls back to the nearest day with one.
+await check('/api/on-this-day fallback', '/api/on-this-day?date=01-02', (res, body) =>
+	res.status !== 200 ? `status ${res.status}`
+		: body?.shown_date !== '01-01' ? `shown_date ${body?.shown_date}, expected 01-01`
+		: !(body.episodes?.length >= 1) ? 'no episodes' : null);
+// Keyword search ranks episodes by matching lines: the 2016 staircase show says "stairway" most.
+await check('/api/search', '/api/search?q=stairway', (res, body) => {
+	if (res.status !== 200) return `status ${res.status}`;
+	const first = body?.results?.[0]?.episode_id;
+	if (!first?.includes('_2016-03-03_')) return `first result is ${first}, expected the 2016-03-03 show`;
+	return body.has_more === true ? null : `has_more is ${body.has_more}, expected true`;
+});
 await check('/api/guests', '/api/guests', (res, body) =>
 	res.status !== 200 ? `status ${res.status}` : !Array.isArray(body?.guests) || body.guests.length === 0 ? 'no guests' : null);
 const map = await check('/api/map-places', '/api/map-places', (res, body) =>
@@ -70,7 +84,10 @@ const placeName = map?.places?.[0]?.name;
 if (placeName) {
 	await check('/api/place-detail', `/api/place-detail?name=${encodeURIComponent(placeName)}`, status(200));
 }
-await check('/api/episodes/latest', '/api/episodes/latest', status(200));
+// An unfinished episode still has its id as its title; /latest must skip it.
+await check('/api/episodes/latest', '/api/episodes/latest', (res, body) =>
+	res.status !== 200 ? `status ${res.status}`
+		: !body?.episode?.title || body.episode.title === body.episode.id ? `title is ${JSON.stringify(body?.episode?.title)}` : null);
 await check('/api/episodes/stats', '/api/episodes/stats', status(200));
 
 if (failures.length) {
