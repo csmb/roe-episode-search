@@ -113,125 +113,143 @@ function handleCorsPreflight(request) {
 
 export default {
 	async fetch(request, env) {
-		const url = new URL(request.url);
-		const clientIP = request.headers.get('CF-Connecting-IP') || 'unknown';
-
-		// CORS preflight for cross-origin API requests
-		if (request.method === 'OPTIONS') {
-			return handleCorsPreflight(request);
-		}
-
-		// Admin routes — password protected
-		if (url.pathname === '/admin') {
-			return new Response(ADMIN_HTML, { headers: HTML_HEADERS });
-		}
-		if (url.pathname.startsWith('/api/admin/')) {
-			if (!(await checkAdminPassword(request, env))) {
-				return json({ error: 'Unauthorized' }, 401, request);
+		try {
+			return await handleRequest(request, env);
+		} catch (err) {
+			// Anything a route did not catch: log it for the dashboard and answer
+			// with a 500 (JSON for the API) instead of Cloudflare's error page.
+			const url = new URL(request.url);
+			console.error('Unhandled error', { method: request.method, path: url.pathname, search: url.search }, err);
+			if (url.pathname.startsWith('/api/')) {
+				return json({ error: 'Something went wrong. Try again.' }, 500, request);
 			}
-			return handleAdminApi(url, env, request);
-		}
-
-		if (url.pathname === '/map') {
-			return new Response(MAP_HTML, { headers: HTML_HEADERS });
-		}
-		if (url.pathname === '/api/map-places') {
-			if (!checkRateLimit(clientIP, 'search', RATE_LIMIT_SEARCH)) {
-				return json({ error: 'Rate limit exceeded. Try again in a minute.' }, 429, request);
-			}
-			return handleMapPlaces(env, request);
-		}
-		if (url.pathname === '/api/place-detail') {
-			if (!checkRateLimit(clientIP, 'search', RATE_LIMIT_SEARCH)) {
-				return json({ error: 'Rate limit exceeded. Try again in a minute.' }, 429, request);
-			}
-			return handlePlaceDetail(url, env, request);
-		}
-
-		if (url.pathname === '/api/search') {
-			if (!checkRateLimit(clientIP, 'search', RATE_LIMIT_SEARCH)) {
-				return json({ error: 'Rate limit exceeded. Try again in a minute.' }, 429, request);
-			}
-			return handleSearch(url, env, request);
-		}
-		if (url.pathname === '/api/semantic-search') {
-			if (!checkRateLimit(clientIP, 'semantic', RATE_LIMIT_SEMANTIC)) {
-				return json({ error: 'Rate limit exceeded. Try again in a minute.' }, 429, request);
-			}
-			return handleSemanticSearch(url, env, request);
-		}
-		// Ahead of /api/episodes for readability only — that route is an exact
-		// match, so it could not swallow this one.
-		if (url.pathname === '/api/episodes/latest') {
-			if (!checkRateLimit(clientIP, 'search', RATE_LIMIT_SEARCH)) {
-				return json({ error: 'Rate limit exceeded. Try again in a minute.' }, 429, request);
-			}
-			return handleLatestEpisode(url, env, request);
-		}
-		if (url.pathname === '/api/episodes/stats') {
-			if (!checkRateLimit(clientIP, 'search', RATE_LIMIT_SEARCH)) {
-				return json({ error: 'Rate limit exceeded. Try again in a minute.' }, 429, request);
-			}
-			return handleEpisodeStats(env, request);
-		}
-		if (url.pathname === '/api/episodes') {
-			if (!checkRateLimit(clientIP, 'search', RATE_LIMIT_SEARCH)) {
-				return json({ error: 'Rate limit exceeded. Try again in a minute.' }, 429, request);
-			}
-			return handleEpisodes(env, request);
-		}
-		if (url.pathname === '/api/on-this-day') {
-			return handleOnThisDay(url, env, request);
-		}
-		if (url.pathname === '/api/guests') {
-			return handleGuests(env, request);
-		}
-		if (url.pathname.startsWith('/api/episode/')) {
-			const rest = url.pathname.slice('/api/episode/'.length);
-			if (rest.endsWith('/places')) {
-				const episodeId = decodeURIComponent(rest.slice(0, -'/places'.length));
-				return handleEpisodePlaces(episodeId, env, request);
-			}
-			const episodeId = decodeURIComponent(rest);
-			return handleEpisodeById(episodeId, env, request);
-		}
-		if (url.pathname === '/episodes') {
-			return new Response(EPISODES_HTML, { headers: HTML_HEADERS });
-		}
-		if (url.pathname === '/guests') {
-			return new Response(GUESTS_HTML, { headers: HTML_HEADERS });
-		}
-		if (url.pathname.startsWith('/audio/')) {
-			return handleAudio(request, url, env);
-		}
-		// The header photo on every page. Cached for good, so a new picture needs a new
-		// name: bump the -v1 in the file, here and in the five pages.
-		if (url.pathname === '/ferry-building-v1.webp') {
-			return new Response(FERRY_BUILDING_WEBP, {
-				headers: {
-					'Content-Type': 'image/webp',
-					'Cache-Control': 'public, max-age=31536000, immutable',
-					'X-Content-Type-Options': 'nosniff',
-				},
-			});
-		}
-		if (url.pathname === '/robots.txt') {
-			// Keep all crawlers out, as decided in March (df892fc).
-			return new Response('User-agent: *\nDisallow: /\n', {
+			return new Response('Something went wrong. Try again.', {
+				status: 500,
 				headers: { 'Content-Type': 'text/plain; charset=utf-8' },
 			});
 		}
-		if (url.pathname.startsWith('/api/')) {
-			return json({ error: 'Not found' }, 404, request);
-		}
-		// The homepage lives at "/" (shared links use ?episode=). Anything else is
-		// an unknown page: still show the homepage, but say so with a 404.
-		return new Response(FRONTEND_HTML, {
-			status: url.pathname === '/' ? 200 : 404,
-			headers: HTML_HEADERS,
-		});
 	},
 };
+
+async function handleRequest(request, env) {
+	const url = new URL(request.url);
+	const clientIP = request.headers.get('CF-Connecting-IP') || 'unknown';
+
+	// CORS preflight for cross-origin API requests
+	if (request.method === 'OPTIONS') {
+		return handleCorsPreflight(request);
+	}
+
+	// Admin routes — password protected
+	if (url.pathname === '/admin') {
+		return new Response(ADMIN_HTML, { headers: HTML_HEADERS });
+	}
+	if (url.pathname.startsWith('/api/admin/')) {
+		if (!(await checkAdminPassword(request, env))) {
+			return json({ error: 'Unauthorized' }, 401, request);
+		}
+		return handleAdminApi(url, env, request);
+	}
+
+	if (url.pathname === '/map') {
+		return new Response(MAP_HTML, { headers: HTML_HEADERS });
+	}
+	if (url.pathname === '/api/map-places') {
+		if (!checkRateLimit(clientIP, 'search', RATE_LIMIT_SEARCH)) {
+			return json({ error: 'Rate limit exceeded. Try again in a minute.' }, 429, request);
+		}
+		return handleMapPlaces(env, request);
+	}
+	if (url.pathname === '/api/place-detail') {
+		if (!checkRateLimit(clientIP, 'search', RATE_LIMIT_SEARCH)) {
+			return json({ error: 'Rate limit exceeded. Try again in a minute.' }, 429, request);
+		}
+		return handlePlaceDetail(url, env, request);
+	}
+
+	if (url.pathname === '/api/search') {
+		if (!checkRateLimit(clientIP, 'search', RATE_LIMIT_SEARCH)) {
+			return json({ error: 'Rate limit exceeded. Try again in a minute.' }, 429, request);
+		}
+		return handleSearch(url, env, request);
+	}
+	if (url.pathname === '/api/semantic-search') {
+		if (!checkRateLimit(clientIP, 'semantic', RATE_LIMIT_SEMANTIC)) {
+			return json({ error: 'Rate limit exceeded. Try again in a minute.' }, 429, request);
+		}
+		return handleSemanticSearch(url, env, request);
+	}
+	// Ahead of /api/episodes for readability only — that route is an exact
+	// match, so it could not swallow this one.
+	if (url.pathname === '/api/episodes/latest') {
+		if (!checkRateLimit(clientIP, 'search', RATE_LIMIT_SEARCH)) {
+			return json({ error: 'Rate limit exceeded. Try again in a minute.' }, 429, request);
+		}
+		return handleLatestEpisode(url, env, request);
+	}
+	if (url.pathname === '/api/episodes/stats') {
+		if (!checkRateLimit(clientIP, 'search', RATE_LIMIT_SEARCH)) {
+			return json({ error: 'Rate limit exceeded. Try again in a minute.' }, 429, request);
+		}
+		return handleEpisodeStats(env, request);
+	}
+	if (url.pathname === '/api/episodes') {
+		if (!checkRateLimit(clientIP, 'search', RATE_LIMIT_SEARCH)) {
+			return json({ error: 'Rate limit exceeded. Try again in a minute.' }, 429, request);
+		}
+		return handleEpisodes(env, request);
+	}
+	if (url.pathname === '/api/on-this-day') {
+		return handleOnThisDay(url, env, request);
+	}
+	if (url.pathname === '/api/guests') {
+		return handleGuests(env, request);
+	}
+	if (url.pathname.startsWith('/api/episode/')) {
+		const rest = url.pathname.slice('/api/episode/'.length);
+		if (rest.endsWith('/places')) {
+			const episodeId = decodeURIComponent(rest.slice(0, -'/places'.length));
+			return handleEpisodePlaces(episodeId, env, request);
+		}
+		const episodeId = decodeURIComponent(rest);
+		return handleEpisodeById(episodeId, env, request);
+	}
+	if (url.pathname === '/episodes') {
+		return new Response(EPISODES_HTML, { headers: HTML_HEADERS });
+	}
+	if (url.pathname === '/guests') {
+		return new Response(GUESTS_HTML, { headers: HTML_HEADERS });
+	}
+	if (url.pathname.startsWith('/audio/')) {
+		return handleAudio(request, url, env);
+	}
+	// The header photo on every page. Cached for good, so a new picture needs a new
+	// name: bump the -v1 in the file, here and in the five pages.
+	if (url.pathname === '/ferry-building-v1.webp') {
+		return new Response(FERRY_BUILDING_WEBP, {
+			headers: {
+				'Content-Type': 'image/webp',
+				'Cache-Control': 'public, max-age=31536000, immutable',
+				'X-Content-Type-Options': 'nosniff',
+			},
+		});
+	}
+	if (url.pathname === '/robots.txt') {
+		// Keep all crawlers out, as decided in March (df892fc).
+		return new Response('User-agent: *\nDisallow: /\n', {
+			headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+		});
+	}
+	if (url.pathname.startsWith('/api/')) {
+		return json({ error: 'Not found' }, 404, request);
+	}
+	// The homepage lives at "/" (shared links use ?episode=). Anything else is
+	// an unknown page: still show the homepage, but say so with a 404.
+	return new Response(FRONTEND_HTML, {
+		status: url.pathname === '/' ? 200 : 404,
+		headers: HTML_HEADERS,
+	});
+}
 
 function sanitizeFtsQuery(input) {
 	const terms = input
@@ -347,6 +365,7 @@ async function handleSearch(url, env, request) {
 		has_more: offset + episodeMap.size < (results[0]?.total_episodes ?? 0),
 	}, 200, request);
 	} catch (err) {
+		console.error('/api/search failed', { query, page }, err);
 		return json({ error: 'Search failed. Try simplifying your query.' }, 400, request);
 	}
 }
@@ -431,6 +450,7 @@ async function handleSemanticSearch(url, env, request) {
 			has_more: false,
 		}, 200, request);
 	} catch (err) {
+		console.error('/api/semantic-search failed', { query }, err);
 		return json({ error: 'Semantic search failed. Try again.' }, 500, request);
 	}
 }
@@ -486,6 +506,7 @@ async function handleLatestEpisode(url, env, request) {
 			},
 		}, 200, null, PUBLIC);
 	} catch (err) {
+		console.error('/api/episodes/latest failed', err);
 		return json({ error: 'Failed to load the latest episode.' }, 500, null,
 			{ 'Access-Control-Allow-Origin': '*' });
 	}
@@ -525,6 +546,7 @@ async function handleEpisodeStats(env, request) {
 			'Cache-Control': 'public, max-age=3600',
 		});
 	} catch (err) {
+		console.error('/api/episodes/stats failed', err);
 		return json({ error: 'Failed to load archive stats.' }, 500, null,
 			{ 'Access-Control-Allow-Origin': '*' });
 	}
@@ -557,6 +579,7 @@ async function handleEpisodes(env, request) {
 
 		return json({ episodes: enriched }, 200, request);
 	} catch (err) {
+		console.error('/api/episodes failed', err);
 		return json({ error: 'Failed to load episodes.' }, 500, request);
 	}
 }
@@ -594,9 +617,10 @@ async function handleAudio(request, url, env) {
 	const fetchObject = async (k) => {
 		try {
 			return await env.AUDIO.get(k, r2Range ? { range: r2Range } : {});
-		} catch {
+		} catch (err) {
 			// R2 throws on an unsatisfiable range (e.g. offset past EOF) — answer
 			// with 416 + the object size instead of a 500.
+			console.error('/audio: R2 get failed, answering 416 if the object exists', { key: k, range: r2Range }, err);
 			const head = await env.AUDIO.head(k);
 			if (!head) return null;
 			return new Response('Range Not Satisfiable', {
@@ -667,7 +691,8 @@ async function rawMp3Key(episodeId, env) {
 	try {
 		const key = decodeURIComponent(new URL(row.audio_file).pathname.slice(1));
 		return key.toLowerCase().endsWith('.mp3') ? key : null;
-	} catch {
+	} catch (err) {
+		console.error('/audio: unreadable audio_file URL', { episodeId, audio_file: row.audio_file }, err);
 		return null;
 	}
 }
@@ -700,6 +725,7 @@ async function handleEpisodeById(episodeId, env, request) {
 			},
 		}, 200, request);
 	} catch (err) {
+		console.error('/api/episode failed', { episodeId }, err);
 		return json({ error: 'Failed to fetch episode' }, 500, request);
 	}
 }
@@ -721,6 +747,7 @@ async function handleEpisodePlaces(episodeId, env, request) {
 
 		return json({ episode_id: episodeId, places: results }, 200, request);
 	} catch (err) {
+		console.error('/api/episode/places failed', { episodeId }, err);
 		return json({ error: 'Failed to fetch places' }, 500, request);
 	}
 }
@@ -783,6 +810,7 @@ async function handleOnThisDay(url, env, request) {
 			})),
 		}, 200, request);
 	} catch (err) {
+		console.error('/api/on-this-day failed', { date: todayMmDd }, err);
 		return json({ error: 'Failed to fetch episodes' }, 500, request);
 	}
 }
@@ -811,7 +839,9 @@ async function handleGuests(env, request) {
 		const guests = Array.from(guestMap.values());
 		return json({ guests, total_guests: guests.length }, 200, request);
 	} catch (err) {
-		return json({ guests: [], total_guests: 0 }, 200, request);
+		// A real error status: an empty list with a 200 read as "no guests yet".
+		console.error('/api/guests failed', err);
+		return json({ error: 'Failed to load guests.' }, 500, request);
 	}
 }
 
@@ -859,6 +889,7 @@ async function handleMapPlaces(env, request) {
 		// in the browser's cache spares repeat visits the download and the queries.
 		return json({ places, total_mentions }, 200, request, { 'Cache-Control': 'public, max-age=3600' });
 	} catch (err) {
+		console.error('/api/map-places failed', err);
 		return json({ error: 'Failed to load places.' }, 500, request);
 	}
 }
@@ -926,6 +957,7 @@ async function handleAdminApi(url, env, request) {
 			}
 			return json({ episodes }, 200, request);
 		} catch (err) {
+			console.error('/api/admin/unreviewed failed', err);
 			return json({ error: 'Failed to fetch unreviewed episodes' }, 500, request);
 		}
 	}
@@ -939,6 +971,7 @@ async function handleAdminApi(url, env, request) {
 				.bind(new_name, old_name).run();
 			return json({ ok: true }, 200, request);
 		} catch (err) {
+			console.error('/api/admin/guest/rename failed', err);
 			return json({ error: 'Rename failed' }, 500, request);
 		}
 	}
@@ -952,6 +985,7 @@ async function handleAdminApi(url, env, request) {
 				.bind(guest_name).run();
 			return json({ ok: true }, 200, request);
 		} catch (err) {
+			console.error('/api/admin/guest/delete failed', err);
 			return json({ error: 'Delete failed' }, 500, request);
 		}
 	}
@@ -965,6 +999,7 @@ async function handleAdminApi(url, env, request) {
 				.bind(episode_id).run();
 			return json({ ok: true }, 200, request);
 		} catch (err) {
+			console.error('/api/admin/episode/reviewed failed', err);
 			return json({ error: 'Update failed' }, 500, request);
 		}
 	}
@@ -978,6 +1013,7 @@ async function handleAdminApi(url, env, request) {
 				.bind(duration_ms, episode_id).run();
 			return json({ ok: true }, 200, request);
 		} catch (err) {
+			console.error('/api/admin/episode/duration failed', err);
 			return json({ error: 'Update failed' }, 500, request);
 		}
 	}
