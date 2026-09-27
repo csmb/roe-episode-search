@@ -405,11 +405,11 @@ async function handleSemanticSearch(url, env, request) {
 }
 
 // The newest episode and a link to it, and nothing else. /api/episodes is the
-// only other listing and it returns all 552 episodes — ~364KB to render one
-// line, which is why this exists rather than a limit param on that route.
+// only other listing and it returns every episode (several hundred KB) to render
+// one line, which is why this exists rather than a limit param on that route.
 //
-// ORDER BY id DESC, not published_at: 540 of 552 rows have a null published_at,
-// so that column cannot order the table. Episode ids are
+// ORDER BY id DESC, not published_at: most rows (529 of 544 in Sep 2026) have a
+// null published_at, so that column cannot order the table. Episode ids are
 // roll-over-easy_YYYY-MM-DD_HH-MM-SS with zero-padded dates, so sorting them as
 // text is sorting them by date — the same assumption handleEpisodes already
 // makes. The date is read back out of the id for the same reason.
@@ -461,7 +461,7 @@ async function handleLatestEpisode(url, env, request) {
 }
 
 // Archive totals in one small response, for the same reason as
-// /api/episodes/latest: the alternative is pulling all 552 episodes and adding
+// /api/episodes/latest: the alternative is pulling every episode and adding
 // them up in the client. Public CORS and caching for the same reasons too — the
 // numbers move once a week at most. Totals cover complete episodes only, so
 // latest_date agrees with /api/episodes/latest, and the hosts aren't guests.
