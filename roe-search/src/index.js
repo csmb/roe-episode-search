@@ -3,6 +3,7 @@ import EPISODES_HTML from './episodes.html';
 import GUESTS_HTML from './guests.html';
 import ADMIN_HTML from './admin.html';
 import MAP_HTML from './map.html';
+import { HOST_NAMES } from '../../roe-pipeline/src/hosts.js';
 
 // ── Rate limiting ─────────────────────────────────────────────────────
 // Simple sliding-window rate limiter per IP. Limits are per Worker isolate
@@ -473,10 +474,16 @@ async function handleTimeline(url, env, request) {
 // roll-over-easy_YYYY-MM-DD_HH-MM-SS with zero-padded dates, so sorting them as
 // text is sorting them by date — the same assumption handleEpisodes already
 // makes. The date is read back out of the id for the same reason.
+//
+// Only complete episodes count, here and in the stats below: a pipeline run
+// that stops partway leaves a row whose title is still its id, with no summary
+// or audio, and other sites show whatever this returns.
+const COMPLETE_EPISODE = "title <> id AND summary IS NOT NULL AND TRIM(summary) <> '' AND audio_file IS NOT NULL";
+
 async function handleLatestEpisode(url, env, request) {
 	try {
 		const episode = await env.DB.prepare(
-			'SELECT id, title, duration_ms FROM episodes ORDER BY id DESC LIMIT 1'
+			`SELECT id, title, duration_ms FROM episodes WHERE ${COMPLETE_EPISODE} ORDER BY id DESC LIMIT 1`
 		).first();
 
 		if (!episode) {
@@ -517,15 +524,19 @@ async function handleLatestEpisode(url, env, request) {
 // Archive totals in one small response, for the same reason as
 // /api/episodes/latest: the alternative is pulling all 552 episodes and adding
 // them up in the client. Public CORS and caching for the same reasons too — the
-// numbers move once a week at most.
+// numbers move once a week at most. Totals cover complete episodes only, so
+// latest_date agrees with /api/episodes/latest, and the hosts aren't guests.
 async function handleEpisodeStats(env, request) {
 	try {
 		const [totals, guests] = await Promise.all([
 			env.DB.prepare(
 				'SELECT COUNT(*) AS episodes, SUM(duration_ms) AS total_ms, ' +
-				'MIN(id) AS first_id, MAX(id) AS last_id FROM episodes'
+				`MIN(id) AS first_id, MAX(id) AS last_id FROM episodes WHERE ${COMPLETE_EPISODE}`
 			).first(),
-			env.DB.prepare('SELECT COUNT(DISTINCT guest_name) AS guests FROM episode_guests').first(),
+			env.DB.prepare(
+				'SELECT COUNT(DISTINCT guest_name) AS guests FROM episode_guests ' +
+				`WHERE LOWER(TRIM(guest_name)) NOT IN (${HOST_NAMES.map((_, i) => '?' + (i + 1)).join(', ')})`
+			).bind(...HOST_NAMES.map(name => name.toLowerCase())).first(),
 		]);
 
 		const dateOf = id => (id && (id.match(/_(\d{4}-\d{2}-\d{2})_/) || [])[1]) || null;
