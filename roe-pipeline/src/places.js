@@ -3,8 +3,13 @@
  * and seed D1 places + place_mentions tables.
  */
 
+import { apiError, PermanentError, TIMEOUT_MS } from './limits.js';
+
 const SF_VIEWBOX = '-122.517,37.833,-122.355,37.708';
 const NOMINATIM_DELAY_MS = 1100;
+const MAX_PLACES = 150;          // far above a normal show's ~25
+const IN_LIST_SIZE = 90;         // stays under D1's 100 bound parameters per query
+const MAX_TRANSCRIPT_CHARS = 400_000; // ~100K tokens, inside GPT-4o-mini's 128K
 
 const PLACES_SYSTEM_PROMPT = `You extract San Francisco place names from a local radio show transcript.
 This is "Roll Over Easy," a show deeply rooted in SF culture — hosts frequently mention restaurants, cafes, bars, taquerias, bakeries, bookstores, music venues, record shops, community spaces, murals, parks, plazas, beaches, hilltops, streets, intersections, neighborhoods, landmarks, schools, libraries, transit stops, and local businesses.
@@ -26,19 +31,37 @@ Normalise names to how they'd appear on a map:
 - "the mission" → "Mission District"
 If nothing qualifies, return [].`;
 
-export function sampleTranscript(segments) {
-  const total = segments.length;
-  if (total < 50) return segments.map(s => s.text).join(' ');
+/**
+ * The transcript text GPT reads for places: the whole show except the intro
+ * (the first 5%, at most 40 lines), as the local script has done since June.
+ * It used to be five samples cut to 12,000 characters, which never reached the
+ * interview: new episodes got about 14 places against 24 for older ones.
+ */
+export function transcriptForPlaces(segments) {
+  const skip = segments.length < 50 ? 0 : Math.min(40, Math.floor(segments.length * 0.05));
+  const text = segments.slice(skip).map(s => s.text).join(' ');
+  if (text.length <= MAX_TRANSCRIPT_CHARS) return text;
+  console.warn(`  Transcript is ${text.length} characters; sending the first ${MAX_TRANSCRIPT_CHARS} for places`);
+  return text.slice(0, MAX_TRANSCRIPT_CHARS);
+}
 
-  const start = Math.min(40, Math.floor(total * 0.05));
-  const usable = total - start;
-  const windowSize = Math.min(200, Math.floor(usable / 5));
-  const windows = [];
-  for (let i = 0; i < 5; i++) {
-    const offset = start + Math.floor((usable / 5) * i);
-    windows.push(segments.slice(offset, offset + windowSize));
+/** Unique, trimmed place names from GPT's reply, at most MAX_PLACES. */
+export function cleanPlaceNames(names) {
+  const unique = [...new Set(names.filter(n => typeof n === 'string').map(n => n.trim()).filter(Boolean))];
+  if (unique.length > MAX_PLACES) console.warn(`  ${unique.length} place names; keeping the first ${MAX_PLACES}`);
+  return unique.slice(0, MAX_PLACES);
+}
+
+// SELECT id, name FROM places for many names, a few dozen at a time.
+async function placeIds(db, names) {
+  const ids = new Map();
+  for (let i = 0; i < names.length; i += IN_LIST_SIZE) {
+    const part = names.slice(i, i + IN_LIST_SIZE);
+    const { results } = await db.prepare(`SELECT id, name FROM places WHERE name IN (${part.map(() => '?').join(', ')})`)
+      .bind(...part).all();
+    for (const p of results) ids.set(p.name, p.id);
   }
-  return windows.flat().map(s => s.text).join(' ').slice(0, 12000);
+  return ids;
 }
 
 function sleep(ms) {
@@ -46,7 +69,10 @@ function sleep(ms) {
 }
 
 async function nominatimSearch(url) {
-  const res = await fetch(url, { headers: { 'User-Agent': 'roe-episode-search/1.0' } });
+  const res = await fetch(url, {
+    headers: { 'User-Agent': 'roe-episode-search/1.0' },
+    signal: AbortSignal.timeout(TIMEOUT_MS.geocode),
+  });
   if (!res.ok) return [];
   return res.json();
 }
@@ -109,14 +135,18 @@ async function geocodePlace(placeName) {
  * @param {string} episodeId
  * @param {Array<{text: string}>} segments
  * @param {string} openaiApiKey
+ * @param {object} [opts]
+ * @param {number} [opts.deadline] - epoch ms after which no new place is geocoded
+ * @param {(message: string) => void} [opts.warn] - notes for the run's warnings
+ * Throws on a failed, cut-off or unreadable reply rather than seeding nothing.
  */
-export async function extractAndSeedPlaces(db, episodeId, segments, openaiApiKey) {
+export async function extractAndSeedPlaces(db, episodeId, segments, openaiApiKey, { deadline = Infinity, warn = () => {} } = {}) {
   if (!openaiApiKey) {
     console.warn(`[${episodeId}] OPENAI_API_KEY not set — skipping places extraction`);
     return;
   }
 
-  const text = sampleTranscript(segments);
+  const text = transcriptForPlaces(segments);
 
   const res = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
@@ -128,27 +158,30 @@ export async function extractAndSeedPlaces(db, episodeId, segments, openaiApiKey
         { role: 'user', content: text },
       ],
       temperature: 0,
-      max_tokens: 1000,
+      max_tokens: 4000,
     }),
+    signal: AbortSignal.timeout(TIMEOUT_MS.places),
   });
 
   if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`OpenAI API error ${res.status}: ${body}`);
+    throw apiError('OpenAI API', res.status, await res.text());
   }
 
   const data = await res.json();
-  const content = data.choices[0].message.content.trim()
+  const choice = data.choices?.[0];
+  // A cut-off list isn't valid JSON, and used to count as "no places".
+  if (choice?.finish_reason === 'length') throw new PermanentError('The places reply was cut off');
+  const content = (choice?.message?.content || '').trim()
     .replace(/^```json\s*/i, '').replace(/```\s*$/, '').trim();
 
-  let placeNames = [];
+  let parsed;
   try {
-    placeNames = JSON.parse(content);
-    if (!Array.isArray(placeNames)) placeNames = [];
+    parsed = JSON.parse(content);
   } catch {
-    console.warn(`[${episodeId}] Failed to parse places response, skipping`);
-    return;
+    throw new PermanentError('The places reply was not readable JSON');
   }
+  if (!Array.isArray(parsed)) throw new PermanentError('The places reply was not a list');
+  const placeNames = cleanPlaceNames(parsed);
 
   if (placeNames.length === 0) {
     console.log(`[${episodeId}] No places found`);
@@ -156,14 +189,19 @@ export async function extractAndSeedPlaces(db, episodeId, segments, openaiApiKey
   }
 
   // Check D1 for already-known places to avoid re-geocoding
-  const placeholders = placeNames.map(() => '?').join(', ');
-  const { results: existingPlaces } = await db.prepare(`SELECT id, name FROM places WHERE name IN (${placeholders})`).bind(...placeNames).all();
-  const knownPlaces = new Map(existingPlaces.map(p => [p.name, p.id]));
+  const knownPlaces = await placeIds(db, placeNames);
 
   const geocoded = [];
+  let skipped = 0;
   for (const name of placeNames) {
     if (knownPlaces.has(name)) {
       geocoded.push(name);
+      continue;
+    }
+    // Geocoding is slow (Nominatim allows one request a second); stop in time
+    // for the alarm to finish. Places already on the map are still linked.
+    if (Date.now() > deadline) {
+      skipped++;
       continue;
     }
     await sleep(NOMINATIM_DELAY_MS);
@@ -176,6 +214,7 @@ export async function extractAndSeedPlaces(db, episodeId, segments, openaiApiKey
       console.log(`[${episodeId}] Could not geocode: ${name}`);
     }
   }
+  if (skipped > 0) warn(`Ran out of time: ${skipped} new place name(s) were not geocoded`);
 
   if (geocoded.length === 0) {
     console.log(`[${episodeId}] No places geocoded`);
@@ -183,20 +222,20 @@ export async function extractAndSeedPlaces(db, episodeId, segments, openaiApiKey
   }
 
   // Re-query to get IDs for newly inserted places
-  const geocodedPlaceholders = geocoded.map(() => '?').join(', ');
-  const { results: allPlaces } = await db.prepare(`SELECT id, name FROM places WHERE name IN (${geocodedPlaceholders})`).bind(...geocoded).all();
-  const placeIdMap = new Map(allPlaces.map(p => [p.name, p.id]));
+  const placeIdMap = await placeIds(db, geocoded);
 
-  await db.prepare('DELETE FROM place_mentions WHERE episode_id = ?').bind(episodeId).run();
+  // Replace this episode's links in one transaction
+  const statements = [db.prepare('DELETE FROM place_mentions WHERE episode_id = ?').bind(episodeId)];
   for (const name of geocoded) {
     const placeId = placeIdMap.get(name);
     // placeId could be absent if a known place was deleted between the two queries,
     // or if INSERT OR IGNORE silently skipped due to a race. Guard is intentional.
     if (placeId != null) {
-      await db.prepare('INSERT OR IGNORE INTO place_mentions (place_id, episode_id) VALUES (?, ?)')
-        .bind(placeId, episodeId).run();
+      statements.push(db.prepare('INSERT OR IGNORE INTO place_mentions (place_id, episode_id) VALUES (?, ?)')
+        .bind(placeId, episodeId));
     }
   }
+  await db.batch(statements);
 
   console.log(`[${episodeId}] Seeded ${geocoded.length} places`);
 }

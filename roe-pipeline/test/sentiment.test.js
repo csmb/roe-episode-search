@@ -278,4 +278,35 @@ describe('scoreAndSeedSentiment', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(db.runs.find(r => r.sql.includes('INSERT INTO place_narratives'))).toBeUndefined();
   });
+
+  it('stops starting GPT calls once out of time, leaving the rest for a later run', async () => {
+    const fetchSpy = vi.spyOn(global, 'fetch');
+    const warn = vi.fn();
+    const db = makeDb(
+      [{ id: 7, name: 'Tartine' }],
+      [{ place_id: 7, episode_id: 'ep_2019-01-01_0', name: 'Tartine' }],
+    );
+    await scoreAndSeedSentiment(db, 'ep_2019-01-01_0', [{ start_ms: 0, text: 'we love Tartine' }], 'sk-test', { deadline: Date.now() - 1, warn });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(db.runs).toHaveLength(0);   // analyzed_at stays NULL
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('1 place mention'));
+  });
+
+  it('carries on when a narrative fails, instead of failing the whole step', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(global, 'fetch')
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ choices: [{ message: { content: '{"score":0.6,"label":"positive","quote":"we love Tartine"}' } }] }) })
+      .mockResolvedValue({ ok: false, status: 500, text: async () => 'busy' });
+    const warn = vi.fn();
+    const mentions = [
+      { place_id: 7, episode_id: 'ep_2019-01-01_0', name: 'Tartine', sentiment: 0.5, sentiment_label: 'positive', snippet: 'a' },
+      { place_id: 7, episode_id: 'ep_2020-01-01_0', name: 'Tartine', sentiment: 0.5, sentiment_label: 'positive', snippet: 'b' },
+      { place_id: 7, episode_id: 'ep_2021-01-01_0', name: 'Tartine', sentiment: 0.5, sentiment_label: 'positive', snippet: 'c' },
+    ];
+    // This episode has one mention; the place has three years of history, so a narrative is due
+    const db = makeDb([{ id: 7, name: 'Tartine' }], mentions);
+    await scoreAndSeedSentiment(db, 'ep_2019-01-01_0', [{ start_ms: 0, text: 'we love Tartine' }], 'sk-test', { warn });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('1 place narrative'));
+  });
 });
+

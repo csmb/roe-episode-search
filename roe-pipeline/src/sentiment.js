@@ -1,7 +1,10 @@
 /**
  * Pure helpers + OpenAI callers for per-place sentiment and narrative.
  * Pure functions are unit-tested; OpenAI callers are integration-tested via mocks.
+ * scripts/backfill-place-sentiment.js imports this file too, so it runs in Node as well.
  */
+
+import { apiError, TIMEOUT_MS } from './limits.js';
 
 export const MIN_NARRATIVE_EPISODES = 3;
 export const MIN_NARRATIVE_YEAR_SPAN = 2; // distinct calendar years
@@ -151,8 +154,9 @@ async function openaiJson(system, user, apiKey) {
       temperature: 0,
       max_tokens: 500,
     }),
+    signal: AbortSignal.timeout(TIMEOUT_MS.sentiment),
   });
-  if (!res.ok) throw new Error(`OpenAI ${res.status}: ${await res.text()}`);
+  if (!res.ok) throw apiError('OpenAI', res.status, await res.text());
   const data = await res.json();
   return data.choices[0].message.content;
 }
@@ -185,8 +189,12 @@ export async function synthesizeNarrative(placeName, series, apiKey) {
  * @param {string} episodeId
  * @param {Array<{start_ms:number,text:string}>} segments
  * @param {string} openaiApiKey
+ * @param {object} [opts]
+ * @param {number} [opts.deadline] - epoch ms after which no new GPT call starts;
+ *   unscored mentions keep analyzed_at NULL, so a later run can finish them
+ * @param {(message: string) => void} [opts.warn] - notes for the run's warnings
  */
-export async function scoreAndSeedSentiment(db, episodeId, segments, openaiApiKey) {
+export async function scoreAndSeedSentiment(db, episodeId, segments, openaiApiKey, { deadline = Infinity, warn = () => {} } = {}) {
   if (!openaiApiKey) {
     console.warn(`[${episodeId}] OPENAI_API_KEY not set — skipping sentiment`);
     return;
@@ -203,8 +211,13 @@ export async function scoreAndSeedSentiment(db, episodeId, segments, openaiApiKe
 
   const now = new Date().toISOString();
   const affectedPlaceIds = new Set();
+  let unscored = 0;
 
   for (const m of mentions) {
+    if (Date.now() > deadline) {
+      unscored++;
+      continue;
+    }
     const passages = findPlacePassages(segments, m.name);
     let score = null;
     let label = 'unknown';
@@ -237,11 +250,25 @@ export async function scoreAndSeedSentiment(db, episodeId, segments, openaiApiKe
     affectedPlaceIds.add(m.place_id);
   }
 
+  let staleNarratives = 0;
   for (const placeId of affectedPlaceIds) {
-    await regenerateNarrative(db, placeId, openaiApiKey);
+    if (Date.now() > deadline) {
+      staleNarratives++;
+      continue;
+    }
+    // A failed narrative shouldn't send the whole step round again: every
+    // mention above would be scored (and paid for) a second time.
+    try {
+      await regenerateNarrative(db, placeId, openaiApiKey);
+    } catch (err) {
+      console.error(`[${episodeId}] narrative failed for place ${placeId}: ${err.message}`);
+      staleNarratives++;
+    }
   }
+  if (unscored > 0) warn(`Ran out of time: ${unscored} place mention(s) left unscored`);
+  if (staleNarratives > 0) warn(`${staleNarratives} place narrative(s) not refreshed (out of time or failed)`);
 
-  console.log(`[${episodeId}] sentiment scored for ${mentions.length} mentions`);
+  console.log(`[${episodeId}] sentiment scored for ${mentions.length - unscored} of ${mentions.length} mentions`);
 }
 
 /**
