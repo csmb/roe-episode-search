@@ -8,9 +8,9 @@ export const projectRoot = path.resolve(
 	path.dirname(decodeURIComponent(new URL(import.meta.url).pathname)),
 	'..'
 );
-export const workerDir = path.join(projectRoot, 'roe-search');
+const workerDir = path.join(projectRoot, 'roe-search');
 export const transcriptsDir = path.join(projectRoot, 'transcripts');
-export const DB_NAME = 'roe-episodes';
+const DB_NAME = 'roe-episodes';
 
 const wranglerBin = path.join(workerDir, 'node_modules', '.bin', 'wrangler');
 
@@ -43,7 +43,7 @@ export function isAscii(text) {
 
 // Word corrections: whisper consistently mishears these proper nouns.
 // Keys are lowercase; replacements are case-sensitive.
-export const WORD_CORRECTIONS = {
+const WORD_CORRECTIONS = {
 	soldier: 'Suldrew',
 };
 
@@ -91,7 +91,7 @@ export function parseEpisodeDate(episodeId) {
 	return match ? match[1] : null;
 }
 
-export function utcToPacific(isoString) {
+function utcToPacific(isoString) {
 	const date = new Date(isoString);
 	return date.toLocaleTimeString('en-US', {
 		timeZone: 'America/Los_Angeles',

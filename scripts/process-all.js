@@ -27,7 +27,6 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { discoverEpisodes } from './discover-episodes.js';
-import { updateManifestStatus, generateManifest } from './generate-manifest.js';
 
 const projectRoot = path.resolve(path.dirname(decodeURIComponent(new URL(import.meta.url).pathname)), '..');
 const transcriptsDir = path.join(projectRoot, 'transcripts');
@@ -39,8 +38,6 @@ const MAX_RETRIES = 2;
 // Quality gate thresholds
 const MIN_SEGMENTS = 100;
 const MAX_SEGMENT_CHARS = 500;
-const MIN_SUMMARY_CHARS = 50;
-const MAX_SUMMARY_CHARS = 500;
 const MAX_PHRASE_REPEATS = 20;
 
 // ── Progress tracking ──────────────────────────────────────────────────
@@ -242,8 +239,6 @@ function main() {
 
 	if (toProcess.length === 0) {
 		console.log('Nothing to process!');
-		console.log('\nSyncing manifest...');
-		generateManifest(opts.audioDir);
 		return;
 	}
 
@@ -300,7 +295,6 @@ function main() {
 				file: path.basename(episode.filePath),
 				timestamp: new Date().toISOString(),
 			};
-			updateManifestStatus(episode.episodeId, 'failed');
 			failed++;
 		} else if (!quality.pass) {
 			console.error(`  ${timestamp()} QUALITY GATE FAILED (nothing seeded/uploaded):`);
@@ -311,7 +305,6 @@ function main() {
 				file: path.basename(episode.filePath),
 				timestamp: new Date().toISOString(),
 			};
-			updateManifestStatus(episode.episodeId, 'skipped');
 		} else {
 			if (quality.warnings && quality.warnings.length > 0) {
 				quality.warnings.forEach((w) => console.warn(`  ${timestamp()} WARNING: ${w}`));
@@ -323,7 +316,6 @@ function main() {
 				file: path.basename(episode.filePath),
 				timestamp: new Date().toISOString(),
 			};
-			updateManifestStatus(episode.episodeId, 'completed');
 			progress.timings.push(durationSec);
 			succeeded++;
 		}
@@ -386,9 +378,6 @@ function main() {
 	}
 
 	console.log(`\n  Progress file: ${progressPath}`);
-
-	console.log('\nSyncing manifest...');
-	generateManifest(opts.audioDir);
 }
 
 main();

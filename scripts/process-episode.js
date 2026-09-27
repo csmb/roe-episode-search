@@ -25,10 +25,9 @@ import os from 'node:os';
 
 import {
 	loadEnv, escapeSQL, isAscii, wranglerExec, queryJSON, runSQL,
-	stepTimer, logWarn, projectRoot, workerDir, transcriptsDir,
-	DB_NAME, applyWordCorrections, parseEpisodeDate, fetchSunriseSunset,
+	stepTimer, logWarn, transcriptsDir,
+	applyWordCorrections, parseEpisodeDate, fetchSunriseSunset,
 } from './lib.js';
-import { buildSummarySystemPrompt } from './prompts.js';
 import { purgeEpisode } from './clean-hallucinations.js';
 import { generateSummaryFromText } from './generate-summaries.js';
 import { chunkEpisode } from './generate-embeddings.js';
