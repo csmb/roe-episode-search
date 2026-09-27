@@ -67,6 +67,7 @@ cd roe-search && npx wrangler dev    # http://localhost:8787
 ### Deploy roe-search
 ```
 cd roe-search && npx wrangler deploy
+npm run smoke    # checks every route the pages use on rollovereasy.org; run after each deploy
 ```
 
 ### Run roe-pipeline locally
