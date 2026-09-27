@@ -34,7 +34,7 @@ if (!OPENAI_API_KEY) {
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 // ---------------------------------------------------------------------------
-// Stoplist — same as scripts/candidates/merge-candidates.js
+// Stoplist — copied from scripts/archive/candidates/merge-candidates.js (retired)
 // ---------------------------------------------------------------------------
 
 const STOPLIST = new Set([

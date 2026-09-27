@@ -9,49 +9,50 @@ roe-episode-search/
 ├── roe-search/                # Cloudflare Worker — search frontend + API
 │   └── src/
 │       ├── index.js           # All routes (search, audio proxy, admin)
-│       ├── frontend.html      # Homepage (On This Day, clip sharing, audio player)
+│       ├── frontend.html      # Homepage (On This Day, shared-clip card, audio player)
 │       ├── episodes.html      # Browse all episodes
-│       ├── guests.html        # Guest directory
+│       ├── guests.html        # Guest directory (not linked from the menu)
 │       ├── admin.html         # Admin panel (password-protected: guest mgmt, search)
-│       ├── map.html           # Places mentioned map
-│       └── stars.html         # Stellar Lexicon word-star visualization
+│       └── map.html           # Places mentioned map
 ├── roe-pipeline/              # Cloudflare Worker — serverless episode processing
 │   └── src/
-│       ├── index.js           # Queue consumer, dispatches to Durable Object
-│       ├── pipeline.js        # EpisodePipeline DO (orchestrates all steps)
-│       ├── transcribe.js      # OpenAI Whisper API, chunked
+│       ├── index.js           # Queue consumer + /process and /status (bearer token)
+│       ├── pipeline.js        # EpisodePipeline DO: one step (or chunk) per alarm, retries, resume
+│       ├── transcribe.js      # OpenAI Whisper API, one ~20 MB chunk at a time
+│       ├── gap-retry.js       # Re-send 5+ minute holes as 3-minute clips
+│       ├── clean-segments.js  # Loop/hallucination/wrong-language cleaning
+│       ├── summary.js         # GPT-4o-mini title/summary/guests (writes nothing)
+│       ├── seed-db.js         # One D1 batch: episode row + segments (+FTS) + guests
 │       ├── embeddings.js      # Workers AI embeddings (45s window, 35s step)
-│       ├── summary.js         # GPT-4o-mini title/summary/guests
-│       ├── seed-db.js         # D1 insert (episodes + segments + FTS)
-│       ├── clean-segments.js  # Hallucination/dedupe cleaning
+│       ├── guest-start.js     # "Skip to interview" time
+│       ├── places.js          # GPT-4o-mini places + Nominatim geocoding
+│       ├── sentiment.js       # Place sentiment, quotes and narratives
+│       ├── hosts.js           # The hosts' names (never guests); the site imports it too
 │       └── parse-episode-id.js # Filename → episode ID
-├── scripts/                   # Local processing pipeline (Node.js)
-│   ├── process-episode.js     # Single episode: transcribe → seed → embed → summary → upload
+├── scripts/                   # Local tools (Node.js 24.2+)
+│   ├── process-episode.js     # Historical backfill path (whisper.cpp): transcribe → seed → embed → summary → upload
 │   ├── process-all.js         # Batch runner with checkpoint/resume
 │   ├── discover-episodes.js   # Scan directory, parse filenames
 │   ├── generate-summaries.js  # Regenerate AI summaries
-│   ├── backfill-guests.js     # Populate episode_guests from summaries
-│   ├── candidates/            # Map enrichment: external data fetchers
-│   │   ├── fetch-datasf.js    # DataSF registered businesses (no API key)
-│   │   ├── fetch-osm.js       # OpenStreetMap parks, trails, landmarks
-│   │   └── merge-candidates.js # Merge + deduplicate all candidate sources
-│   ├── cross-reference-candidates.js  # Match candidates against transcripts via GPT-4o-mini
-│   ├── seed-verified-places.js        # Insert verified places into D1 (geocodes via Nominatim)
-│   ├── cleanup-places.js              # Remove false positive places from D1
-│   └── ...                    # ~20 more utility scripts
+│   ├── cleanup-places.js      # Remove false positive places from D1
+│   ├── delete-episode.js      # Remove an episode from D1, Vectorize, R2
+│   ├── archive/               # Retired one-off scripts, reference only (see its README)
+│   └── ...                    # ~15 more utility scripts
 ├── schema.sql                 # D1 schema (episodes, segments, FTS5, guests, places)
-├── All episodes/              # 69GB MP3 archive (local only, not in git)
 ├── transcripts/               # Generated JSON transcripts (local only)
-└── docs/superpowers/          # Design specs and implementation plans
+└── docs/superpowers/          # Design specs and plans (local only: git ignores this folder)
 ```
+
+The MP3 archive (661 files) is outside the repo, in iCloud Drive at
+`~/Library/Mobile Documents/com~apple~CloudDocs/BFF.fm/Roll Over Easy/All Episodes/`.
 
 ## Component Quick Reference
 
 | Component | Entry Point | Purpose | Infra |
 |-----------|-------------|---------|-------|
 | **roe-search** | `roe-search/src/index.js` | Search frontend + API. Serves HTML pages, FTS5/semantic search, audio streaming, admin endpoints | D1, R2, Vectorize, Workers AI |
-| **roe-pipeline** | `roe-pipeline/src/index.js` | Serverless episode processing. R2 upload triggers queue → Durable Object runs transcribe → seed → embed → summarize | D1, R2, Vectorize, Workers AI, OpenAI |
-| **scripts** | `scripts/process-episode.js` | Local episode processing. Same pipeline as roe-pipeline but uses whisper-cpp + ffmpeg locally | D1, R2, Vectorize, OpenAI |
+| **roe-pipeline** | `roe-pipeline/src/index.js` | How new episodes arrive. R2 upload → queue → Durable Object runs transcribe → summary → seed → embed → guest-start → places → sentiment, with retries and resume | D1, R2, Vectorize, Workers AI, OpenAI |
+| **scripts** | `scripts/process-episode.js` | Local processing used for the historical backfill (whisper-cpp + ffmpeg). Not the same as roe-pipeline: no places or sentiment, and its own prompts and cleaning | D1, R2, Vectorize, OpenAI |
 | **D1 database** | `schema.sql` | SQLite: episodes, transcript_segments, transcript_fts (FTS5), episode_guests, places, place_mentions | |
 | **R2 bucket** | `roe-audio` | Audio file storage. Public URL: `pub-e95bd2be3f9d4147b2955503d75e50c1.r2.dev` | |
 | **Vectorize** | `roe-transcripts` | 768-dim embeddings (cosine). Model: `@cf/baai/bge-base-en-v1.5` | |
@@ -60,7 +61,7 @@ roe-episode-search/
 
 ### Run roe-search locally
 ```
-cd roe-search && npx wrangler dev    # http://localhost:8787
+cd roe-search && npx wrangler dev --port 8791    # http://roe.localhost:8791
 ```
 
 ### Deploy roe-search
@@ -105,34 +106,14 @@ cd roe-search && npx wrangler d1 execute roe-episodes --remote --file=../schema.
 node scripts/generate-summaries.js
 ```
 
-### Backfill guest names
-```
-node scripts/backfill-guests.js
-```
+### Places on the map
 
-### Map enrichment pipeline
-
-Enriches the places map by fetching external data sources, cross-referencing against transcripts, and seeding verified matches to D1. Run steps in order:
-
-```
-# 1. Fetch candidates from external sources (run any/all)
-node scripts/candidates/fetch-datasf.js       # SF businesses → candidates/datasf.json
-node scripts/candidates/fetch-osm.js           # OSM parks/landmarks → candidates/osm.json
-
-# 2. Merge all candidate files into one deduplicated set
-node scripts/candidates/merge-candidates.js    # → candidates/all.json
-
-# 3. Cross-reference against transcripts (uses GPT-4o-mini, takes hours)
-node scripts/cross-reference-candidates.js     # → scripts/verified_places.json
-
-# 4. Seed verified places into D1 (geocodes missing coords via Nominatim)
-node scripts/seed-verified-places.js           # inserts into places + place_mentions
-```
-
-Notes:
-- `seed-verified-places.js` has a stoplist to filter false positives the LLM missed
-- Nominatim geocoding is rate-limited to 1 req/1.5s with exponential backoff retries
-- Generated data files (*.json in candidates/, verified_places.json) are gitignored
+New episodes get their places from roe-pipeline's `extract-places` step, which only keeps
+names the transcript mentions. `scripts/cleanup-places.js` removes false positives from D1.
+The April 2026 map build (external business lists matched against transcripts) is archived
+in `scripts/archive/`: it caused the fake pins and common-word places cleaned up in
+September, so don't re-run it as is. Guest lists are edited in the admin page; the old
+`backfill-guests.js` is archived too, because it overwrites reviewed guests.
 
 ## Key Files
 
@@ -141,10 +122,9 @@ Notes:
 | `schema.sql` | D1 schema — episodes, transcript_segments, transcript_fts (FTS5), episode_guests, places, place_mentions |
 | `roe-search/wrangler.jsonc` | Worker config — D1, R2, Vectorize, AI bindings |
 | `roe-pipeline/wrangler.jsonc` | Worker config — D1, R2, Vectorize, Durable Object, queue bindings |
-| `.env` | Secrets: CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN, OPENAI_API_KEY |
+| `.env` | Secrets: CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN, OPENAI_API_KEY, PIPELINE_TOKEN (for roe-pipeline's /process and /status) |
 | `r2-cors.json` | R2 CORS rules (GET/HEAD from all origins) |
 | `scripts/batch-progress.json` | Checkpoint/resume state for process-all.js |
-| `scripts/verified_places.json` | LLM-verified place matches (1,466 entries, gitignored) |
-| `scripts/candidates/*.json` | Raw + merged candidate data from external APIs (gitignored) |
-| `docs/superpowers/specs/` | Design specs for major features |
-| `docs/superpowers/plans/` | Implementation plans |
+| `scripts/archive/README.md` | What the retired scripts were, and which must not be re-run |
+| `docs/superpowers/specs/` | Design specs for major features (local only) |
+| `docs/superpowers/plans/` | Implementation plans (local only) |
