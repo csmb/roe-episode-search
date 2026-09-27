@@ -18,7 +18,7 @@ roe-episode-search/
 │   └── src/
 │       ├── index.js           # Queue consumer + /process and /status (bearer token)
 │       ├── pipeline.js        # EpisodePipeline DO: one step (or chunk) per alarm, retries, resume
-│       ├── transcribe.js      # OpenAI Whisper API, one ~20 MB chunk at a time
+│       ├── transcribe.js      # OpenAI Whisper API, six minutes of audio at a time
 │       ├── gap-retry.js       # Re-send 5+ minute holes as 3-minute clips
 │       ├── clean-segments.js  # Loop/hallucination/wrong-language cleaning
 │       ├── summary.js         # GPT-4o-mini title/summary/guests (writes nothing)

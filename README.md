@@ -38,7 +38,7 @@ Upload "Roll Over Easy YYYY-MM-DD.mp3" to R2
     │
     └──► R2 event notification ──► roe-pipeline-queue ──► EpisodePipeline DO (one per file name)
               │
-              ├── 1. transcribe ──► OpenAI Whisper API, one ~20 MB (~16 min) chunk per alarm;
+              ├── 1. transcribe ──► OpenAI Whisper API, one six-minute chunk per alarm;
               │                     holes of 5+ min are re-sent as 3-minute clips
               ├── 2. summary ──► GPT-4o-mini (title, summary, guests found in the transcript)
               ├── 3. seed-db ──► D1 in one transaction: the episode row with its title, summary
