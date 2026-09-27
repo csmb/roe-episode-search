@@ -140,25 +140,35 @@ export function parseNarrativeResponse(content) {
 }
 
 const OPENAI_URL = 'https://api.openai.com/v1/chat/completions';
+const RATE_LIMIT_WAITS_MS = [2_000, 8_000, 20_000];
 
 async function openaiJson(system, user, apiKey) {
-  const res = await fetch(OPENAI_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify({
-      model: 'gpt-4o-mini',
-      messages: [
-        { role: 'system', content: system },
-        { role: 'user', content: user },
-      ],
-      temperature: 0,
-      max_tokens: 500,
-    }),
-    signal: AbortSignal.timeout(TIMEOUT_MS.sentiment),
-  });
-  if (!res.ok) throw apiError('OpenAI', res.status, await res.text());
-  const data = await res.json();
-  return data.choices[0].message.content;
+  // When OpenAI says "slow down" (429), wait and try again rather than lose
+  // the score: in May hundreds of mentions were left unscored this way.
+  for (let attempt = 0; ; attempt++) {
+    const res = await fetch(OPENAI_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: user },
+        ],
+        temperature: 0,
+        max_tokens: 500,
+      }),
+      signal: AbortSignal.timeout(TIMEOUT_MS.sentiment),
+    });
+    if (res.status === 429 && attempt < RATE_LIMIT_WAITS_MS.length) {
+      const after = Number(res.headers.get('retry-after')) * 1000;
+      await new Promise(r => setTimeout(r, after > 0 && after < 60_000 ? after : RATE_LIMIT_WAITS_MS[attempt]));
+      continue;
+    }
+    if (!res.ok) throw apiError('OpenAI', res.status, await res.text());
+    const data = await res.json();
+    return data.choices[0].message.content;
+  }
 }
 
 export async function scoreMention(placeName, passages, apiKey) {

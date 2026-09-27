@@ -308,5 +308,19 @@ describe('scoreAndSeedSentiment', () => {
     await scoreAndSeedSentiment(db, 'ep_2019-01-01_0', [{ start_ms: 0, text: 'we love Tartine' }], 'sk-test', { warn });
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('1 place narrative'));
   });
+
+  it('waits and tries again when OpenAI says slow down, instead of losing the score', async () => {
+    vi.useFakeTimers();
+    const fetchSpy = vi.spyOn(global, 'fetch')
+      .mockResolvedValueOnce(new Response('slow down', { status: 429 }))
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ choices: [{ message: { content: '{"score":0.6,"label":"positive","quote":"we love Tartine"}' } }] }) });
+    const db = makeDb([{ id: 7, name: 'Tartine' }], [{ place_id: 7, episode_id: 'ep_2019-01-01_0', name: 'Tartine' }]);
+    const p = scoreAndSeedSentiment(db, 'ep_2019-01-01_0', [{ start_ms: 0, text: 'we love Tartine' }], 'sk-test');
+    await vi.runAllTimersAsync();
+    await p;
+    vi.useRealTimers();
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(db.runs.find(r => r.sql.includes('SET sentiment')).args).toContain(0.6);
+  });
 });
 

@@ -58,18 +58,23 @@ export function cleanPlaceNames(names) {
  * prompt (Ocean Beach, Dolores Park, Coit Tower…) into its answer: on episodes
  * since April, 46 of 206 place links named a place their transcript never
  * mentions. A name counts when it appears as the sentiment step matches it
- * ("Mission District" via "mission"). An intersection needs both of its
- * streets ("17th Street & Valencia Street" via "17th" and "valencia"), so
- * "24th & Mission" isn't kept on the strength of "Mission" alone.
+ * ("Mission District" via "mission"). An intersection counts only when its two
+ * streets are named together ("17th and Valencia", "Valencia & 17th Street"),
+ * so "24th & Mission" isn't kept because a show says "the 24th" and "Mission".
  */
 export function placesInTranscript(names, text) {
-  const haystack = text.toLowerCase();
+  const haystack = text.toLowerCase().replace(/\s+/g, ' ');
   const found = v => v.length >= 3 && haystack.includes(v);
-  const bare = side => side.replace(/\b(street|avenue|st|ave|boulevard|blvd)\b/g, '').replace(/\s+/g, ' ').trim();
+  const STREET = '(?:street|avenue|st|ave|boulevard|blvd)';
+  const bare = side => side.replace(new RegExp(`\\b${STREET}\\b`, 'g'), '').replace(/\s+/g, ' ').trim();
+  const pattern = side => bare(side).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + `(?:\\s+${STREET}\\.?)?`;
   return names.filter(name => {
     const lower = name.toLowerCase().trim();
-    if (lower.includes('&')) {
-      return lower.split('&').every(side => found(side.trim()) || found(bare(side)));
+    const sides = lower.split('&').map(s => s.trim()).filter(Boolean);
+    if (sides.length === 2 && bare(sides[0]) && bare(sides[1])) {
+      const [a, b] = sides.map(pattern);
+      const join = '\\s*(?:and|&|at|,)\\s*';
+      return new RegExp(`\\b${a}${join}${b}\\b|\\b${b}${join}${a}\\b`).test(haystack);
     }
     return placeMatchVariants(name).some(found);
   });
@@ -93,7 +98,8 @@ function sleep(ms) {
 
 async function nominatimSearch(url) {
   const res = await fetch(url, {
-    headers: { 'User-Agent': 'roe-episode-search/1.0' },
+    // Nominatim's usage policy asks for a way to reach whoever sends the requests.
+    headers: { 'User-Agent': 'roe-episode-search/1.0 (+https://rollovereasy.org)' },
     signal: AbortSignal.timeout(TIMEOUT_MS.geocode),
   });
   if (!res.ok) return [];

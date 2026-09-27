@@ -38,9 +38,12 @@ describe('placesInTranscript', () => {
       .toEqual(['Dolores Park', '17th Street & Valencia Street', 'Mission District']);
   });
 
-  it('keeps an intersection only when both streets are mentioned', () => {
+  it('keeps an intersection only when its two streets are named together', () => {
     expect(placesInTranscript(['24th & Mission'], 'Tacos in the Mission.')).toEqual([]);
+    expect(placesInTranscript(['24th & Mission'], 'On the 24th we went to the Mission.')).toEqual([]);
     expect(placesInTranscript(['24th Street & Mission Street'], 'Meet me at 24th and Mission.')).toEqual(['24th Street & Mission Street']);
+    expect(placesInTranscript(['17th Street & Valencia Street'], 'over on Valencia Street and 17th, you know')).toEqual(['17th Street & Valencia Street']);
+    expect(placesInTranscript(['Haight & Ashbury'], 'the corner of Haight\nand Ashbury')).toEqual(['Haight & Ashbury']);
   });
 });
 
