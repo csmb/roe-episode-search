@@ -710,10 +710,19 @@ function showError(msg) {
 // ── Data loading ───────────────────────────────────────────────────────
 
 async function loadAndRender() {
-	const [g, q] = await Promise.all([
+	const [g, queueRes] = await Promise.all([
 		fetch('/api/guests').then(r => r.json()),
-		fetch('/api/admin/unreviewed').then(r => r.json()),
+		fetch('/api/admin/unreviewed', {
+			headers: { 'X-Admin-Password': getPassword() },
+		}),
 	]);
+	if (queueRes.status === 401) {
+		// Saved password no longer works (changed or cleared): drop it and show the login again.
+		sessionStorage.removeItem('admin_pw');
+		location.reload();
+		return;
+	}
+	const q = await queueRes.json();
 	allGuests = g.guests || [];
 	queueEpisodes = q.episodes || [];
 	renderGuests();

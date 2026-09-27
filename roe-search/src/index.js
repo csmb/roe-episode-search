@@ -856,24 +856,26 @@ async function handleAdminApi(url, env, request) {
 
 	if (path === 'unreviewed') {
 		try {
+			// One query for every unreviewed episode and its guests, instead of
+			// one guest query per episode (the admin page loads this on every visit).
 			const { results } = await env.DB.prepare(`
-				SELECT e.id, e.title, e.published_at
+				SELECT e.id, e.title, e.published_at, g.guest_name
 				FROM episodes e
+				LEFT JOIN episode_guests g ON g.episode_id = e.id
 				WHERE e.guests_reviewed = 0
-				ORDER BY e.id DESC
+				ORDER BY e.id DESC, g.guest_name
 			`).all();
 
 			const episodes = [];
-			for (const ep of results) {
-				const { results: guests } = await env.DB.prepare(
-					'SELECT guest_name FROM episode_guests WHERE episode_id = ?1'
-				).bind(ep.id).all();
-				episodes.push({
-					id: ep.id,
-					title: ep.title,
-					published_at: ep.published_at,
-					guests: guests.map(g => g.guest_name),
-				});
+			const byId = new Map();
+			for (const row of results) {
+				let ep = byId.get(row.id);
+				if (!ep) {
+					ep = { id: row.id, title: row.title, published_at: row.published_at, guests: [] };
+					byId.set(row.id, ep);
+					episodes.push(ep);
+				}
+				if (row.guest_name !== null) ep.guests.push(row.guest_name);
 			}
 			return json({ episodes }, 200, request);
 		} catch (err) {
