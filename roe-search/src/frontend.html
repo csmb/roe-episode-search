@@ -914,12 +914,15 @@ async function loadOnThisDay() {
 		const data = await res.json();
 		if (!data.episodes || data.episodes.length === 0) return;
 
-		// Format header date
-		const [mm, dd] = data.date.split('-');
+		// Format header date. On a day with no show, the API falls back to the nearest day
+		// with one (at most 2 days off) and says which in shown_date.
+		const shown = data.shown_date || data.date;
+		const exact = shown === data.date;
+		const [mm, dd] = shown.split('-');
 		const monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 		const headerDate = monthNames[parseInt(mm, 10) - 1] + ' ' + parseInt(dd, 10);
 
-		let html = '<div class="otd-header">On This Day: ' + headerDate + '</div>';
+		let html = '<div class="otd-header">' + (exact ? 'On This Day: ' : 'Around This Day: ') + headerDate + '</div>';
 		const currentYear = new Date().getFullYear();
 
 		for (let i = 0; i < data.episodes.length; i++) {
@@ -931,7 +934,7 @@ async function loadOnThisDay() {
 			html += '<div class="episode">';
 			if (yearsAgo !== null) {
 				const label = yearsAgo === 0
-					? 'Today (' + epYear + ')'
+					? (exact ? 'Today' : 'This year') + ' (' + epYear + ')'
 					: yearsAgo + ' year' + (yearsAgo !== 1 ? 's' : '') + ' ago (' + epYear + ')';
 				html += '<div class="otd-year">' + label + '</div>';
 			}

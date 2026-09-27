@@ -746,10 +746,22 @@ async function handleOnThisDay(url, env, request) {
 	const todayMmDd = url.searchParams.get('date') || `${month}-${day}`;
 
 	try {
+		// Shows from the nearest calendar day that has any (today on 336 days). off = days
+		// from ?1 wrapped to -183..182; 2000 is a leap year so 02-29 parses; ties pick the day before.
+		// A subquery, not a JOIN: joined, SQLite re-ran `nearest` for every episode
+		// (590K rows read per request on D1, against 1.6K).
 		const { results } = await env.DB.prepare(`
-			SELECT id, title, duration_ms, summary, guest_start_ms
+			WITH nearest AS (
+				SELECT SUBSTR(id, 21, 5) AS mmdd,
+				       ((CAST(julianday('2000-' || SUBSTR(id, 21, 5)) - julianday('2000-' || ?1) AS INTEGER) + 549) % 366) - 183 AS off
+				FROM episodes
+				WHERE julianday('2000-' || ?1) IS NOT NULL
+				ORDER BY ABS(off), off
+				LIMIT 1
+			)
+			SELECT id, title, duration_ms, summary, guest_start_ms, SUBSTR(id, 21, 5) AS mmdd
 			FROM episodes
-			WHERE SUBSTR(id, 21, 5) = ?1
+			WHERE SUBSTR(id, 21, 5) = (SELECT mmdd FROM nearest)
 			ORDER BY id DESC
 		`)
 			.bind(todayMmDd)
@@ -770,6 +782,8 @@ async function handleOnThisDay(url, env, request) {
 
 		return json({
 			date: todayMmDd,
+			// The day the episodes are from: date itself, or the nearest day with shows.
+			shown_date: results[0]?.mmdd ?? todayMmDd,
 			episodes: results.map(ep => ({
 				id: ep.id,
 				title: ep.title,
