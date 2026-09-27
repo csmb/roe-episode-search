@@ -19,11 +19,12 @@ import { execSync } from 'node:child_process';
 const PORT = parseInt(process.argv[2] || '3001', 10);
 const projectRoot = path.resolve(path.dirname(decodeURIComponent(new URL(import.meta.url).pathname)), '..');
 
-const CORS_HEADERS = {
-	'Access-Control-Allow-Origin': '*',
-	'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-	'Access-Control-Allow-Headers': 'Content-Type, X-Filename',
-};
+// Only this machine's own page may use the server. It sends no CORS headers, so
+// other websites can't read its responses or send the X-Filename upload, and the
+// Host check below stops DNS-rebinding tricks (another site's name pointed at
+// 127.0.0.1). Before 2026-09-27 it allowed any origin (left over from a removed
+// admin-page Ingest tab), so any open web page could start a production run.
+const ALLOWED_HOSTS = new Set([`localhost:${PORT}`, `127.0.0.1:${PORT}`]);
 
 // ── Job queue ──────────────────────────────────────────────────────────
 
@@ -329,14 +330,12 @@ async function handleFiles(files) {
 // ── HTTP server ────────────────────────────────────────────────────────
 
 const server = http.createServer((req, res) => {
-	const url = new URL(req.url, `http://localhost:${PORT}`);
-
-	// OPTIONS preflight (for cross-origin requests from the admin page)
-	if (req.method === 'OPTIONS') {
-		res.writeHead(204, CORS_HEADERS);
-		res.end();
+	if (!ALLOWED_HOSTS.has(req.headers.host)) {
+		res.writeHead(403, { 'Content-Type': 'text/plain' });
+		res.end('Forbidden');
 		return;
 	}
+	const url = new URL(req.url, `http://localhost:${PORT}`);
 
 	// GET / — serve UI
 	if (req.method === 'GET' && url.pathname === '/') {
@@ -345,18 +344,11 @@ const server = http.createServer((req, res) => {
 		return;
 	}
 
-	// GET /ping — connectivity check for admin page
-	if (req.method === 'GET' && url.pathname === '/ping') {
-		res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
-		res.end(JSON.stringify({ ok: true, port: PORT }));
-		return;
-	}
-
 	// POST /upload — receive file, queue job
 	if (req.method === 'POST' && url.pathname === '/upload') {
 		const rawFilename = req.headers['x-filename'];
 		if (!rawFilename) {
-			res.writeHead(400, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+			res.writeHead(400, { 'Content-Type': 'application/json' });
 			res.end(JSON.stringify({ error: 'Missing X-Filename header' }));
 			return;
 		}
@@ -365,11 +357,17 @@ const server = http.createServer((req, res) => {
 		try {
 			filename = decodeURIComponent(rawFilename);
 		} catch {
-			res.writeHead(400, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+			res.writeHead(400, { 'Content-Type': 'application/json' });
 			res.end(JSON.stringify({ error: 'Malformed X-Filename header' }));
 			return;
 		}
 		const safeFilename = path.basename(filename); // strip any path components
+		if (!safeFilename || /[\u0000-\u001f]/.test(safeFilename)) {
+			// e.g. "%00": a NUL in the path made createWriteStream throw and crash the server
+			res.writeHead(400, { 'Content-Type': 'application/json' });
+			res.end(JSON.stringify({ error: 'Bad file name' }));
+			return;
+		}
 
 		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), `roe-ingest-${Date.now()}-`));
 		const tmpPath = path.join(tmpDir, safeFilename);
@@ -387,7 +385,7 @@ const server = http.createServer((req, res) => {
 			writeStream.destroy();
 			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
 			if (!res.headersSent) {
-				res.writeHead(500, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+				res.writeHead(500, { 'Content-Type': 'application/json' });
 				res.end(JSON.stringify({ error: `Upload failed: ${err.message}` }));
 			}
 		}
@@ -401,7 +399,7 @@ const server = http.createServer((req, res) => {
 			const jobId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 			const job = createJob(jobId, safeFilename, tmpPath);
 
-			res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+			res.writeHead(200, { 'Content-Type': 'application/json' });
 			res.end(JSON.stringify({ jobId }));
 
 			enqueue(() => runJob(job));
@@ -418,7 +416,7 @@ const server = http.createServer((req, res) => {
 		const job = jobs.get(jobId);
 
 		if (!job) {
-			res.writeHead(404, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+			res.writeHead(404, { 'Content-Type': 'application/json' });
 			res.end(JSON.stringify({ error: 'Job not found' }));
 			return;
 		}
@@ -427,7 +425,6 @@ const server = http.createServer((req, res) => {
 			'Content-Type': 'text/event-stream',
 			'Cache-Control': 'no-cache',
 			'Connection': 'keep-alive',
-			...CORS_HEADERS,
 		});
 
 		// Replay buffered lines
