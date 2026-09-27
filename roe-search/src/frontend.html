@@ -822,7 +822,8 @@ loadMoreBtn.addEventListener('click', () => loadMore());
 // Load clip params from URL on page load
 const params = new URLSearchParams(window.location.search);
 if (params.get('episode')) {
-	loadClip(params.get('episode'), parseInt(params.get('t') || '0', 10));
+	const t = parseInt(params.get('t') || '0', 10);
+	loadClip(params.get('episode'), Number.isFinite(t) && t > 0 ? t : 0);
 } else {
 	loadOnThisDay();
 }
@@ -876,7 +877,12 @@ async function loadClip(episodeId, startMs) {
 		}
 		html += '<div class="episode-actions">';
 		if (ep.audio_file) {
-			html += '<button class="ep-btn ep-play-btn" data-audio="' + escapeHtml(ep.audio_file) + '" data-title="' + escapeHtml(ep.title) + '" data-start="0">&#9654; Play</button>';
+			// Browsers block audio that starts without a tap (iPhones always do), so the
+			// auto-play below often fails: give a shared moment its own button.
+			if (startMs > 0) {
+				html += '<button class="ep-btn ep-play-btn" data-audio="' + escapeHtml(ep.audio_file) + '" data-title="' + escapeHtml(ep.title) + '" data-start="' + startMs + '">&#9654; Play from ' + formatTime(startMs) + '</button>';
+			}
+			html += '<button class="ep-btn ep-play-btn" data-audio="' + escapeHtml(ep.audio_file) + '" data-title="' + escapeHtml(ep.title) + '" data-start="0">&#9654; ' + (startMs > 0 ? 'Play from start' : 'Play') + '</button>';
 			html += '<button class="ep-btn ep-skip-btn" data-audio="' + escapeHtml(ep.audio_file) + '" data-title="' + escapeHtml(ep.title) + '" data-start="250000">&#9193; Skip intro</button>';
 			if (ep.guest_start_ms && clipGuests.length > 0) {
 				html += '<button class="ep-btn ep-guest-btn" data-audio="' + escapeHtml(ep.audio_file) + '" data-title="' + escapeHtml(ep.title) + '" data-start="' + ep.guest_start_ms + '">&#127908; Skip to interview with ' + escapeHtml(formatGuestLabel(clipGuests)) + '</button>';
