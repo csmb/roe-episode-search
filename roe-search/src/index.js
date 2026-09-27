@@ -208,8 +208,21 @@ export default {
 		if (url.pathname.startsWith('/audio/')) {
 			return handleAudio(request, url, env);
 		}
-		// Serve frontend for everything else
-		return new Response(FRONTEND_HTML, { headers: HTML_HEADERS });
+		if (url.pathname === '/robots.txt') {
+			// Keep all crawlers out, as decided in March (df892fc).
+			return new Response('User-agent: *\nDisallow: /\n', {
+				headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+			});
+		}
+		if (url.pathname.startsWith('/api/')) {
+			return json({ error: 'Not found' }, 404, request);
+		}
+		// The homepage lives at "/" (shared links use ?episode=). Anything else is
+		// an unknown page: still show the homepage, but say so with a 404.
+		return new Response(FRONTEND_HTML, {
+			status: url.pathname === '/' ? 200 : 404,
+			headers: HTML_HEADERS,
+		});
 	},
 };
 
