@@ -133,7 +133,6 @@ All scripts are in `scripts/` and run locally with Node.js:
 | `process-episode.js` | **Primary pipeline.** Transcribe, seed D1, generate embeddings, generate title + summary, upload audio. |
 | `process-all.js` | Batch runner with checkpoint/resume, cooldown, retries, and quality gates. |
 | `discover-episodes.js` | Scan an audio directory, parse filenames, deduplicate by date. |
-| `rename-episodes.js` | Normalize MP3 filenames to `Roll Over Easy YYYY-MM-DD.mp3`. Dry-run by default. |
 | `audit-episodes.js` | Audit for non-Thursday dates, missing Thursdays, duplicates, unparseable filenames. |
 | `clean-hallucinations.js` | Remove hallucinated repeated-phrase segments from D1. |
 | `generate-manifest.js` / `manifest-status.js` | Build and inspect the episode manifest. |

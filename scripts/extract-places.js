@@ -5,7 +5,8 @@
  * 1. Reads each transcript, samples text across the full episode
  * 2. Calls GPT-4o-mini to extract SF place names
  * 3. Geocodes unique places via Nominatim (OSM) with fallback strategies
- * 4. Writes scripts/places.json  ← input for seed-places.js
+ * 4. Writes scripts/places.json. Its old consumer, seed-places.js, was removed on
+ *    2026-09-27 because it wiped every place, mention and narrative in D1 before reseeding.
  *
  * Usage:
  *   OPENAI_API_KEY=... node scripts/extract-places.js [--reextract]
