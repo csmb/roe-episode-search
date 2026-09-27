@@ -404,6 +404,7 @@
 		line-height: 1.5;
 	}
 	.search-match:first-child { border-top: none; }
+	.search-more { padding-top: 6px; border-top: 1px solid #eee; color: #767676; font-size: 0.85rem; }
 	.search-match .timestamp {
 		font-family: monospace;
 		font-size: 0.8rem;
@@ -1105,9 +1106,11 @@ function renderSearchResult(episode) {
 	const div = document.createElement('div');
 	div.className = 'search-result';
 
+	// Keyword results carry the episode's total (hits) but only its first few lines.
+	const count = episode.hits ?? episode.matches.length;
 	const title = document.createElement('div');
 	title.className = 'search-result-title';
-	title.textContent = episode.title + ' (' + episode.matches.length + ' match' + (episode.matches.length !== 1 ? 'es' : '') + ')';
+	title.textContent = episode.title + ' (' + count + ' match' + (count !== 1 ? 'es' : '') + ')';
 	div.appendChild(title);
 
 	const dateStr = parseSearchDate(episode.episode_id);
@@ -1144,6 +1147,12 @@ function renderSearchResult(episode) {
 		text.innerHTML = searchModeVal === 'keyword' ? highlightSearchQuery(match.text, searchQuery) : escapeSearchHtml(match.text);
 		m.appendChild(text);
 		div.appendChild(m);
+	}
+	if (count > episode.matches.length) {
+		const more = document.createElement('div');
+		more.className = 'search-more';
+		more.textContent = 'First ' + episode.matches.length + ' of ' + count + ' shown.';
+		div.appendChild(more);
 	}
 
 	return div;

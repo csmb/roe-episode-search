@@ -243,6 +243,9 @@ function sanitizeFtsQuery(input) {
 	return terms.join(' ');
 }
 
+// Matching lines sent per keyword-search card (hits carries the full count).
+const SEARCH_LINES_PER_EPISODE = 10;
+
 async function handleSearch(url, env, request) {
 	const query = url.searchParams.get('q')?.trim();
 	if (!query) {
@@ -262,6 +265,9 @@ async function handleSearch(url, env, request) {
 	// Paginate by episodes, not segments — avoids duplicate episode cards. The
 	// episodes with the most matching lines come first, newest first among ties.
 	// total_episodes (the same on every row) counts all matching episodes, for has_more.
+	// Each card carries its first SEARCH_LINES_PER_EPISODE matching lines, in time
+	// order, and hits, the episode's full count: all the lines of 20 episodes came
+	// to 1.9 MB for "the".
 	const { results } = await env.DB.prepare(`
 		WITH matched_episodes AS (
 			SELECT
@@ -275,24 +281,36 @@ async function handleSearch(url, env, request) {
 			GROUP BY e.id
 			ORDER BY hits DESC, e.id DESC
 			LIMIT ?2 OFFSET ?3
+		),
+		matched_lines AS (
+			SELECT
+				s.episode_id,
+				s.start_ms,
+				s.end_ms,
+				s.text,
+				ROW_NUMBER() OVER (PARTITION BY s.episode_id ORDER BY s.start_ms) AS line_no
+			FROM matched_episodes me
+			JOIN transcript_segments s ON s.episode_id = me.episode_id
+			JOIN transcript_fts fts ON fts.rowid = s.rowid
+			WHERE transcript_fts MATCH ?1
 		)
 		SELECT
 			me.episode_id,
 			e.title AS episode_title,
 			e.duration_ms AS episode_duration_ms,
 			e.summary AS episode_summary,
-			s.start_ms,
-			s.end_ms,
-			s.text,
+			me.hits,
+			l.start_ms,
+			l.end_ms,
+			l.text,
 			me.total_episodes
 		FROM matched_episodes me
 		JOIN episodes e ON e.id = me.episode_id
-		JOIN transcript_segments s ON e.id = s.episode_id
-		JOIN transcript_fts fts ON s.rowid = fts.rowid
-		WHERE transcript_fts MATCH ?1
-		ORDER BY me.hits DESC, me.episode_id DESC, s.start_ms
+		JOIN matched_lines l ON l.episode_id = me.episode_id
+		WHERE l.line_no <= ?4
+		ORDER BY me.hits DESC, me.episode_id DESC, l.start_ms
 	`)
-		.bind(sanitized, pageSize, offset)
+		.bind(sanitized, pageSize, offset, SEARCH_LINES_PER_EPISODE)
 		.all();
 
 	// Group results by episode
@@ -305,6 +323,7 @@ async function handleSearch(url, env, request) {
 				duration_ms: row.episode_duration_ms,
 				summary: row.episode_summary,
 				audio_file: `/audio/${row.episode_id}.m4a`,
+				hits: row.hits,
 				matches: [],
 			});
 		}
