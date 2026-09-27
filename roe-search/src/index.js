@@ -252,18 +252,21 @@ async function handleSearch(url, env, request) {
 	const offset = (page - 1) * pageSize;
 
 	try {
-	// Paginate by episodes, not segments — avoids duplicate episode cards
+	// Paginate by episodes, not segments — avoids duplicate episode cards. The
+	// episodes with the most matching lines come first, newest first among ties.
+	// total_episodes (the same on every row) counts all matching episodes, for has_more.
 	const { results } = await env.DB.prepare(`
 		WITH matched_episodes AS (
 			SELECT
 				e.id AS episode_id,
-				MIN(fts.rank) AS best_rank
+				COUNT(*) AS hits,
+				COUNT(*) OVER () AS total_episodes
 			FROM transcript_fts fts
 			JOIN transcript_segments s ON s.rowid = fts.rowid
 			JOIN episodes e ON e.id = s.episode_id
 			WHERE transcript_fts MATCH ?1
 			GROUP BY e.id
-			ORDER BY e.id DESC
+			ORDER BY hits DESC, e.id DESC
 			LIMIT ?2 OFFSET ?3
 		)
 		SELECT
@@ -275,13 +278,13 @@ async function handleSearch(url, env, request) {
 			s.start_ms,
 			s.end_ms,
 			s.text,
-			me.best_rank
+			me.total_episodes
 		FROM matched_episodes me
 		JOIN episodes e ON e.id = me.episode_id
 		JOIN transcript_segments s ON e.id = s.episode_id
 		JOIN transcript_fts fts ON s.rowid = fts.rowid
 		WHERE transcript_fts MATCH ?1
-		ORDER BY me.episode_id DESC, s.start_ms
+		ORDER BY me.hits DESC, me.episode_id DESC, s.start_ms
 	`)
 		.bind(sanitized, pageSize, offset)
 		.all();
@@ -315,7 +318,8 @@ async function handleSearch(url, env, request) {
 		query,
 		page,
 		results: Array.from(episodeMap.values()),
-		has_more: episodeMap.size === pageSize,
+		// Another page exists if matching episodes remain after this one.
+		has_more: offset + episodeMap.size < (results[0]?.total_episodes ?? 0),
 	}, 200, request);
 	} catch (err) {
 		return json({ error: 'Search failed. Try simplifying your query.' }, 400, request);
@@ -336,12 +340,13 @@ async function handleSemanticSearch(url, env, request) {
 			return json({ error: 'Could not embed the query. Try again.' }, 502, request);
 		}
 
-		// Query Vectorize
+		// Query Vectorize. 50 is the most it returns with returnMetadata: 'all'.
 		const vectorResults = await env.VECTORIZE.query(queryVector, {
-			topK: 20,
+			topK: 50,
 			returnMetadata: 'all',
 		});
-		const matches = vectorResults?.matches || [];
+		// Closest first (cosine: higher is closer), so each card sits where its best chunk ranks.
+		const matches = (vectorResults?.matches || []).sort((a, b) => b.score - a.score);
 
 		// Collect unique episode IDs to enrich with D1 metadata. Skip any
 		// vector that's missing metadata or an episode_id rather than letting
@@ -397,7 +402,7 @@ async function handleSemanticSearch(url, env, request) {
 		return json({
 			query,
 			page: 1,
-			results: Array.from(episodeMap.values()).sort((a, b) => b.episode_id.localeCompare(a.episode_id)),
+			results: Array.from(episodeMap.values()),
 			has_more: false,
 		}, 200, request);
 	} catch (err) {
