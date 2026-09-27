@@ -1448,8 +1448,9 @@ function formatDate(dateStr) {
 }
 
 // Names that the auto-extraction misclassifies as guests but who are hosts.
-// Filtered out before display until the data is curated via /admin.
-const HOST_NAMES = new Set(['Christopher', 'Christopher Bunting']);
+// Filtered out before display until the data is curated via /admin. The list
+// mirrors HOST_NAMES in roe-pipeline/src/hosts.js (pages can't import it).
+const HOST_NAMES = new Set(['Sequoia', 'Papa Sequoia', 'The Early Bird', 'Early Bird', 'Christopher', 'Christopher Bunting']);
 function displayGuests(guests) {
 	if (!guests) return [];
 	return guests.filter(g => !HOST_NAMES.has(g));
