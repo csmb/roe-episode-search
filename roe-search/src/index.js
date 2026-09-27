@@ -191,7 +191,12 @@ export default {
 			return handleGuests(env, request);
 		}
 		if (url.pathname.startsWith('/api/episode/')) {
-			const episodeId = decodeURIComponent(url.pathname.slice('/api/episode/'.length));
+			const rest = url.pathname.slice('/api/episode/'.length);
+			if (rest.endsWith('/places')) {
+				const episodeId = decodeURIComponent(rest.slice(0, -'/places'.length));
+				return handleEpisodePlaces(episodeId, env, request);
+			}
+			const episodeId = decodeURIComponent(rest);
 			return handleEpisodeById(episodeId, env, request);
 		}
 		if (url.pathname === '/episodes') {
@@ -527,9 +532,14 @@ async function handleEpisodeStats(env, request) {
 async function handleEpisodes(env, request) {
 	try {
 		const [{ results: episodes }, { results: guestRows }] = await Promise.all([
-			env.DB.prepare(
-				'SELECT id, title, duration_ms, published_at, summary, guest_start_ms FROM episodes ORDER BY id'
-			).all(),
+			env.DB.prepare(`
+				SELECT e.id, e.title, e.duration_ms, e.published_at, e.summary, e.guest_start_ms,
+				       COALESCE(pc.cnt, 0) AS place_count
+				FROM episodes e
+				LEFT JOIN (SELECT episode_id, COUNT(*) AS cnt FROM place_mentions GROUP BY episode_id) pc
+				  ON pc.episode_id = e.id
+				ORDER BY e.id
+			`).all(),
 			env.DB.prepare('SELECT episode_id, guest_name FROM episode_guests').all(),
 		]);
 
@@ -685,6 +695,27 @@ async function handleEpisodeById(episodeId, env, request) {
 		}, 200, request);
 	} catch (err) {
 		return json({ error: 'Failed to fetch episode' }, 500, request);
+	}
+}
+
+// Places mentioned in one episode, for the mini-maps on the homepage and
+// /episodes. Most-mentioned places across the archive come first, because the
+// pages name the first three ("12 places mentioned like …").
+async function handleEpisodePlaces(episodeId, env, request) {
+	try {
+		const { results } = await env.DB.prepare(
+			`SELECT p.name, p.lat, p.lng
+			 FROM place_mentions pm
+			 JOIN places p ON p.id = pm.place_id
+			 WHERE pm.episode_id = ?1
+			 ORDER BY (SELECT COUNT(*) FROM place_mentions x WHERE x.place_id = p.id) DESC, p.name`
+		)
+			.bind(episodeId)
+			.all();
+
+		return json({ episode_id: episodeId, places: results }, 200, request);
+	} catch (err) {
+		return json({ error: 'Failed to fetch places' }, 500, request);
 	}
 }
 
