@@ -183,9 +183,7 @@ async function main() {
 }
 
 // Run CLI if executed directly
-const scriptPath = decodeURIComponent(new URL(import.meta.url).pathname);
-const isDirectRun = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(scriptPath);
-if (isDirectRun) {
+if (import.meta.main) {
 	main().catch((err) => {
 		console.error('Error:', err.message);
 		process.exit(1);

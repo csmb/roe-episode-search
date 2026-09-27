@@ -185,8 +185,7 @@ async function main() {
 	console.log(`No source found: ${jobs.length - runnable.length}`);
 }
 
-const isMainModule = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(decodeURIComponent(new URL(import.meta.url).pathname));
-if (isMainModule) {
+if (import.meta.main) {
 	main().catch((err) => {
 		console.error('Fatal error:', err.message);
 		process.exit(1);

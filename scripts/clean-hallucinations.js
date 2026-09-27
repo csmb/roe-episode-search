@@ -12,7 +12,6 @@
  *   node scripts/clean-hallucinations.js 2014-03-06 2014-05-08    # specific dates
  */
 
-import path from 'node:path';
 import { escapeSQL, queryJSON, runSQL } from './lib.js';
 
 export function purgeEpisode(episodeId) {
@@ -79,8 +78,7 @@ async function main() {
 }
 
 // Only run main() when executed directly (not when imported)
-const isMainModule = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(decodeURIComponent(new URL(import.meta.url).pathname));
-if (isMainModule) {
+if (import.meta.main) {
 	main().catch((err) => {
 		console.error('Error:', err.message);
 		process.exit(1);

@@ -108,7 +108,7 @@ function checkPrerequisites(skip = new Set()) {
 		if (!fs.existsSync(WHISPER_MODEL_PATH)) {
 			missing.push(
 				`Whisper model not found at ${WHISPER_MODEL_PATH}\n` +
-				'  Download with: whisper-cli --model large-v3 --download-model'
+				'  Download with: curl -L --create-dirs -o ' + WHISPER_MODEL_PATH + ' https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin'
 			);
 		}
 
@@ -876,8 +876,7 @@ async function main() {
 }
 
 // Only run main() when executed directly (not when imported)
-const isMainModule = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(decodeURIComponent(new URL(import.meta.url).pathname));
-if (isMainModule) {
+if (import.meta.main) {
 	main().catch((err) => {
 		console.error(`\nFATAL: ${err.message}`);
 		process.exit(1);

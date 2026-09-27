@@ -148,8 +148,7 @@ export function discoverEpisodes(audioDir, opts = {}) {
 
 // ── CLI ────────────────────────────────────────────────────────────────
 
-const isMainModule = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(decodeURIComponent(new URL(import.meta.url).pathname));
-if (isMainModule) {
+if (import.meta.main) {
 	const audioDir = process.argv[2];
 	if (!audioDir) {
 		console.error('Usage: node scripts/discover-episodes.js <audio-directory>');
