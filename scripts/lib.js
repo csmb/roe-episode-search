@@ -64,6 +64,7 @@ export function wranglerExec(args, opts = {}) {
 		encoding: 'utf-8',
 		stdio: opts.stdio || 'pipe',
 		env,
+		maxBuffer: 64 * 1024 * 1024, // a whole transcript as JSON can pass the 1 MB default
 		...opts,
 	});
 }

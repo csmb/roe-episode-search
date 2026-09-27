@@ -93,9 +93,10 @@ function main() {
 	console.log(`Target: ${isLocal ? 'local' : 'remote'} D1 database`);
 	console.log();
 
-	// 1. Fetch all guests with counts
+	// 1. Fetch all guests with counts. Group by the exact name, so spellings that
+	// differ only in capitals show up as separate rows (and get flagged below).
 	const guests = queryJSON(
-		'SELECT guest_name, COUNT(*) as n FROM episode_guests GROUP BY guest_name COLLATE NOCASE ORDER BY guest_name COLLATE NOCASE',
+		'SELECT guest_name, COUNT(*) as n FROM episode_guests GROUP BY guest_name ORDER BY guest_name COLLATE NOCASE',
 		isLocal
 	);
 

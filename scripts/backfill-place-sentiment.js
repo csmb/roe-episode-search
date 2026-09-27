@@ -3,15 +3,19 @@
  * backfill-place-sentiment.js
  *
  * Pass 1: for every place_mention with analyzed_at NULL, find the passages in
- *         that episode's local transcript, score with GPT-4o-mini, write
- *         sentiment columns.
- * Pass 2: for every place meeting the narrative threshold, synthesize the
- *         "then vs now" narrative and upsert place_narratives.
+ *         that episode's transcript (the local file, or D1 when there's none),
+ *         score with GPT-4o-mini, write sentiment columns. An episode counts as
+ *         done only when every one of its places was scored.
+ * Pass 2: for every place meeting the narrative threshold that has no
+ *         narrative yet, synthesize the "then vs now" narrative and upsert
+ *         place_narratives.
  *
  * Usage:
- *   OPENAI_API_KEY=... node scripts/backfill-place-sentiment.js [--replace]
+ *   OPENAI_API_KEY=... node scripts/backfill-place-sentiment.js [--replace] [--episode <id>]
  *
- *   --replace   Re-score mentions even if analyzed_at is already set.
+ *   --replace         Re-score mentions even if analyzed_at is already set, and
+ *                     rewrite every qualifying narrative.
+ *   --episode <id>    Only this episode in pass 1.
  */
 
 import { execSync } from 'node:child_process';
@@ -31,6 +35,9 @@ const PROGRESS_PATH = path.join(__dirname, 'backfill-sentiment-progress.json');
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 if (!OPENAI_API_KEY) { console.error('OPENAI_API_KEY required'); process.exit(1); }
 const REPLACE = process.argv.includes('--replace');
+const episodeArg = process.argv.indexOf('--episode');
+const ONLY_EPISODE = episodeArg > -1 ? process.argv[episodeArg + 1] : null;
+if (episodeArg > -1 && !ONLY_EPISODE) { console.error('--episode needs an episode id'); process.exit(1); }
 
 const wranglerEnv = { ...process.env }; // CLOUDFLARE_API_TOKEN has D1 perms; used non-interactively
 
@@ -60,7 +67,10 @@ function loadProgress() {
 function saveProgress(p) { fs.writeFileSync(PROGRESS_PATH, JSON.stringify(p, null, 2)); }
 
 async function main() {
-  const where = REPLACE ? '' : 'WHERE pm.analyzed_at IS NULL';
+  const conditions = [];
+  if (!REPLACE) conditions.push('pm.analyzed_at IS NULL');
+  if (ONLY_EPISODE) conditions.push(`pm.episode_id = ${sqlStr(ONLY_EPISODE)}`);
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
   const mentions = d1(
     `SELECT pm.place_id, pm.episode_id, p.name
      FROM place_mentions pm JOIN places p ON p.id = pm.place_id ${where}`
@@ -75,23 +85,21 @@ async function main() {
 
   const progress = REPLACE ? { doneEpisodes: [], doneNarrativePlaces: [] } : loadProgress();
   const doneSet = new Set(progress.doneEpisodes);
-  const episodes = [...byEpisode.keys()].filter(e => !doneSet.has(e));
+  const episodes = [...byEpisode.keys()].filter(e => ONLY_EPISODE || !doneSet.has(e));
   console.log(`Pass 1: ${episodes.length} episodes, ${mentions.length} mentions to score`);
 
   const now = () => new Date().toISOString();
   let epDone = 0;
 
   for (const episodeId of episodes) {
+    // Drag-and-drop episodes have no local transcript file; D1 has the lines.
     const tfile = path.join(TRANSCRIPTS_DIR, `${episodeId}.json`);
-    if (!fs.existsSync(tfile)) {
-      console.warn(`\n  Missing transcript for ${episodeId} — skipping`);
-      progress.doneEpisodes.push(episodeId);
-      saveProgress(progress);
-      continue;
-    }
-    const segments = JSON.parse(fs.readFileSync(tfile)).segments || [];
+    const segments = fs.existsSync(tfile)
+      ? JSON.parse(fs.readFileSync(tfile)).segments || []
+      : d1(`SELECT start_ms, text FROM transcript_segments WHERE episode_id = ${sqlStr(episodeId)} ORDER BY start_ms`)[0].results;
 
     const updates = [];
+    let failed = 0;
     for (const m of byEpisode.get(episodeId)) {
       const passages = findPlacePassages(segments, m.name);
       let score = 'NULL', label = "'unknown'", snippet = 'NULL', startMs = 'NULL';
@@ -105,6 +113,7 @@ async function main() {
           startMs = String(hit.start_ms);
         } catch (err) {
           console.error(`\n  score failed ${episodeId} / ${m.name}: ${err.message}`);
+          failed++;
           continue; // leave analyzed_at NULL for a later run
         }
       }
@@ -116,29 +125,31 @@ async function main() {
     }
     if (updates.length > 0) d1(updates.join('\n'));
 
-    progress.doneEpisodes.push(episodeId);
-    saveProgress(progress);
+    // Only a fully scored episode is done; a later run retries the rest.
+    if (failed === 0 && !progress.doneEpisodes.includes(episodeId)) {
+      progress.doneEpisodes.push(episodeId);
+      saveProgress(progress);
+    }
     epDone++;
     process.stdout.write(`\r  Pass 1: ${epDone}/${episodes.length} episodes`);
   }
   console.log('\n  Pass 1 done.');
 
-  // Pass 2: narratives.
+  // Pass 2: narratives, for places that meet the threshold (3+ scored episodes
+  // across 2+ years, as in sentiment.js) and have none yet. Asking D1 for just
+  // those avoids a query per place.
   const places = d1(
-    `SELECT DISTINCT p.id, p.name FROM places p
+    `SELECT p.id, p.name FROM places p
      JOIN place_mentions pm ON pm.place_id = p.id
-     WHERE pm.sentiment IS NOT NULL`
+     WHERE pm.sentiment IS NOT NULL
+       ${REPLACE ? '' : 'AND NOT EXISTS (SELECT 1 FROM place_narratives n WHERE n.place_id = p.id)'}
+     GROUP BY p.id
+     HAVING COUNT(*) >= 3 AND COUNT(DISTINCT substr(pm.episode_id, 16, 4)) >= 2`
   )[0].results;
-  console.log(`Pass 2: evaluating ${places.length} places for narratives`);
+  console.log(`Pass 2: ${places.length} places need a narrative`);
 
-  const narrativeDoneSet = new Set(progress.doneNarrativePlaces);
   let nDone = 0, nWritten = 0;
   for (const place of places) {
-    if (!REPLACE && narrativeDoneSet.has(place.id)) {
-      nDone++;
-      process.stdout.write(`\r  Pass 2: ${nDone}/${places.length} (${nWritten} narratives)`);
-      continue;
-    }
     try {
       const rows = d1(
         `SELECT episode_id, sentiment, sentiment_label, snippet
