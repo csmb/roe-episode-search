@@ -1566,8 +1566,6 @@ function initMiniMap(container, places) {
 
 // === Fun Player ===
 let hasPlayedOnce = false;
-let audioCtx; // undefined=not tried, null=failed
-let analyser, audioSrc, freqData;
 let waveAnimId = null;
 let wavePhase = 0;
 const speeds = [
@@ -1644,7 +1642,6 @@ audioPlayer.addEventListener('play', () => {
 	playerBar.classList.add('playing');
 	document.getElementById('play-pause-btn').textContent = '\u23F8\uFE0F';
 	if (!hasPlayedOnce) { hasPlayedOnce = true; launchConfetti(); }
-	tryInitAudioCtx();
 	startWaveform();
 });
 audioPlayer.addEventListener('pause', () => {
@@ -1658,21 +1655,9 @@ audioPlayer.addEventListener('ended', () => {
 	stopWaveform();
 });
 
-// Audio context (best-effort for real frequency data)
-function tryInitAudioCtx() {
-	if (audioCtx !== undefined) return;
-	try {
-		audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-		analyser = audioCtx.createAnalyser();
-		analyser.fftSize = 128;
-		audioSrc = audioCtx.createMediaElementSource(audioPlayer);
-		audioSrc.connect(analyser);
-		analyser.connect(audioCtx.destination);
-		freqData = new Uint8Array(analyser.frequencyBinCount);
-	} catch (e) { audioCtx = null; }
-}
-
-// Waveform visualization
+// Waveform visualization (decorative). Don't route the <audio> element through
+// Web Audio to read real frequencies: Safari/iOS keep a context created outside a
+// tap suspended, which mutes playback, and iOS stops it when the screen locks.
 function startWaveform() { if (!waveAnimId) drawWave(); }
 function stopWaveform() { if (waveAnimId) { cancelAnimationFrame(waveAnimId); waveAnimId = null; } }
 
@@ -1688,56 +1673,28 @@ function drawWave() {
 	ctx.clearRect(0, 0, w, h);
 	wavePhase += 0.06;
 
-	let hasReal = false;
-	if (analyser && freqData) {
-		analyser.getByteFrequencyData(freqData);
-		hasReal = freqData.some(v => v > 5);
-	}
-
-	if (hasReal) {
-		const grad = ctx.createLinearGradient(0, 0, w, 0);
-		grad.addColorStop(0, '#FF4F00');
-		grad.addColorStop(0.4, '#ff6b35');
-		grad.addColorStop(0.5, '#ffd700');
-		grad.addColorStop(0.6, '#ff6b35');
-		grad.addColorStop(1, '#FF4F00');
-		ctx.fillStyle = grad;
-		const bc = Math.min(freqData.length, 64);
-		const bw = w / bc;
-		for (let i = 0; i < bc; i++) {
-			const bh = (freqData[i] / 255) * h;
-			ctx.fillRect(i * bw, h - bh, bw - 1, bh);
+	const grad = ctx.createLinearGradient(0, 0, w, 0);
+	grad.addColorStop(0, 'rgba(255,79,0,0.7)');
+	grad.addColorStop(0.3, 'rgba(255,107,53,0.7)');
+	grad.addColorStop(0.5, 'rgba(255,215,0,0.7)');
+	grad.addColorStop(0.7, 'rgba(255,107,53,0.7)');
+	grad.addColorStop(1, 'rgba(255,79,0,0.7)');
+	ctx.fillStyle = grad;
+	for (let layer = 0; layer < 3; layer++) {
+		ctx.globalAlpha = 0.35 - layer * 0.08;
+		ctx.beginPath();
+		ctx.moveTo(0, h);
+		const f = 0.015 + layer * 0.008;
+		const a = h * (0.35 - layer * 0.08);
+		const p = wavePhase * (1 + layer * 0.3);
+		for (let x = 0; x <= w; x += 2) {
+			ctx.lineTo(x, h - a * (Math.sin(x * f + p) * 0.5 + Math.sin(x * f * 2.3 + p * 1.4) * 0.3 + Math.sin(x * f * 0.7 + p * 0.6) * 0.2 + 0.5));
 		}
-		const bars = document.querySelectorAll('.eq-bar');
-		const step = Math.floor(bc / bars.length);
-		bars.forEach((bar, i) => {
-			bar.style.height = Math.max(3, (freqData[i * step] / 255) * 18) + 'px';
-			bar.style.animationName = 'none';
-		});
-	} else {
-		const grad = ctx.createLinearGradient(0, 0, w, 0);
-		grad.addColorStop(0, 'rgba(255,79,0,0.7)');
-		grad.addColorStop(0.3, 'rgba(255,107,53,0.7)');
-		grad.addColorStop(0.5, 'rgba(255,215,0,0.7)');
-		grad.addColorStop(0.7, 'rgba(255,107,53,0.7)');
-		grad.addColorStop(1, 'rgba(255,79,0,0.7)');
-		ctx.fillStyle = grad;
-		for (let layer = 0; layer < 3; layer++) {
-			ctx.globalAlpha = 0.35 - layer * 0.08;
-			ctx.beginPath();
-			ctx.moveTo(0, h);
-			const f = 0.015 + layer * 0.008;
-			const a = h * (0.35 - layer * 0.08);
-			const p = wavePhase * (1 + layer * 0.3);
-			for (let x = 0; x <= w; x += 2) {
-				ctx.lineTo(x, h - a * (Math.sin(x * f + p) * 0.5 + Math.sin(x * f * 2.3 + p * 1.4) * 0.3 + Math.sin(x * f * 0.7 + p * 0.6) * 0.2 + 0.5));
-			}
-			ctx.lineTo(w, h);
-			ctx.closePath();
-			ctx.fill();
-		}
-		ctx.globalAlpha = 1;
+		ctx.lineTo(w, h);
+		ctx.closePath();
+		ctx.fill();
 	}
+	ctx.globalAlpha = 1;
 }
 
 // Confetti burst
