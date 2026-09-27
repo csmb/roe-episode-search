@@ -12,7 +12,7 @@ import { HOST_NAMES } from '../../roe-pipeline/src/hosts.js';
 const rateLimitState = new Map();
 const RATE_WINDOW_MS = 60_000;
 const RATE_LIMIT_SEMANTIC = 10; // semantic search: 10 req/min (uses Workers AI)
-const RATE_LIMIT_SEARCH = 30;   // keyword search + timeline: 30 req/min
+const RATE_LIMIT_SEARCH = 30;   // keyword search, map and episode lists: 30 req/min
 
 function checkRateLimit(ip, bucket, limit) {
 	const key = `${bucket}:${ip}`;
@@ -159,12 +159,6 @@ export default {
 			}
 			return handleSemanticSearch(url, env, request);
 		}
-		if (url.pathname === '/api/timeline') {
-			if (!checkRateLimit(clientIP, 'search', RATE_LIMIT_SEARCH)) {
-				return json({ error: 'Rate limit exceeded. Try again in a minute.' }, 429, request);
-			}
-			return handleTimeline(url, env, request);
-		}
 		// Ahead of /api/episodes for readability only — that route is an exact
 		// match, so it could not swallow this one.
 		if (url.pathname === '/api/episodes/latest') {
@@ -275,7 +269,6 @@ async function handleSearch(url, env, request) {
 			e.title AS episode_title,
 			e.duration_ms AS episode_duration_ms,
 			e.summary AS episode_summary,
-			e.audio_file,
 			s.start_ms,
 			s.end_ms,
 			s.text,
@@ -408,60 +401,6 @@ async function handleSemanticSearch(url, env, request) {
 		}, 200, request);
 	} catch (err) {
 		return json({ error: 'Semantic search failed. Try again.' }, 500, request);
-	}
-}
-
-async function handleTimeline(url, env, request) {
-	const query = url.searchParams.get('q')?.trim();
-	if (!query) {
-		return json({ error: 'Missing ?q= parameter' }, 400, request);
-	}
-
-	const sanitized = sanitizeFtsQuery(query);
-	if (!sanitized) {
-		return json({ error: 'Invalid search query' }, 400, request);
-	}
-
-	try {
-	const [timelineResult, rangeResult] = await Promise.all([
-		env.DB.prepare(`
-			SELECT
-				SUBSTR(e.id, 16, 7) AS month,
-				COUNT(*) AS mention_count,
-				COUNT(DISTINCT e.id) AS episode_count
-			FROM transcript_fts fts
-			JOIN transcript_segments s ON s.rowid = fts.rowid
-			JOIN episodes e ON e.id = s.episode_id
-			WHERE transcript_fts MATCH ?1
-			GROUP BY SUBSTR(e.id, 16, 7)
-			ORDER BY month
-		`).bind(sanitized).all(),
-		env.DB.prepare(`
-			SELECT
-				MIN(SUBSTR(id, 16, 7)) AS first_month,
-				MAX(SUBSTR(id, 16, 7)) AS last_month
-			FROM episodes
-		`).all(),
-	]);
-
-	const timeline = timelineResult.results.map(row => ({
-		month: row.month,
-		mentions: row.mention_count,
-		episodes: row.episode_count,
-	}));
-
-	const totalMentions = timeline.reduce((sum, t) => sum + t.mentions, 0);
-	const range = rangeResult.results[0] || {};
-
-	return json({
-		query,
-		timeline,
-		total_mentions: totalMentions,
-		first_month: range.first_month,
-		last_month: range.last_month,
-	}, 200, request);
-	} catch (err) {
-		return json({ error: 'Search failed. Try simplifying your query.' }, 400, request);
 	}
 }
 
@@ -870,11 +809,6 @@ async function handleMapPlaces(env, request) {
 			JOIN episodes e ON e.id = pm.episode_id
 		`).all();
 
-		const { results: narrativeRows } = await env.DB.prepare(
-			`SELECT place_id FROM place_narratives`
-		).all();
-		const narrativeSet = new Set(narrativeRows.map(r => r.place_id));
-
 		const episodesByPlace = {};
 		for (const m of mentions) {
 			if (!episodesByPlace[m.place_id]) episodesByPlace[m.place_id] = [];
@@ -886,7 +820,6 @@ async function handleMapPlaces(env, request) {
 			lat: p.lat,
 			lng: p.lng,
 			episode_count: p.episode_count,
-			has_narrative: narrativeSet.has(p.id),
 			episodes: episodesByPlace[p.id] || [],
 		}));
 

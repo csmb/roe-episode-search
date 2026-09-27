@@ -155,47 +155,7 @@
 		box-shadow: 0 6px 16px rgba(80,80,80,0.4);
 	}
 
-	/* Search section */
-	.search-box {
-		display: flex;
-		gap: 10px;
-		margin-bottom: 24px;
-	}
-	.search-box input {
-		flex: 1;
-		padding: 14px 24px;
-		font-size: 1.1rem;
-		border: 1px solid #d0d0d0;
-		border-radius: 50px;
-		outline: none;
-		background: #fff;
-		transition: border-color 0.2s ease;
-	}
-	.search-box input:focus {
-		border-color: #505050;
-		box-shadow: 0 0 0 3px rgba(80, 80, 80, 0.25);
-		outline: none;
-	}
-.search-box button {
-		padding: 14px 32px;
-		font-size: 1.1rem;
-		font-weight: 600;
-		background: #505050;
-		color: #fff;
-		border: none;
-		border-radius: 50px;
-		cursor: pointer;
-		box-shadow: 0 4px 12px rgba(80,80,80,0.3);
-		transition: all 0.3s ease;
-	}
-	.search-box button:hover {
-		background: #303030;
-		transform: translateY(-2px);
-		box-shadow: 0 6px 16px rgba(80,80,80,0.4);
-	}
-	.status { color: #666; margin-bottom: 16px; font-size: 1rem; }
-
-	/* Episode cards (search results + browse) */
+	/* Episode cards (shared clip + On This Day) */
 	.episode {
 		background: #fff;
 		border-radius: 12px;
@@ -209,117 +169,6 @@
 		color: #404040;
 		margin-bottom: 10px;
 	}
-	.match-count { color: #767676; font-weight: normal; font-size: 0.85rem; }
-	.match {
-		padding: 8px 0;
-		border-top: 1px solid #eee;
-		display: flex;
-		gap: 12px;
-		align-items: baseline;
-		cursor: pointer;
-		transition: background 0.15s ease;
-	}
-	.match:first-child { border-top: none; }
-	.match:not(.no-audio):hover { background: #f5f5f5; }
-	.match.no-audio { cursor: default; }
-	.match.no-audio:hover { background: transparent; }
-	.match:not(.no-audio)::before {
-		content: '\25B6';
-		font-size: 0.6rem;
-		color: #b0b0b0;
-		transition: color 0.15s ease;
-		flex-shrink: 0;
-	}
-	.match:not(.no-audio):hover::before { color: #505050; }
-	.timestamp {
-		font-family: monospace;
-		font-size: 0.85rem;
-		color: #505050;
-		white-space: nowrap;
-		min-width: 70px;
-		border-bottom: 1px solid transparent;
-		transition: border-color 0.2s ease;
-	}
-	.match:not(.no-audio) .timestamp:hover { border-bottom-color: #505050; }
-	.match.no-audio .timestamp { color: #767676; }
-	.match-text { font-size: 0.95rem; line-height: 1.5; }
-	mark { background: #e0e0e0; padding: 1px 3px; border-radius: 2px; }
-
-	/* Search mode toggle */
-	.search-mode {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		margin-bottom: 16px;
-		font-size: 0.9rem;
-		color: #666;
-	}
-	.search-mode-label { font-weight: 500; }
-	.mode-toggle {
-		display: inline-flex;
-		background: #e8e8e8;
-		border-radius: 50px;
-		padding: 2px;
-	}
-	.mode-toggle button {
-		padding: 6px 16px;
-		font-size: 0.85rem;
-		font-weight: 600;
-		border: none;
-		border-radius: 50px;
-		cursor: pointer;
-		background: transparent;
-		color: #636363;
-		transition: all 0.2s ease;
-	}
-	.mode-toggle button.active {
-		background: #505050;
-		color: #fff;
-		box-shadow: 0 1px 4px rgba(0,0,0,0.15);
-	}
-	.mode-toggle button:not(.active):hover { color: #505050; }
-
-	.score-badge {
-		font-size: 0.75rem;
-		font-weight: 600;
-		color: #6b6b6b;
-		background: #f0f0f0;
-		padding: 2px 6px;
-		border-radius: 8px;
-		white-space: nowrap;
-	}
-
-	.load-more {
-		display: block;
-		width: 100%;
-		padding: 14px;
-		font-size: 1rem;
-		font-weight: 600;
-		background: #fff;
-		color: #505050;
-		border: 1px solid #d0d0d0;
-		border-radius: 50px;
-		cursor: pointer;
-		margin-top: 8px;
-		transition: all 0.2s ease;
-	}
-	.load-more:hover { border-color: #999; color: #303030; }
-
-	.show-more-matches {
-		display: block;
-		width: 100%;
-		padding: 8px;
-		margin-top: 4px;
-		font-size: 0.85rem;
-		font-weight: 500;
-		color: #6b6b6b;
-		background: none;
-		border: none;
-		border-top: 1px solid #eee;
-		cursor: pointer;
-		transition: color 0.2s ease;
-	}
-	.show-more-matches:hover { color: #505050; }
 
 	/* Episode browse cards */
 	.episode-meta {
@@ -345,17 +194,6 @@
 		line-height: 1.6;
 		color: #4a4a4a;
 		margin-bottom: 10px;
-	}
-	.episode-link { font-size: 0.9rem; }
-	.episode-link a {
-		color: #505050;
-		text-decoration: none;
-		border-bottom: 1px solid transparent;
-		transition: all 0.2s ease;
-	}
-	.episode-link a:hover {
-		color: #303030;
-		border-bottom-color: #505050;
 	}
 
 	/* Player bar */
@@ -455,22 +293,6 @@
 	}
 	.speed-toggle:hover { background: rgba(255,255,255,0.15); border-color: rgba(255,255,255,0.3); }
 
-	/* Share button */
-	.share-btn {
-		background: none;
-		border: none;
-		cursor: pointer;
-		color: #b0b0b0;
-		font-size: 0.8rem;
-		padding: 2px 6px;
-		border-radius: 4px;
-		transition: all 0.15s ease;
-		flex-shrink: 0;
-		margin-left: auto;
-	}
-	.share-btn:hover { color: #505050; background: #f0f0f0; }
-	.share-btn.copied { color: #FF4F00; }
-
 	/* Clip card */
 	#clip-card {
 		margin-bottom: 24px;
@@ -527,108 +349,11 @@
 	.ep-btn:hover { background: #ebebeb; color: #303030; }
 	.ep-btn:active { transform: scale(0.97); }
 
-	.hidden { display: none; }
-
-	.sr-only {
-		position: absolute;
-		width: 1px;
-		height: 1px;
-		padding: 0;
-		margin: -1px;
-		overflow: hidden;
-		clip: rect(0, 0, 0, 0);
-		white-space: nowrap;
-		border: 0;
-	}
-
 	:focus-visible {
 		outline: 2px solid #505050;
 		outline-offset: 2px;
 	}
 
-	/* Timeline */
-	.timeline-card {
-		background: #fff;
-		border-radius: 12px;
-		box-shadow: 0 2px 8px rgba(0,0,0,0.06);
-		margin-bottom: 16px;
-		padding: 20px;
-	}
-	.timeline-header {
-		display: flex;
-		justify-content: space-between;
-		align-items: baseline;
-		margin-bottom: 12px;
-	}
-	.timeline-label {
-		font-weight: 600;
-		font-size: 0.95rem;
-		color: #404040;
-	}
-	.timeline-total {
-		font-size: 0.85rem;
-		color: #767676;
-	}
-	.timeline-svg {
-		width: 100%;
-		display: block;
-	}
-	.timeline-bar {
-		fill: #c0c0c0;
-		transition: fill 0.1s ease;
-	}
-	.timeline-bar.active {
-		fill: #FF4F00;
-	}
-	.timeline-labels {
-		display: flex;
-		position: relative;
-		height: 20px;
-		margin-top: 2px;
-	}
-	.timeline-year-label {
-		position: absolute;
-		color: #767676;
-		font-size: 11px;
-		font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-		transform: translateX(-50%);
-		white-space: nowrap;
-	}
-	.timeline-tooltip {
-		position: absolute;
-		background: #303030;
-		color: #fff;
-		padding: 6px 10px;
-		border-radius: 6px;
-		border-left: 3px solid #FF4F00;
-		font-size: 0.8rem;
-		white-space: nowrap;
-		pointer-events: none;
-		opacity: 0;
-		transition: opacity 0.15s ease;
-		z-index: 50;
-	}
-	.timeline-tooltip.visible {
-		opacity: 1;
-	}
-
-	/* Mini map */
-	.map-toggle {
-		display: inline-flex;
-		align-items: center;
-		gap: 4px;
-		background: none;
-		border: 1px solid #d0d0d0;
-		border-radius: 50px;
-		padding: 4px 12px;
-		font-size: 0.8rem;
-		color: #505050;
-		cursor: pointer;
-		margin-top: 6px;
-		transition: all 0.2s ease;
-	}
-	.map-toggle.hidden { display: none; }
-	.map-toggle:hover { border-color: #505050; color: #303030; }
 	/* Episode body layout (side-by-side map) */
 	.episode-body {
 		display: flex;
@@ -649,7 +374,6 @@
 		border-radius: 8px;
 		border: 1px solid #e0e0e0;
 	}
-	.episode-mini-map.hidden { display: none; }
 	.episode-mini-map .leaflet-control-zoom { display: none; }
 	.map-places-label {
 		font-size: 0.75rem;
@@ -665,14 +389,6 @@
 		.hero .subtagline { font-size: 0.9rem; margin-top: 0.5rem; }
 		.container { padding: 3rem 1.5rem; }
 		.content-section { margin-bottom: 3rem; }
-		.content-section h2 { font-size: 1.75rem; }
-		.content-section p { font-size: 1rem; }
-		.contact-section { padding: 2rem 1.5rem; margin: 3rem auto; }
-		.contact-section h2 { font-size: 1.75rem; }
-		.contact-section p { font-size: 1.1rem; }
-		.search-box { flex-direction: column; }
-		.search-box button { width: 100%; }
-		.timeline-year-label { font-size: 10px; }
 		.episode-body { flex-direction: column; align-items: stretch; }
 		.episode-map-wrap { width: 100%; }
 		.episode-mini-map { width: 100%; height: 200px; }
@@ -685,8 +401,6 @@
 		.hero h1 { font-size: 2rem; }
 		.hero .tagline { font-size: 1rem; }
 		.hero .subtagline { font-size: 0.82rem; }
-		.content-section h2 { font-size: 1.5rem; }
-		.timeline-year-label { font-size: 9px; }
 		.spinning-coffee { font-size: 1rem; }
 		.player-top { gap: 6px; }
 	}
@@ -706,16 +420,12 @@
 
 <main class="container">
 
-	<!-- Search + Episodes tabs -->
+	<!-- A shared clip (?episode=), or On This Day -->
 	<div class="content-section" id="search-episodes-section">
 		<div id="panel-search">
 
 			<div id="clip-card"></div>
 			<div id="on-this-day"></div>
-			<div id="status" class="status" aria-live="polite" aria-atomic="true"></div>
-			<div id="timeline"></div>
-			<div id="results"></div>
-			<button id="load-more" class="load-more hidden">Load more results</button>
 		</div>
 
 	</div>
@@ -781,16 +491,10 @@
 </div>
 
 <script>
-const searchInput = document.getElementById('search-input');
-const searchBtn = document.getElementById('search-btn');
-const statusEl = document.getElementById('status');
-const resultsEl = document.getElementById('results');
-const loadMoreBtn = document.getElementById('load-more');
 const playerBar = document.getElementById('player-bar');
 const playerTitle = document.getElementById('player-title');
 const audioPlayer = document.getElementById('audio-player');
 
-const timelineEl = document.getElementById('timeline');
 const clipCardEl = document.getElementById('clip-card');
 const onThisDayEl = document.getElementById('on-this-day');
 
@@ -801,12 +505,8 @@ document.addEventListener('click', (e) => {
 	playAt(btn.dataset.audio, parseInt(btn.dataset.start, 10), btn.dataset.title);
 });
 
-let currentQuery = '';
-let currentPage = 1;
-let hasMore = false;
 let currentAudioSrc = '';
 let pendingSeek = null;
-let searchMode = 'keyword';
 
 // Seek once the browser has enough data
 audioPlayer.addEventListener('loadedmetadata', () => {
@@ -815,9 +515,6 @@ audioPlayer.addEventListener('loadedmetadata', () => {
 		pendingSeek = null;
 	}
 });
-
-// Search UI lives on /admin; search-input / search-btn no longer exist on this page.
-loadMoreBtn.addEventListener('click', () => loadMore());
 
 // Load clip params from URL on page load
 const params = new URLSearchParams(window.location.search);
@@ -975,465 +672,6 @@ async function loadOnThisDay() {
 	}
 }
 
-function shareClip(episodeId, startMs, btn) {
-	const url = window.location.origin + '/?episode=' + encodeURIComponent(episodeId) + '&t=' + startMs;
-	navigator.clipboard.writeText(url).then(() => {
-		btn.textContent = 'Copied!';
-		btn.classList.add('copied');
-		setTimeout(() => {
-			btn.textContent = '\uD83D\uDD17';
-			btn.classList.remove('copied');
-		}, 1500);
-	}).catch(() => {
-		// Fallback: select-copy
-		const input = document.createElement('input');
-		input.value = url;
-		document.body.appendChild(input);
-		input.select();
-		document.execCommand('copy');
-		document.body.removeChild(input);
-		btn.textContent = 'Copied!';
-		btn.classList.add('copied');
-		setTimeout(() => {
-			btn.textContent = '\uD83D\uDD17';
-			btn.classList.remove('copied');
-		}, 1500);
-	});
-}
-
-function slugify(q) { return q.toLowerCase().replace(/-/g, '--').replace(/\s+/g, '-'); }
-function deslugify(slug) { return slug.replace(/--/g, '\x00').replace(/-/g, ' ').replace(/\x00/g, '-'); }
-
-async function doSearch() {
-	const q = searchInput.value.trim();
-	if (!q) return;
-
-	currentQuery = q;
-	currentPage = 1;
-	resultsEl.innerHTML = '';
-	timelineEl.innerHTML = '';
-	clipCardEl.innerHTML = '';
-	onThisDayEl.innerHTML = '';
-	statusEl.textContent = 'Searching...';
-	loadMoreBtn.classList.add('hidden');
-
-	const modeParam = searchMode === 'semantic' ? '&mode=semantic' : '';
-	history.replaceState(null, '', '?bummer-and-lazarus-fetch-me=' + slugify(q) + modeParam);
-
-	if (searchMode === 'keyword') {
-		fetchTimeline(currentQuery);
-	}
-	await fetchResults();
-}
-
-async function loadMore() {
-	currentPage++;
-	await fetchResults();
-}
-
-async function fetchResults() {
-	try {
-		const endpoint = searchMode === 'semantic' ? '/api/semantic-search' : '/api/search';
-		const res = await fetch(endpoint + '?q=' + encodeURIComponent(currentQuery) + '&page=' + currentPage);
-		if (!res.ok) {
-			statusEl.textContent = 'Error: search failed (' + res.status + ')';
-			return false;
-		}
-		const data = await res.json();
-
-		if (data.error) {
-			statusEl.textContent = 'Error: ' + data.error;
-			return false;
-		}
-
-		hasMore = data.has_more;
-		loadMoreBtn.classList.toggle('hidden', !hasMore);
-
-		const totalMatches = data.results.reduce((sum, ep) => sum + ep.matches.length, 0);
-
-		if (currentPage === 1) {
-			if (totalMatches === 0) {
-				statusEl.textContent = 'No results found for \u201c' + currentQuery + '\u201d';
-				return true;
-			}
-			statusEl.textContent = 'Results for \u201c' + currentQuery + '\u201d';
-		}
-
-		for (const episode of data.results) {
-			resultsEl.appendChild(renderEpisode(episode));
-		}
-		return true;
-	} catch (err) {
-		statusEl.textContent = 'Error: ' + err.message;
-		return false;
-	}
-}
-
-function renderEpisode(episode) {
-	const div = document.createElement('div');
-	div.className = 'episode';
-	const dateStr = parseEpisodeDate(episode.episode_id);
-	if (dateStr) div.dataset.month = dateStr.slice(0, 7); // e.g. "2014-02"
-
-	const title = document.createElement('div');
-	title.className = 'episode-title';
-	title.textContent = episode.title + ' ';
-	const count = document.createElement('span');
-	count.className = 'match-count';
-	count.textContent = '(' + episode.matches.length + ' match' + (episode.matches.length !== 1 ? 'es' : '') + ')';
-	title.appendChild(count);
-	div.appendChild(title);
-
-
-	if (dateStr || episode.duration_ms) {
-		const meta = document.createElement('div');
-		meta.className = 'episode-meta';
-		let metaParts = [];
-		if (dateStr) metaParts.push(formatDate(dateStr));
-		if (episode.duration_ms) metaParts.push(formatDuration(episode.duration_ms));
-		meta.textContent = metaParts.join(' \u00b7 ');
-		div.appendChild(meta);
-	}
-
-	if (episode.summary) {
-		const summary = document.createElement('div');
-		summary.className = 'episode-summary';
-		summary.textContent = episode.summary;
-		div.appendChild(summary);
-	}
-
-	const actions = document.createElement('div');
-	actions.className = 'episode-actions';
-	if (episode.audio_file) {
-		const playBtn = document.createElement('button');
-		playBtn.className = 'ep-btn';
-		playBtn.innerHTML = '&#9654; Play';
-		playBtn.onclick = () => playAt(episode.audio_file, 0, episode.title);
-		actions.appendChild(playBtn);
-		const skipBtn = document.createElement('button');
-		skipBtn.className = 'ep-btn';
-		skipBtn.innerHTML = '&#9193; Skip intro';
-		skipBtn.onclick = () => playAt(episode.audio_file, 250000, episode.title);
-		actions.appendChild(skipBtn);
-	}
-	const epGuests = displayGuests(episode.guests);
-	if (episode.guest_start_ms && epGuests.length > 0) {
-		const guestBtn = document.createElement('button');
-		guestBtn.className = 'ep-btn';
-		guestBtn.innerHTML = '&#127908; Skip to interview with ' + escapeHtml(formatGuestLabel(epGuests));
-		guestBtn.onclick = () => playAt(episode.audio_file, episode.guest_start_ms, episode.title);
-		actions.appendChild(guestBtn);
-	}
-	div.appendChild(actions);
-
-	const mapToggle = document.createElement('button');
-	mapToggle.className = 'map-toggle hidden';
-	div.appendChild(mapToggle);
-	const mapContainer = document.createElement('div');
-	mapContainer.className = 'episode-mini-map hidden';
-	div.appendChild(mapContainer);
-	checkEpisodePlaces(episode.episode_id, mapToggle, mapContainer);
-
-	const maxVisible = 10;
-	const hasOverflow = episode.matches.length > maxVisible;
-
-	for (let i = 0; i < episode.matches.length; i++) {
-		const match = episode.matches[i];
-		const matchDiv = document.createElement('div');
-		matchDiv.className = 'match' + (episode.audio_file ? '' : ' no-audio');
-		if (i >= maxVisible) matchDiv.classList.add('hidden');
-
-		const ts = document.createElement('span');
-		ts.className = 'timestamp';
-		ts.textContent = formatTime(match.start_ms);
-		matchDiv.appendChild(ts);
-
-		const text = document.createElement('span');
-		text.className = 'match-text';
-		text.innerHTML = searchMode === 'keyword' ? highlightQuery(match.text, currentQuery) : escapeHtml(match.text);
-		matchDiv.appendChild(text);
-
-		if (match.score != null) {
-			const badge = document.createElement('span');
-			badge.className = 'score-badge';
-			badge.textContent = Math.round(match.score * 100) + '%';
-			matchDiv.appendChild(badge);
-		}
-
-		if (episode.audio_file) {
-			matchDiv.setAttribute('role', 'button');
-			matchDiv.setAttribute('tabindex', '0');
-			matchDiv.setAttribute('aria-label', 'Play at ' + formatTime(match.start_ms));
-			const handler = () => playAt(episode.audio_file, match.start_ms, episode.title);
-			matchDiv.addEventListener('click', handler);
-			matchDiv.addEventListener('keydown', (e) => {
-				if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handler(); }
-			});
-
-			const shareBtn = document.createElement('button');
-			shareBtn.className = 'share-btn';
-			shareBtn.textContent = '\uD83D\uDD17';
-			shareBtn.title = 'Copy link to this moment';
-			shareBtn.addEventListener('click', (e) => {
-				e.stopPropagation();
-				shareClip(episode.episode_id, match.start_ms, shareBtn);
-			});
-			matchDiv.appendChild(shareBtn);
-		}
-
-		div.appendChild(matchDiv);
-	}
-
-	if (hasOverflow) {
-		const remaining = episode.matches.length - maxVisible;
-		const showMore = document.createElement('button');
-		showMore.className = 'show-more-matches';
-		showMore.textContent = 'Show ' + remaining + ' more mention' + (remaining !== 1 ? 's' : '');
-		showMore.addEventListener('click', () => {
-			div.querySelectorAll('.match.hidden').forEach(el => el.classList.remove('hidden'));
-			showMore.remove();
-		});
-		div.appendChild(showMore);
-	}
-
-	return div;
-}
-
-// Timeline
-async function fetchTimeline(query) {
-	try {
-		const res = await fetch('/api/timeline?q=' + encodeURIComponent(query));
-		if (!res.ok) {
-			timelineEl.innerHTML = '';
-			return;
-		}
-		const data = await res.json();
-		if (data.error || !data.timeline || data.timeline.length === 0) {
-			timelineEl.innerHTML = '';
-			return;
-		}
-		renderTimeline(data);
-	} catch (err) {
-		timelineEl.innerHTML = '';
-	}
-}
-
-function generateMonthRange(first, last) {
-	const months = [];
-	let [y, m] = first.split('-').map(Number);
-	const [ly, lm] = last.split('-').map(Number);
-	while (y < ly || (y === ly && m <= lm)) {
-		months.push(y + '-' + String(m).padStart(2, '0'));
-		m++;
-		if (m > 12) { m = 1; y++; }
-	}
-	return months;
-}
-
-function currentMonth() {
-	const now = new Date();
-	return now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0');
-}
-
-function renderTimeline(data) {
-	// Fixed range: full show history through the current month regardless of query results
-	const allMonths = generateMonthRange('2014-01', currentMonth());
-	const mentionMap = {};
-	for (const t of data.timeline) {
-		mentionMap[t.month] = t;
-	}
-
-	const card = document.createElement('div');
-	card.className = 'timeline-card';
-
-	const header = document.createElement('div');
-	header.className = 'timeline-header';
-	header.innerHTML = '<span class="timeline-label">\u201c' + escapeHtml(data.query) + '\u201d over time</span>'
-		+ '<span class="timeline-total">' + data.total_mentions + ' mention' + (data.total_mentions !== 1 ? 's' : '') + '</span>';
-	card.appendChild(header);
-
-	const container = document.createElement('div');
-	container.style.position = 'relative';
-	card.appendChild(container);
-
-	// SVG dimensions
-	const padding = { top: 4, bottom: 4, left: 0, right: 0 };
-	const barMaxHeight = 72;
-	const svgHeight = barMaxHeight + padding.top + padding.bottom;
-	const maxMentions = Math.max(...allMonths.map(m => (mentionMap[m]?.mentions || 0)));
-
-	const svgNs = 'http://www.w3.org/2000/svg';
-	const svg = document.createElementNS(svgNs, 'svg');
-	svg.setAttribute('class', 'timeline-svg');
-	svg.setAttribute('role', 'img');
-	svg.setAttribute('aria-label', 'Timeline showing mentions of \u201c' + data.query + '\u201d from 2012 to 2026');
-	svg.setAttribute('viewBox', '0 0 1000 ' + svgHeight);
-	svg.setAttribute('preserveAspectRatio', 'none');
-	svg.style.height = svgHeight + 'px';
-
-	const chartWidth = 1000 - padding.left - padding.right;
-	const barWidth = chartWidth / allMonths.length;
-	const gap = Math.max(0.3, barWidth * 0.1);
-
-	// Year-boundary grid lines
-	for (let i = 0; i < allMonths.length; i++) {
-		if (allMonths[i].substring(5, 7) !== '01') continue;
-		const x = padding.left + i * barWidth;
-		const line = document.createElementNS(svgNs, 'line');
-		line.setAttribute('x1', x);
-		line.setAttribute('y1', padding.top);
-		line.setAttribute('x2', x);
-		line.setAttribute('y2', padding.top + barMaxHeight);
-		line.setAttribute('stroke', '#e8e8e8');
-		line.setAttribute('stroke-width', '0.5');
-		svg.appendChild(line);
-	}
-
-	// Draw bars
-	for (let i = 0; i < allMonths.length; i++) {
-		const m = allMonths[i];
-		const count = mentionMap[m]?.mentions || 0;
-		if (count === 0) continue;
-		const h = Math.max(3, (count / maxMentions) * barMaxHeight);
-		const x = padding.left + i * barWidth + gap / 2;
-		const y = padding.top + barMaxHeight - h;
-		const rect = document.createElementNS(svgNs, 'rect');
-		rect.setAttribute('class', 'timeline-bar');
-		rect.setAttribute('x', x);
-		rect.setAttribute('y', y);
-		rect.setAttribute('width', Math.max(0.5, barWidth - gap));
-		rect.setAttribute('height', h);
-		rect.setAttribute('rx', Math.min(2, (barWidth - gap) / 2));
-		rect.dataset.index = i;
-		svg.appendChild(rect);
-	}
-
-	container.appendChild(svg);
-
-	// Year labels as HTML elements (outside SVG to avoid distortion)
-	const labelsDiv = document.createElement('div');
-	labelsDiv.className = 'timeline-labels';
-
-	const containerWidth = timelineEl.offsetWidth || 760;
-	const labelInterval = containerWidth < 480 ? 4 : 2;
-
-	const yearsInRange = [];
-	for (let i = 0; i < allMonths.length; i++) {
-		const year = allMonths[i].substring(0, 4);
-		const month = allMonths[i].substring(5, 7);
-		if (month === '01') {
-			yearsInRange.push({ year, index: i });
-		}
-	}
-
-	for (let j = 0; j < yearsInRange.length; j++) {
-		const { year, index } = yearsInRange[j];
-		const yearNum = parseInt(year, 10);
-		const isFirst = j === 0;
-		const isLast = j === yearsInRange.length - 1;
-		if (!isFirst && !isLast && yearNum % labelInterval !== 0) continue;
-
-		const pct = ((index + 0.5) / allMonths.length) * 100;
-		const label = document.createElement('span');
-		label.className = 'timeline-year-label';
-		label.style.left = pct + '%';
-		label.textContent = "'" + year.substring(2);
-		labelsDiv.appendChild(label);
-	}
-
-	container.appendChild(labelsDiv);
-
-	// Tooltip
-	const tooltip = document.createElement('div');
-	tooltip.className = 'timeline-tooltip';
-	container.appendChild(tooltip);
-
-	// Interaction
-	let activeBar = null;
-	const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-
-	function showTooltip(clientX, clientY, monthIndex) {
-		if (activeBar !== null) {
-			const prev = svg.querySelector('.timeline-bar.active');
-			if (prev) prev.classList.remove('active');
-		}
-		activeBar = monthIndex;
-		const m = allMonths[monthIndex];
-		const info = mentionMap[m];
-		if (!info) {
-			tooltip.classList.remove('visible');
-			return;
-		}
-		const [yr, mo] = m.split('-');
-		const mName = monthNames[parseInt(mo, 10) - 1];
-		tooltip.textContent = mName + ' ' + yr + ' \u2014 ' + info.mentions + ' mention' + (info.mentions !== 1 ? 's' : '') + ' in ' + info.episodes + ' episode' + (info.episodes !== 1 ? 's' : '');
-		tooltip.classList.add('visible');
-
-		const bar = svg.querySelector('.timeline-bar[data-index="' + monthIndex + '"]');
-		if (bar) bar.classList.add('active');
-
-		const containerRect = container.getBoundingClientRect();
-		let left = clientX - containerRect.left;
-		const tooltipWidth = tooltip.offsetWidth;
-		if (left + tooltipWidth / 2 > containerRect.width) left = containerRect.width - tooltipWidth / 2;
-		if (left - tooltipWidth / 2 < 0) left = tooltipWidth / 2;
-		tooltip.style.left = left + 'px';
-		tooltip.style.top = '-28px';
-		tooltip.style.transform = 'translateX(-50%)';
-	}
-
-	function getMonthIndex(clientX) {
-		const svgRect = svg.getBoundingClientRect();
-		const relX = clientX - svgRect.left;
-		const ratio = relX / svgRect.width;
-		return Math.max(0, Math.min(allMonths.length - 1, Math.floor(ratio * allMonths.length)));
-	}
-
-	function hideTooltip() {
-		tooltip.classList.remove('visible');
-		const prev = svg.querySelector('.timeline-bar.active');
-		if (prev) prev.classList.remove('active');
-		activeBar = null;
-	}
-
-	svg.addEventListener('mousemove', (e) => {
-		const idx = getMonthIndex(e.clientX);
-		showTooltip(e.clientX, e.clientY, idx);
-	});
-	svg.style.cursor = 'pointer';
-	svg.addEventListener('click', async (e) => {
-		const idx = getMonthIndex(e.clientX);
-		const month = allMonths[idx];
-		if (!month) return;
-		let target = document.querySelector(`[data-month="${month}"]`);
-		let extraLoads = 0;
-		while (!target && hasMore && extraLoads < 50) {
-			currentPage++;
-			extraLoads++;
-			const ok = await fetchResults();
-			if (!ok) break;
-			target = document.querySelector(`[data-month="${month}"]`);
-		}
-		if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-	});
-	svg.addEventListener('mouseleave', hideTooltip);
-
-	svg.addEventListener('touchstart', (e) => {
-		const touch = e.touches[0];
-		const idx = getMonthIndex(touch.clientX);
-		showTooltip(touch.clientX, touch.clientY, idx);
-	}, { passive: true });
-	svg.addEventListener('touchmove', (e) => {
-		const touch = e.touches[0];
-		const idx = getMonthIndex(touch.clientX);
-		showTooltip(touch.clientX, touch.clientY, idx);
-	}, { passive: true });
-	svg.addEventListener('touchend', hideTooltip);
-
-	timelineEl.innerHTML = '';
-	timelineEl.appendChild(card);
-}
-
 function parseEpisodeDate(id) {
 	const match = id.match(/(\d{4}-\d{2}-\d{2})/);
 	if (!match) return null;
@@ -1481,16 +719,6 @@ function formatTime(ms) {
 	return m + ':' + String(s).padStart(2, '0');
 }
 
-function highlightQuery(text, query) {
-	// Match against the RAW text, then escape each piece, so entities aren't
-	// corrupted (escape-then-match would match inside &amp; or miss & / < / >).
-	const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-	const regex = new RegExp('(' + escaped + ')', 'gi');
-	return text.split(regex).map((piece, i) =>
-		i % 2 === 1 ? '<mark>' + escapeHtml(piece) + '</mark>' : escapeHtml(piece)
-	).join('');
-}
-
 function escapeHtml(str) {
 	return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#x27;');
 }
@@ -1517,29 +745,6 @@ async function loadEpisodeMap(episodeId, index, prefix) {
 			label.innerHTML = text;
 		}
 		initMiniMap(container, data.places);
-	} catch (err) {
-		// silently skip
-	}
-}
-
-async function checkEpisodePlaces(episodeId, toggleBtn, mapContainer) {
-	try {
-		const res = await fetch('/api/episode/' + encodeURIComponent(episodeId) + '/places');
-		const data = await res.json();
-		if (!data.places || data.places.length === 0) return;
-
-		const places = data.places;
-		toggleBtn.textContent = places.length + ' place' + (places.length !== 1 ? 's' : '') + ' mentioned';
-		toggleBtn.classList.remove('hidden');
-		let mapInit = false;
-		toggleBtn.addEventListener('click', () => {
-			const visible = !mapContainer.classList.contains('hidden');
-			mapContainer.classList.toggle('hidden', visible);
-			if (!visible && !mapInit) {
-				mapInit = true;
-				initMiniMap(mapContainer, places);
-			}
-		});
 	} catch (err) {
 		// silently skip
 	}
