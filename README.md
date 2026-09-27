@@ -209,7 +209,9 @@ npx wrangler r2 object put roe-audio/"Roll Over Easy 2026-04-02.mp3" \
 Processing takes ~10–15 minutes for a 2-hour episode. Check status:
 
 ```bash
-curl "https://roe-pipeline.christophersbunting.workers.dev/status?key=Roll%20Over%20Easy%202026-04-02.mp3"
+# PIPELINE_TOKEN is in the project .env (the same value is a Worker secret)
+curl -H "Authorization: Bearer $PIPELINE_TOKEN" \
+  "https://roe-pipeline.christophersbunting.workers.dev/status?key=Roll%20Over%20Easy%202026-04-02.mp3"
 # {"status":"completed"} when done
 ```
 
@@ -223,7 +225,8 @@ curl -X POST "https://api.cloudflare.com/client/v4/accounts/c300f1dedb1ae128ce63
   -d '{"sql": "DELETE FROM episodes WHERE id = '"'"'roll-over-easy_YYYY-MM-DD_07-30-00'"'"'"}'
 
 # Re-trigger
-curl -X POST "https://roe-pipeline.christophersbunting.workers.dev/process?key=Roll%20Over%20Easy%20YYYY-MM-DD.mp3"
+curl -X POST -H "Authorization: Bearer $PIPELINE_TOKEN" \
+  "https://roe-pipeline.christophersbunting.workers.dev/process?key=Roll%20Over%20Easy%20YYYY-MM-DD.mp3"
 ```
 
 ### Batch processing (historical backfill only)
