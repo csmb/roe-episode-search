@@ -3,6 +3,7 @@ import EPISODES_HTML from './episodes.html';
 import GUESTS_HTML from './guests.html';
 import ADMIN_HTML from './admin.html';
 import MAP_HTML from './map.html';
+import FERRY_BUILDING_WEBP from './ferry-building-v1.webp';
 import { HOST_NAMES } from '../../roe-pipeline/src/hosts.js';
 
 // ── Rate limiting ─────────────────────────────────────────────────────
@@ -202,6 +203,17 @@ export default {
 		}
 		if (url.pathname.startsWith('/audio/')) {
 			return handleAudio(request, url, env);
+		}
+		// The header photo on every page. Cached for good, so a new picture needs a new
+		// name: bump the -v1 in the file, here and in the five pages.
+		if (url.pathname === '/ferry-building-v1.webp') {
+			return new Response(FERRY_BUILDING_WEBP, {
+				headers: {
+					'Content-Type': 'image/webp',
+					'Cache-Control': 'public, max-age=31536000, immutable',
+					'X-Content-Type-Options': 'nosniff',
+				},
+			});
 		}
 		if (url.pathname === '/robots.txt') {
 			// Keep all crawlers out, as decided in March (df892fc).

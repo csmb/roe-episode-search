@@ -37,6 +37,12 @@
       "type": "Text",
       "globs": ["**/*.html"],
       "fallthrough": false
+    },
+    // The header photo: imported as bytes and served by the Worker.
+    {
+      "type": "Data",
+      "globs": ["**/*.webp"],
+      "fallthrough": false
     }
   ]
 }
