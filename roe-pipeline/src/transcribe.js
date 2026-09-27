@@ -1,8 +1,8 @@
 /**
- * Transcribe an MP3 from R2 using OpenAI Whisper API, one ~20 MB chunk at a time.
+ * Transcribe an MP3 from R2 using OpenAI Whisper API, six minutes at a time.
  *
- * Files over Whisper's 25 MB limit are cut on MP3 frame boundaries, so each
- * chunk is a self-contained stream Whisper can decode alone. The pipeline sends
+ * Chunks are cut on MP3 frame boundaries, so each is a self-contained stream
+ * Whisper can decode alone. The pipeline sends
  * one chunk per alarm and stores the result before the next, so a long show
  * never has to fit in one alarm's 15 minutes, and a crash costs one chunk.
  */
@@ -14,6 +14,11 @@ import { SF_VOCAB_PROMPT } from './whisper-prompt.js';
 import { apiError, PermanentError, TIMEOUT_MS } from './limits.js';
 
 export const TARGET_CHUNK = 20 * 1024 * 1024; // ~20MB, under the 25MB Whisper limit
+// Whisper returns longer lines for longer audio: 16-minute chunks came back as
+// ~20-second lines, the same stretch sent alone as ~5-second ones. Six minutes
+// also keeps every chunk but the last over the 5-minute hole size, so a hole
+// always shows up inside one chunk or across two neighbours.
+export const TARGET_CHUNK_SEC = 6 * 60;
 const TAIL_MARGIN  = 64 * 1024;        // extra bytes read past TARGET_CHUNK so
                                        // findChunkEnd can always find the next
                                        // frame boundary just past the limit.
@@ -47,14 +52,14 @@ export function transcriptionDone(tx) {
  * @returns {{ tx: object, segments: Array, boundary: Array }} the advanced
  *   progress, this chunk's segments, and any recovered across the boundary
  */
-export async function transcribeNextChunk(bucket, key, openaiApiKey, tx, { prevSegments = [], deadline = Infinity, targetChunk = TARGET_CHUNK } = {}) {
+export async function transcribeNextChunk(bucket, key, openaiApiKey, tx, { prevSegments = [], deadline = Infinity, targetChunk = TARGET_CHUNK, targetSec = TARGET_CHUNK_SEC } = {}) {
   const windowLen = Math.min(targetChunk + TAIL_MARGIN, tx.size - tx.fileOffset);
   const window = await readRange(bucket, key, tx.fileOffset, windowLen);
 
   const isLastChunk = (tx.fileOffset + windowLen) >= tx.size;
   let sliceStart, sliceEnd;
   try {
-    ({ sliceStart, sliceEnd } = pickChunkSlice(window, tx.fileOffset, isLastChunk, targetChunk));
+    ({ sliceStart, sliceEnd } = pickChunkSlice(window, tx.fileOffset, isLastChunk, targetChunk, targetSec));
   } catch (err) {
     throw new PermanentError(`Chunker failed at file offset ${tx.fileOffset} (key: ${key}): ${err.message}`);
   }

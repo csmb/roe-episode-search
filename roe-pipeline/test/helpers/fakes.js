@@ -201,8 +201,8 @@ export function describeChunk(audio) {
  * A fake fetch for Whisper, GPT, sunrise and Nominatim.
  *
  * `speech(sec, { retry })` returns the words spoken in the 10-second slot at
- * `sec` into the show (or null for silence); `retry` is true for a gap-retry
- * clip. Other options script GPT replies. Every call is recorded with whether
+ * `sec` into the show (5, 15, 25…; null for silence); `retry` is true for a
+ * gap-retry clip (3 minutes or less). Other options script GPT replies. Every call is recorded with whether
  * it carried a time limit.
  */
 export function fakeFetch({
@@ -228,11 +228,13 @@ export function fakeFetch({
         const res = await whisper(call);
         if (res) return res;
       }
+      // One line per 10-second slot, starting at 5, 15, 25 s… so no slot starts right on
+      // a chunk edge (the chunks are cut just past multiples of six minutes).
       const segments = [];
-      const firstSlot = Math.ceil(call.startSec / 10) * 10;
-      for (let t = firstSlot; t < call.startSec + call.durationSec - 1; t += 10) {
+      const end = call.startSec + call.durationSec;
+      for (let t = Math.ceil((call.startSec - 5) / 10) * 10 + 5; t < end; t += 10) {
         const text = speech(t, { retry: call.retry });
-        if (text) segments.push({ start: t - call.startSec, end: Math.min(t + 10, call.startSec + call.durationSec) - call.startSec, text });
+        if (text) segments.push({ start: t - call.startSec, end: Math.min(t + 10, end) - call.startSec, text });
       }
       return Response.json({ duration: call.durationSec, segments });
     }

@@ -259,3 +259,36 @@ describe('pickChunkSlice', () => {
     expect(() => pickChunkSlice(buf, 1_000_000, false, /*targetChunk=*/100)).toThrow(/could not advance/i);
   });
 });
+
+describe('cutting chunks by time', () => {
+  // 417-byte frames of 1152 samples at 44.1 kHz: ~26.1 ms each, so 1 s is 38.28 frames.
+  const FRAME_SEC = 1152 / 44100;
+
+  it('findChunkEnd stops at the first frame that starts once maxSec of audio is walked', () => {
+    const { buf } = buildFrames(200);
+    const end = findChunkEnd(buf, 0, buf.length, 1);        // one second
+    expect(end).toBe(Math.ceil(1 / FRAME_SEC) * 417);
+    expect(findChunkEnd(buf, 0, buf.length)).toBe(buf.length); // no time limit: walks it all
+  });
+
+  it('pickChunkSlice cuts at targetSec when that comes before targetChunk bytes', () => {
+    const { buf } = buildFrames(200);
+    const slice = pickChunkSlice(buf, 0, false, 999_999, 2);
+    expect(slice).toEqual({ sliceStart: 0, sliceEnd: Math.ceil(2 / FRAME_SEC) * 417 });
+  });
+
+  it('pickChunkSlice still respects the byte cap when that comes first', () => {
+    const { buf } = buildFrames(200);
+    expect(pickChunkSlice(buf, 0, false, 1500, 60)).toEqual({ sliceStart: 0, sliceEnd: 1251 });
+  });
+
+  it('the last window is cut by time too, and only the true end takes the trailing bytes', () => {
+    const { buf: frames } = buildFrames(200);
+    const buf = new Uint8Array(frames.length + 128);        // + a trailing ID3v1-style tag
+    buf.set(frames);
+    buf.set([0x54, 0x41, 0x47], frames.length);             // "TAG"
+    expect(pickChunkSlice(buf, 5_000_000, true, 999_999, 2).sliceEnd).toBe(Math.ceil(2 / FRAME_SEC) * 417);
+    expect(pickChunkSlice(buf, 5_000_000, true, 999_999, 60).sliceEnd).toBe(buf.length);
+  });
+});
+

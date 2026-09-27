@@ -5,13 +5,15 @@ import { FakeStorage, makeD1, makeR2, makeAI, makeVectorize, whisperAudio, fakeF
 const KEY = 'Roll Over Easy 2026-10-01.mp3';
 const ID = 'roll-over-easy_2026-10-01_07-30-00';
 const AUDIO_URL = 'https://audio.example/Roll%20Over%20Easy%202026-10-01.mp3';
-const CHUNK_BYTES = 1_000_000;   // ~16.7 minutes of the fake audio, like production's 20 MB
-const CHUNK_SEC = Math.floor(CHUNK_BYTES / 26) * (576 / 22050);
+// Chunks are cut at the first frame at or past six minutes of audio.
+const CHUNK_FRAMES = Math.ceil(360 / (576 / 22050));
+const CHUNK_SEC = CHUNK_FRAMES * (576 / 22050);
+const CHUNK_BYTES = CHUNK_FRAMES * 26;
 const T0 = Date.UTC(2026, 9, 1, 17, 0);
 
 // Speech everywhere, naming the guest and a place so the summary and places steps keep them
-const speech = sec => (sec === 600 ? 'Heather Knight joins us this morning.'
-  : sec === 1200 ? 'Then we walked over to Dolores Park.'
+const speech = sec => (sec === 605 ? 'Heather Knight joins us this morning.'
+  : sec === 1205 ? 'Then we walked over to Dolores Park.'
   : `Line at ${Math.round(sec)} seconds.`);
 
 function setup({ seconds = 50 * 60, fetch: fetchOpts = {}, env: envOver = {} } = {}) {
@@ -23,7 +25,6 @@ function setup({ seconds = 50 * 60, fetch: fetchOpts = {}, env: envOver = {} } =
     VECTORIZE: makeVectorize(),
     OPENAI_API_KEY: 'sk-test',
     R2_PUBLIC_URL: 'https://audio.example',
-    CHUNK_BYTES: String(CHUNK_BYTES),
     ...envOver,
   };
   const fetch = fakeFetch({ speech, ...fetchOpts });
@@ -247,18 +248,18 @@ describe('when something goes wrong mid-transcription', () => {
     await t.process();
     await drain(t);
 
-    const chunk1Bytes = Math.floor(CHUNK_BYTES / 26) * 26;
-    expect(t.env.AUDIO_BUCKET.reads).toContainEqual({ key: KEY, offset: 0, length: chunk1Bytes });
+    expect(t.env.AUDIO_BUCKET.reads).toContainEqual({ key: KEY, offset: 0, length: CHUNK_BYTES });
     const recovered = t.env.DB.rows('SELECT COUNT(*) AS n FROM transcript_segments WHERE start_ms BETWEEN ? AND ?',
       Math.round((CHUNK_SEC - 150) * 1000), Math.round((CHUNK_SEC + 200) * 1000))[0].n;
     expect(recovered).toBeGreaterThan(30);
     expect((await t.status()).holes).toBeUndefined();
   });
 
-  it('leaves a hole for later once the alarm has used its time for retries', async () => {
-    // Twelve silent minutes in chunk 1; the first retry clip uses up the budget
-    const quiet = sec => sec >= 300 && sec < 1020;
+  it('stops sending retry clips once the alarm has used its time budget', async () => {
+    // Five silent minutes inside chunk 2; the first retry clip uses up the budget
+    const quiet = sec => sec >= 400 && sec < 700;
     const t = setup({
+      seconds: 52 * 60,   // so the last chunk is longer than a retry clip
       fetch: {
         speech: (sec, { retry }) => (quiet(sec) && !retry ? null : `Line at ${Math.round(sec)} seconds.`),
         whisper: call => { if (call.retry) vi.setSystemTime(Date.now() + 11 * 60_000); return null; },
@@ -266,10 +267,11 @@ describe('when something goes wrong mid-transcription', () => {
     });
     await t.process();
     await drain(t);
-    const status = await t.status();
-    expect(status.status).toBe('completed');
-    expect(status.holes).toHaveLength(1);
-    expect(status.holes[0].startMs).toBeGreaterThanOrEqual(480_000);
+    expect((await t.status()).status).toBe('completed');
+    expect(t.whisperCalls().filter(c => c.retry)).toHaveLength(1);   // the second clip was never sent
+    // The first clip covered 405-585 s; the rest of the hole stays empty
+    const late = t.env.DB.rows('SELECT COUNT(*) AS n FROM transcript_segments WHERE start_ms >= 590000 AND start_ms < 700000')[0].n;
+    expect(late).toBe(0);
   });
 });
 

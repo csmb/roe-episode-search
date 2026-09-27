@@ -5,7 +5,7 @@
  * Steps: transcribe → summary → seed-db → embeddings → guest-start →
  * extract-places → score-places → finalize.
  *
- * - Transcription sends one ~16-minute chunk per alarm and saves it, so a long
+ * - Transcription sends one six-minute chunk per alarm and saves it, so a long
  *   show never has to fit in one alarm's 15 minutes, and a crash or restart
  *   costs one chunk, never the whole show.
  * - The summary is made before anything reaches D1. seed-db then writes the
@@ -327,11 +327,7 @@ export class EpisodePipeline {
     if (!transcriptionDone(tx)) {
       const i = tx.chunks;
       const prevSegments = i > 0 ? await readPages(storage, `tx:seg:${i - 1}`, tx.pages[i - 1]) : [];
-      const out = await transcribeNextChunk(this.env.AUDIO_BUCKET, key, this.env.OPENAI_API_KEY, tx, {
-        prevSegments, deadline,
-        // Smaller chunks for tests and rehearsals only; production uses the 20 MB default.
-        targetChunk: Number(this.env.CHUNK_BYTES) || undefined,
-      });
+      const out = await transcribeNextChunk(this.env.AUDIO_BUCKET, key, this.env.OPENAI_API_KEY, tx, { prevSegments, deadline });
       const own = pageEntries(`tx:seg:${i}`, out.segments);
       const boundary = pageEntries(`tx:boundary:${i}`, out.boundary);
       const next = {

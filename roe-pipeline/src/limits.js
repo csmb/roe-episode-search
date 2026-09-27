@@ -7,7 +7,7 @@
  */
 
 export const TIMEOUT_MS = {
-  whisper: 5 * 60_000,     // one ~16-minute chunk; normally answered in 1–2 minutes
+  whisper: 5 * 60_000,     // one six-minute chunk; normally answered in well under a minute
   whisperRetry: 90_000,    // a retry clip of at most 3 minutes
   summary: 90_000,
   places: 180_000,         // a reply of up to 4,000 tokens

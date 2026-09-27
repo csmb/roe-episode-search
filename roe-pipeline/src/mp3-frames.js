@@ -83,6 +83,13 @@ export function parseFrameHeader(bytes, offset) {
   return { frameSize, version, layer, sampleRate };
 }
 
+// Samples per frame by header layer (1=III, 2=II, 3=I); MPEG-2/2.5 Layer III halves it.
+export function samplesPerFrame({ version, layer }) {
+  if (layer === LAYER_I) return 384;
+  if (layer === LAYER_III && version !== 3) return 576;
+  return 1152;
+}
+
 /**
  * Find the offset of the first valid MPEG audio frame at-or-after `fromOffset`.
  *
@@ -112,21 +119,26 @@ export function findFrameStart(bytes, fromOffset) {
 
 /**
  * Walk consecutive frames from a known-good `fromOffset` and return the offset
- * of the first frame that does not fully fit within `softLimit`. The caller
- * slices [fromOffset, returnedOffset) as the chunk and uses the returned
- * offset as the next chunk's start.
+ * of the first frame that does not fully fit within `softLimit`, or that
+ * starts once `maxSec` of audio has been walked, whichever comes first. The
+ * caller slices [fromOffset, returnedOffset) as the chunk and uses the
+ * returned offset as the next chunk's start. Time comes from counting samples
+ * frame by frame, so it is exact even for variable-bitrate files.
  *
  * If the first frame at `fromOffset` already exceeds softLimit, returns
  * `fromOffset` (caller treats this as an error). If a corrupt header is hit
  * mid-walk, returns the current offset so the caller's next-chunk
  * `findFrameStart` can resync.
  */
-export function findChunkEnd(bytes, fromOffset, softLimit) {
+export function findChunkEnd(bytes, fromOffset, softLimit, maxSec = Infinity) {
   let offset = fromOffset;
+  let sec = 0;
   while (offset < softLimit) {
+    if (sec >= maxSec) return offset;
     const h = parseFrameHeader(bytes, offset);
     if (!h) return offset;
     if (offset + h.frameSize > softLimit) return offset;
+    sec += samplesPerFrame(h) / h.sampleRate;
     offset += h.frameSize;
   }
   return offset;
@@ -143,21 +155,28 @@ export function findChunkEnd(bytes, fromOffset, softLimit) {
  * equals the first validated frame offset in the window, since there is no
  * preamble to preserve.
  *
- * `sliceEnd` is `window.length` for the last chunk; otherwise it is the next
- * frame boundary at-or-before `targetChunk`, walking from the first frame.
+ * `sliceEnd` is the frame boundary where the chunk reaches `targetSec` of
+ * audio or would pass `targetChunk` bytes, walking from the first frame. The
+ * last chunk otherwise runs to `window.length`, keeping any trailing tag.
  *
  * Throws if no validated frame can be found in the window, or if even the
  * first frame in the window cannot fit within `targetChunk`.
  */
-export function pickChunkSlice(window, fileOffset, isLastChunk, targetChunk) {
+export function pickChunkSlice(window, fileOffset, isLastChunk, targetChunk, targetSec = Infinity) {
   const firstFrame = findFrameStart(window, 0);
   if (firstFrame < 0) {
     throw new Error('pickChunkSlice: no frame sync in window');
   }
 
-  const sliceEnd = isLastChunk
-    ? window.length
-    : findChunkEnd(window, firstFrame, targetChunk);
+  let sliceEnd;
+  if (!isLastChunk) {
+    sliceEnd = findChunkEnd(window, firstFrame, targetChunk, targetSec);
+  } else {
+    // The rest of the file is in this window. Cut it at targetSec if there's
+    // more audio than that; otherwise take it all.
+    const byTime = findChunkEnd(window, firstFrame, window.length, targetSec);
+    sliceEnd = byTime < findChunkEnd(window, firstFrame, window.length) ? byTime : window.length;
+  }
 
   if (sliceEnd <= firstFrame) {
     throw new Error(

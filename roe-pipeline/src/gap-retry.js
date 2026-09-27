@@ -9,7 +9,7 @@
  * left alone; a failed retry request is logged and skipped, never fatal.
  */
 
-import { parseFrameHeader, findFrameStart } from './mp3-frames.js';
+import { parseFrameHeader, findFrameStart, samplesPerFrame } from './mp3-frames.js';
 
 export const MIN_GAP_MS = 5 * 60 * 1000;
 export const RETRY_CLIP_SEC = 180; // long holes are re-sent as 3-minute clips
@@ -28,13 +28,6 @@ export function findGaps(segments, spanStartMs, spanEndMs, minGapMs) {
   }
   if (spanEndMs - coveredTo >= minGapMs) gaps.push({ startMs: coveredTo, endMs: spanEndMs });
   return gaps;
-}
-
-// Samples per frame by header layer (1=III, 2=II, 3=I); MPEG-2/2.5 Layer III halves it.
-function samplesPerFrame({ version, layer }) {
-  if (layer === 3) return 384;
-  if (layer === 1 && version !== 3) return 576;
-  return 1152;
 }
 
 /**
