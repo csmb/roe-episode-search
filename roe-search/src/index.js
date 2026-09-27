@@ -367,9 +367,11 @@ async function handleSemanticSearch(url, env, request) {
 			const meta = match.metadata;
 			if (!meta || !meta.episode_id) continue;
 			const epId = meta.episode_id;
+			// Vectors outlive deleted episodes, and a card for one would have dead audio.
+			if (!episodeMeta[epId]) continue;
 
 			if (!episodeMap.has(epId)) {
-				const dbMeta = episodeMeta[epId] || {};
+				const dbMeta = episodeMeta[epId];
 				episodeMap.set(epId, {
 					episode_id: epId,
 					title: dbMeta.title || meta.title,
