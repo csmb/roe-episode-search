@@ -36,4 +36,19 @@ describe('transcribeChunk', () => {
       { start_ms: 912000, end_ms: 915000, text: 'We love Tartine and Bi-Rite.' },
     ]);
   });
+
+  it('drops a looping lyric and segments Whisper itself flags as looping', async () => {
+    stubWhisper([
+      { start: 0, end: 4, text: 'Good morning!' },
+      { start: 4, end: 8, text: "It's perfect for me." },
+      { start: 8, end: 12, text: 'Sitting on the dock of the bay.' },
+      { start: 12, end: 16, text: "It's perfect for me." },
+      { start: 16, end: 20, text: "It's perfect for me." },
+      { start: 20, end: 24, text: 'the the the the the the the the', compression_ratio: 3.1 },
+      { start: 24, end: 28, text: 'Back to the show.' },
+    ]);
+    const { segments } = await transcribeChunk(new Uint8Array([1]), 'sk-test', 0);
+    expect(segments.map(s => s.text)).toEqual(['Good morning!', "It's perfect for me.", 'Sitting on the dock of the bay.', 'Back to the show.']);
+  });
 });
+

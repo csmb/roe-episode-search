@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { findGaps, sliceByTime, fillGaps } from '../src/gap-retry.js';
+import { findGaps, sliceByTime, fillGaps, findBoundaryHole } from '../src/gap-retry.js';
 
 // MPEG-1 Layer III, 128 kbps, 44.1 kHz, no padding: 417-byte frames of
 // 1152 samples, i.e. 1152 / 44100 s ≈ 26.12 ms per frame.
@@ -91,7 +91,7 @@ describe('fillGaps', () => {
     };
     const segs = [seg(100_000, 102_000, 'before'), seg(120_000, 121_000, 'after')];
 
-    const out = await fillGaps(bytes, segs, 100, durationSec, transcribe, { minGapMs: 10_000 });
+    const { segments: out } = await fillGaps(bytes, segs, 100, durationSec, transcribe, { minGapMs: 10_000 });
 
     expect(calls).toHaveLength(1);
     const { startSec } = sliceByTime(bytes, 2, 20);
@@ -102,14 +102,15 @@ describe('fillGaps', () => {
   it('keeps the original segments when the retry finds nothing (music or silence)', async () => {
     const transcribe = async () => ({ segments: [] });
     const segs = [seg(0, 1000), seg(20_000, 21_000)];
-    const out = await fillGaps(bytes, segs, 0, durationSec, transcribe, { minGapMs: 10_000 });
+    const { segments: out, unfilled } = await fillGaps(bytes, segs, 0, durationSec, transcribe, { minGapMs: 10_000 });
     expect(out).toEqual(segs);
+    expect(unfilled).toEqual([{ startMs: 1000, endMs: 20_000 }]);
   });
 
   it('drops retry segments that fall outside the gap', async () => {
     const transcribe = async () => ({ segments: [seg(500, 900, 'dup of before'), seg(5000, 6000, 'new'), seg(20_500, 20_900, 'dup of after')] });
     const segs = [seg(0, 1000, 'before'), seg(20_000, 21_000, 'after')];
-    const out = await fillGaps(bytes, segs, 0, durationSec, transcribe, { minGapMs: 10_000 });
+    const { segments: out } = await fillGaps(bytes, segs, 0, durationSec, transcribe, { minGapMs: 10_000 });
     expect(out.map(s => s.text)).toEqual(['before', 'new', 'after']);
   });
 
@@ -119,5 +120,49 @@ describe('fillGaps', () => {
     const segs = [seg(0, 13_000), seg(13_000, 26_000)];
     await fillGaps(bytes, segs, 0, durationSec, transcribe, { minGapMs: 10_000 });
     expect(called).toBe(false);
+  });
+});
+
+describe('fillGaps retries', () => {
+  const bytes = buildFrames(1000); // ≈ 26.1 s
+  const durationSec = 1000 * FRAME_SEC;
+
+  it('re-sends a long hole as several short clips, each starting fresh', async () => {
+    const offsets = [];
+    const transcribe = async (clip, offsetSec) => { offsets.push(offsetSec); return { segments: [] }; };
+    await fillGaps(bytes, [seg(0, 1000), seg(21_000, 22_000)], 0, durationSec, transcribe, { minGapMs: 10_000, clipSec: 5 });
+    // hole 1–21 s in 5-second clips → starts near 1, 6, 11, 16 s
+    expect(offsets).toHaveLength(4);
+    expect(offsets[1] - offsets[0]).toBeCloseTo(5, 1);
+  });
+
+  it('keeps going when a retry request fails', async () => {
+    let n = 0;
+    const transcribe = async (clip, offsetSec) => {
+      n++;
+      if (n === 1) throw new Error('Whisper API error 429');
+      return { segments: [seg(Math.round((offsetSec + 0.5) * 1000), Math.round((offsetSec + 1) * 1000), 'late clip')] };
+    };
+    const segs = [seg(0, 1000), seg(21_000, 22_000)];
+    const { segments: out } = await fillGaps(bytes, segs, 0, durationSec, transcribe, { minGapMs: 10_000, clipSec: 10 });
+    expect(n).toBe(2);
+    expect(out.map(s => s.text)).toContain('late clip');
+  });
+});
+
+describe('findBoundaryHole', () => {
+  const MIN = 5 * 60 * 1000;
+  it('finds a hole split across two chunks', () => {
+    // previous chunk ends at 15:00 with speech until 12:00; next chunk's speech starts at 17:00
+    const hole = findBoundaryHole([seg(0, 720_000)], 900_000, [seg(1_020_000, 1_030_000)], 900_000, MIN);
+    expect(hole).toEqual({ prev: { startMs: 720_000, endMs: 900_000 }, cur: { startMs: 900_000, endMs: 1_020_000 } });
+  });
+
+  it('ignores it when one side was already long enough for its own chunk check', () => {
+    expect(findBoundaryHole([seg(0, 500_000)], 900_000, [seg(960_000, 970_000)], 900_000, MIN)).toBeNull();
+  });
+
+  it('ignores a short pause across the boundary', () => {
+    expect(findBoundaryHole([seg(0, 880_000)], 900_000, [seg(930_000, 940_000)], 900_000, MIN)).toBeNull();
   });
 });

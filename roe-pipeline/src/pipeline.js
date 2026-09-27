@@ -30,7 +30,8 @@ export class EpisodePipeline {
       const step = await this.state.storage.get('step');
       const episodeId = await this.state.storage.get('episodeId');
       const error = await this.state.storage.get('error');
-      return Response.json({ status, step, episodeId, error });
+      const holes = await this.state.storage.get('holes');
+      return Response.json({ status, step, episodeId, error, holes });
     }
 
     const { key } = await request.json();
@@ -79,7 +80,7 @@ export class EpisodePipeline {
         case 'transcribe': {
           const resume = await this.state.storage.get('transcribeResume');
 
-          const { segments, durationMs, totalChunks } = await transcribeFromR2(
+          const { segments, durationMs, holes } = await transcribeFromR2(
             this.env.AUDIO_BUCKET, key, this.env.OPENAI_API_KEY, resume
           );
           if (segments.length === 0) {
@@ -90,6 +91,8 @@ export class EpisodePipeline {
 
           await this.storeSegments(segments);
           await this.state.storage.put('durationMs', durationMs);
+          // Stretches still missing after every retry, shown by /status
+          await this.state.storage.put('holes', holes || []);
           await this.state.storage.delete('transcribeResume');
           await this.advanceStep('seed-db');
           break;
@@ -163,9 +166,11 @@ export class EpisodePipeline {
             .bind(audioUrl, episodeId).run();
           console.log(`[${episodeId}] audio_file set to ${audioUrl}`);
 
-          // Pipeline complete — clean up DO storage
+          // Pipeline complete — clean up DO storage, keeping any unfilled holes for /status
+          const holes = await this.state.storage.get('holes');
           await this.state.storage.deleteAll();
           await this.state.storage.put('status', 'completed');
+          if (holes && holes.length > 0) await this.state.storage.put('holes', holes);
           console.log(`[${episodeId}] Pipeline completed successfully`);
           break;
         }

@@ -5,13 +5,14 @@
 
 import { cleanSegments, isMostlyNonLatin, isPromptEcho } from './clean-segments.js';
 import { pickChunkSlice } from './mp3-frames.js';
-import { fillGaps } from './gap-retry.js';
+import { fillGaps, retryHole, findBoundaryHole, findGaps, MIN_GAP_MS } from './gap-retry.js';
 import { SF_VOCAB_PROMPT } from './whisper-prompt.js';
 
 const TARGET_CHUNK = 20 * 1024 * 1024; // ~20MB, under the 25MB Whisper limit
 const TAIL_MARGIN  = 64 * 1024;        // extra bytes read past TARGET_CHUNK so
                                        // findChunkEnd can always find the next
                                        // frame boundary just past the limit.
+const COMPRESSION_RATIO_MAX = 2.4;     // Whisper's own "this segment is looping" threshold
 
 /**
  * Transcribe a full MP3 from R2, chunking on frame boundaries so each chunk
@@ -21,7 +22,9 @@ const TAIL_MARGIN  = 64 * 1024;        // extra bytes read past TARGET_CHUNK so
  * @param {string} key - R2 object key
  * @param {string} openaiApiKey - OpenAI API key
  * @param {object} [_resume] - Reserved for future resume support; unused.
- * @returns {{ segments: Array, durationMs: number, totalChunks: number }}
+ * @returns {{ segments: Array, durationMs: number, totalChunks: number, holes: Array }}
+ *   `holes` are stretches of 5+ minutes still without transcript after every
+ *   retry: long music, dead air, or audio Whisper couldn't recover.
  */
 export async function transcribeFromR2(bucket, key, openaiApiKey, _resume) {
   const head = await bucket.head(key);
@@ -32,6 +35,8 @@ export async function transcribeFromR2(bucket, key, openaiApiKey, _resume) {
   let timeOffset = 0;
   let fileOffset = 0;
   let chunkIdx = 0;
+  let prev = null; // the previous chunk, for holes that straddle a chunk boundary
+  const whisper = (clip, offsetSec) => transcribeChunk(clip, openaiApiKey, offsetSec);
 
   while (fileOffset < fileSize) {
     const windowLen = Math.min(TARGET_CHUNK + TAIL_MARGIN, fileSize - fileOffset);
@@ -51,10 +56,26 @@ export async function transcribeFromR2(bucket, key, openaiApiKey, _resume) {
     const chunkBytes = window.subarray(sliceStart, sliceEnd);
     const first = await transcribeChunk(chunkBytes, openaiApiKey, timeOffset);
     const duration = first.duration;
-    const segments = await fillGaps(chunkBytes, first.segments, timeOffset, duration,
-      (clip, offsetSec) => transcribeChunk(clip, openaiApiKey, offsetSec));
+    const { segments } = await fillGaps(chunkBytes, first.segments, timeOffset, duration, whisper);
+
+    // A hole that ends one chunk and starts the next is too short for either
+    // chunk's own check; retry both halves while the previous chunk's bytes
+    // are still in memory.
+    const chunkStartMs = Math.round(timeOffset * 1000);
+    if (prev) {
+      const hole = findBoundaryHole(prev.segments, prev.endMs, segments, chunkStartMs);
+      if (hole) {
+        const got = [
+          ...await retryHole(prev.bytes, prev.startSec, hole.prev, whisper),
+          ...await retryHole(chunkBytes, timeOffset, hole.cur, whisper),
+        ];
+        console.log(`  Boundary gap ${(hole.prev.startMs / 1000).toFixed(0)}s–${(hole.cur.endMs / 1000).toFixed(0)}s: recovered ${got.length} segments`);
+        allSegments.push(...got);
+      }
+    }
 
     allSegments.push(...segments);
+    prev = { bytes: chunkBytes, startSec: timeOffset, endMs: chunkStartMs + Math.round(duration * 1000), segments };
     timeOffset += duration;
     fileOffset += sliceEnd;
     chunkIdx++;
@@ -62,11 +83,17 @@ export async function transcribeFromR2(bucket, key, openaiApiKey, _resume) {
     console.log(`  Chunk ${chunkIdx}: ${chunkBytes.length} bytes, ${segments.length} segments, +${duration.toFixed(1)}s`);
   }
 
+  allSegments.sort((a, b) => a.start_ms - b.start_ms);
   const cleaned = cleanSegments(allSegments);
   const durationMs = Math.round(timeOffset * 1000);
   console.log(`  Total: ${cleaned.length} segments (${allSegments.length - cleaned.length} removed by cleaning), ${durationMs}ms`);
 
-  return { segments: cleaned, durationMs, totalChunks: chunkIdx };
+  const holes = findGaps(cleaned, 0, durationMs, MIN_GAP_MS);
+  if (holes.length > 0) {
+    console.warn(`  ${holes.length} hole(s) of 5+ min left: ${holes.map(h => `${Math.round(h.startMs / 60000)}–${Math.round(h.endMs / 60000)} min`).join(', ')}`);
+  }
+
+  return { segments: cleaned, durationMs, totalChunks: chunkIdx, holes };
 }
 
 /**
@@ -134,11 +161,22 @@ export async function transcribeChunk(chunkBytes, apiKey, timeOffsetSec) {
 
   const data = await res.json();
 
-  const segments = (data.segments || []).map(seg => ({
-    start_ms: Math.round((seg.start + timeOffsetSec) * 1000),
-    end_ms: Math.round((seg.end + timeOffsetSec) * 1000),
-    text: seg.text.trim(),
-  })).filter(seg => seg.text.length > 0 && !isMostlyNonLatin(seg.text) && !isPromptEcho(seg.text));
+  const segments = [];
+  for (const seg of data.segments || []) {
+    const text = (seg.text || '').trim();
+    if (!text || isMostlyNonLatin(text) || isPromptEcho(text)) continue;
+    // Whisper's own sign that a segment is looping ("the the the the …")
+    if (seg.compression_ratio > COMPRESSION_RATIO_MAX) continue;
+    // A line repeating one of the last few (Whisper stuck on a lyric) is dropped
+    // here, so fillGaps sees the stretch as a hole and retries it instead of
+    // treating the loop as speech.
+    if (segments.slice(-4).some(s => s.text === text)) continue;
+    segments.push({
+      start_ms: Math.round((seg.start + timeOffsetSec) * 1000),
+      end_ms: Math.round((seg.end + timeOffsetSec) * 1000),
+      text,
+    });
+  }
 
   return { segments, duration: data.duration || 0 };
 }
