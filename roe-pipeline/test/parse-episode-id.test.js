@@ -49,4 +49,9 @@ describe('parseEpisodeId', () => {
   it('ignores non-mp3 files', () => {
     expect(parseEpisodeId('Roll Over Easy 2026-03-27.jpg')).toBeNull();
   });
+
+  it('reads a name whose spaces were stored escaped, and survives a stray %', () => {
+    expect(parseEpisodeId('Roll%20Over%20Easy%202026-10-01.mp3')).toBe('roll-over-easy_2026-10-01_07-30-00');
+    expect(parseEpisodeId('Roll Over Easy 2026-10-01 100%.mp3')).toBe('roll-over-easy_2026-10-01_07-30-00');
+  });
 });

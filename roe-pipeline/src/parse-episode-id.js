@@ -17,8 +17,10 @@ const MONTH_DAY_2014 = {
 };
 
 export function parseEpisodeId(key) {
-  // Strip directory prefix if present
-  const filename = key.includes('/') ? key.split('/').pop() : key;
+  // Strip directory prefix if present. A name stored with its spaces escaped
+  // ("Roll%20Over%20Easy%202026-10-01.mp3", as `wrangler r2 object put --local`
+  // stores it) names the same episode.
+  const filename = decodeName(key.includes('/') ? key.split('/').pop() : key);
 
   // Only process MP3 files
   if (!filename.toLowerCase().endsWith('.mp3')) return null;
@@ -122,4 +124,12 @@ export function parseEpisodeId(key) {
   }
 
   return null;
+}
+
+function decodeName(name) {
+  try {
+    return decodeURIComponent(name);
+  } catch {
+    return name; // a stray "%" that isn't an escape
+  }
 }
