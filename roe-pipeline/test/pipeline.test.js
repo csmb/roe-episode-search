@@ -9,8 +9,10 @@ const CHUNK_BYTES = 1_000_000;   // ~16.7 minutes of the fake audio, like produc
 const CHUNK_SEC = Math.floor(CHUNK_BYTES / 26) * (576 / 22050);
 const T0 = Date.UTC(2026, 9, 1, 17, 0);
 
-// Speech everywhere, with the guest's name early on so the summary can keep her
-const speech = sec => (sec === 600 ? 'Heather Knight joins us this morning.' : `Line at ${Math.round(sec)} seconds.`);
+// Speech everywhere, naming the guest and a place so the summary and places steps keep them
+const speech = sec => (sec === 600 ? 'Heather Knight joins us this morning.'
+  : sec === 1200 ? 'Then we walked over to Dolores Park.'
+  : `Line at ${Math.round(sec)} seconds.`);
 
 function setup({ seconds = 50 * 60, fetch: fetchOpts = {}, env: envOver = {} } = {}) {
   const storage = new FakeStorage();

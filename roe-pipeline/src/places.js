@@ -4,6 +4,7 @@
  */
 
 import { apiError, PermanentError, TIMEOUT_MS } from './limits.js';
+import { placeMatchVariants } from './sentiment.js';
 
 const SF_VIEWBOX = '-122.517,37.833,-122.355,37.708';
 const NOMINATIM_DELAY_MS = 1100;
@@ -50,6 +51,28 @@ export function cleanPlaceNames(names) {
   const unique = [...new Set(names.filter(n => typeof n === 'string').map(n => n.trim()).filter(Boolean))];
   if (unique.length > MAX_PLACES) console.warn(`  ${unique.length} place names; keeping the first ${MAX_PLACES}`);
   return unique.slice(0, MAX_PLACES);
+}
+
+/**
+ * Keep only names the transcript mentions. GPT copies the examples in the
+ * prompt (Ocean Beach, Dolores Park, Coit Tower…) into its answer: on episodes
+ * since April, 46 of 206 place links named a place their transcript never
+ * mentions. A name counts when it appears as the sentiment step matches it
+ * ("Mission District" via "mission"). An intersection needs both of its
+ * streets ("17th Street & Valencia Street" via "17th" and "valencia"), so
+ * "24th & Mission" isn't kept on the strength of "Mission" alone.
+ */
+export function placesInTranscript(names, text) {
+  const haystack = text.toLowerCase();
+  const found = v => v.length >= 3 && haystack.includes(v);
+  const bare = side => side.replace(/\b(street|avenue|st|ave|boulevard|blvd)\b/g, '').replace(/\s+/g, ' ').trim();
+  return names.filter(name => {
+    const lower = name.toLowerCase().trim();
+    if (lower.includes('&')) {
+      return lower.split('&').every(side => found(side.trim()) || found(bare(side)));
+    }
+    return placeMatchVariants(name).some(found);
+  });
 }
 
 // SELECT id, name FROM places for many names, a few dozen at a time.
@@ -181,7 +204,11 @@ export async function extractAndSeedPlaces(db, episodeId, segments, openaiApiKey
     throw new PermanentError('The places reply was not readable JSON');
   }
   if (!Array.isArray(parsed)) throw new PermanentError('The places reply was not a list');
-  const placeNames = cleanPlaceNames(parsed);
+  const named = cleanPlaceNames(parsed);
+  const placeNames = placesInTranscript(named, text);
+  if (placeNames.length < named.length) {
+    console.log(`[${episodeId}] Dropped places the transcript never mentions: ${named.filter(n => !placeNames.includes(n)).join(', ')}`);
+  }
 
   if (placeNames.length === 0) {
     console.log(`[${episodeId}] No places found`);

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { transcriptForPlaces, cleanPlaceNames, extractAndSeedPlaces } from '../src/places.js';
+import { transcriptForPlaces, cleanPlaceNames, placesInTranscript, extractAndSeedPlaces } from '../src/places.js';
 import { makeD1 } from './helpers/fakes.js';
 
 describe('transcriptForPlaces', () => {
@@ -28,6 +28,19 @@ describe('cleanPlaceNames', () => {
     expect(cleanPlaceNames([' Dolores Park ', 'Dolores Park', '', 42, null, 'Ferry Building'])).toEqual(['Dolores Park', 'Ferry Building']);
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     expect(cleanPlaceNames(Array.from({ length: 200 }, (_, i) => `Place ${i}`))).toHaveLength(150);
+  });
+});
+
+describe('placesInTranscript', () => {
+  it('drops names the show never mentions, like the prompt\'s own examples', () => {
+    const text = 'We walked through Dolores this morning, then up 17th and Valencia to the Mission.';
+    expect(placesInTranscript(['Dolores Park', 'Ocean Beach', '17th Street & Valencia Street', 'Mission District', 'Coit Tower'], text))
+      .toEqual(['Dolores Park', '17th Street & Valencia Street', 'Mission District']);
+  });
+
+  it('keeps an intersection only when both streets are mentioned', () => {
+    expect(placesInTranscript(['24th & Mission'], 'Tacos in the Mission.')).toEqual([]);
+    expect(placesInTranscript(['24th Street & Mission Street'], 'Meet me at 24th and Mission.')).toEqual(['24th Street & Mission Street']);
   });
 });
 
@@ -91,7 +104,7 @@ describe('extractAndSeedPlaces', () => {
       .mockResolvedValueOnce(gpt('["Fake Nonexistent Place"]'))
       .mockResolvedValue({ ok: true, json: async () => [] });
 
-    const p = extractAndSeedPlaces(db, EP, [{ text: 'some text' }], 'sk-test');
+    const p = extractAndSeedPlaces(db, EP, [{ text: 'We love the Fake Nonexistent Place' }], 'sk-test');
     await vi.runAllTimersAsync();
     await p;
 
@@ -111,6 +124,13 @@ describe('extractAndSeedPlaces', () => {
     expect(linked()).toEqual(['Golden Gate Park']);
   });
 
+  it('never links a place the transcript does not mention', async () => {
+    db.sqlite.prepare('INSERT INTO places (name, lat, lng) VALUES (?, ?, ?)').run('Ocean Beach', 37.76, -122.51);
+    vi.spyOn(global, 'fetch').mockResolvedValueOnce(gpt('["Ocean Beach"]'));
+    await extractAndSeedPlaces(db, EP, [{ text: 'A quiet morning at the Ferry Building.' }], 'sk-test');
+    expect(linked()).toEqual([]);
+  });
+
   it('replaces an earlier run\'s links instead of adding to them', async () => {
     const add = db.sqlite.prepare('INSERT INTO places (name, lat, lng) VALUES (?, 37.7, -122.4)');
     add.run('Old Spot');
@@ -128,7 +148,7 @@ describe('extractAndSeedPlaces', () => {
     for (const n of names) add.run(n);
     vi.spyOn(global, 'fetch').mockResolvedValueOnce(gpt(JSON.stringify(names)));
 
-    await extractAndSeedPlaces(db, EP, [{ text: 'a long show' }], 'sk-test');   // the fake D1 throws past 100 parameters
+    await extractAndSeedPlaces(db, EP, [{ text: names.join(', ') }], 'sk-test');   // the fake D1 throws past 100 parameters
     expect(linked()).toHaveLength(150);
   });
 
@@ -148,7 +168,7 @@ describe('extractAndSeedPlaces', () => {
     vi.spyOn(global, 'fetch').mockResolvedValueOnce(gpt('["Golden Gate Park", "Brand New Cafe"]'));
     const warn = vi.fn();
 
-    await extractAndSeedPlaces(db, EP, [{ text: 'x' }], 'sk-test', { deadline: Date.now() - 1, warn });
+    await extractAndSeedPlaces(db, EP, [{ text: 'Golden Gate Park, then the Brand New Cafe' }], 'sk-test', { deadline: Date.now() - 1, warn });
     expect(global.fetch).toHaveBeenCalledTimes(1);   // no geocoding requests
     expect(linked()).toEqual(['Golden Gate Park']);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('1 new place name'));
