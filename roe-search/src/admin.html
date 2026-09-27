@@ -1213,6 +1213,9 @@ function playAt(audioUrl, startMs, title) {
 		audioPlayer.load();
 		audioPlayer.play().catch(() => {});
 	} else {
+		// Same src already loaded: seek now and clear any stale pendingSeek
+		// so a still-pending earlier load can't override this position.
+		pendingSeek = null;
 		audioPlayer.currentTime = startSeconds;
 		audioPlayer.play().catch(() => {});
 	}

@@ -533,6 +533,9 @@ function playEpisode(audioUrl, startSeconds, title) {
 		audioPlayer.load();
 		audioPlayer.play().catch(() => {});
 	} else {
+		// Same src already loaded: seek now and clear any stale pendingSeek
+		// so a still-pending earlier load can't override this position.
+		pendingSeek = 0;
 		audioPlayer.currentTime = startSeconds;
 		audioPlayer.play().catch(() => {});
 	}
