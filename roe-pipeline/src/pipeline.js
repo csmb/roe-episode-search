@@ -82,6 +82,11 @@ export class EpisodePipeline {
           const { segments, durationMs, totalChunks } = await transcribeFromR2(
             this.env.AUDIO_BUCKET, key, this.env.OPENAI_API_KEY, resume
           );
+          if (segments.length === 0) {
+            // Stop before anything is written: an empty episode would still get an
+            // invented AI title and summary.
+            throw new Error('Transcription came back empty; nothing was published. Check the audio file.');
+          }
 
           await this.storeSegments(segments);
           await this.state.storage.put('durationMs', durationMs);
@@ -111,7 +116,8 @@ export class EpisodePipeline {
 
         case 'summary': {
           const segments = await this.loadSegments();
-          await generateSummary(this.env.DB, episodeId, segments, this.env.OPENAI_API_KEY);
+          const durationMs = await this.state.storage.get('durationMs');
+          await generateSummary(this.env.DB, episodeId, segments, this.env.OPENAI_API_KEY, durationMs);
           await this.advanceStep('guest-start');
           break;
         }

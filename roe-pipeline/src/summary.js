@@ -3,13 +3,99 @@
  * Updates D1 with results.
  */
 
+import { PROMPT_TERMS, normalizeTerm } from './whisper-prompt.js';
+
+// Below either line the transcript is too thin to summarize honestly: GPT fills
+// the gaps with invented weather and guests (1/1/2015 has one transcript line
+// and a full summary). A healthy 2-hour show has ~2,000 segments.
+export const THIN_MIN_SEGMENTS = 200;
+export const THIN_MIN_COVERAGE = 0.3; // last transcript line / audio length
+
+export function isThinTranscript(segments, durationMs) {
+  if (segments.length < THIN_MIN_SEGMENTS) return true;
+  if (!durationMs) return false;
+  const lastEndMs = segments.reduce((max, s) => Math.max(max, s.end_ms), 0);
+  return lastEndMs < THIN_MIN_COVERAGE * durationMs;
+}
+
+/** Plain title for an episode we won't summarize, e.g. "Roll Over Easy · October 1, 2026". */
+export function neutralTitle(episodeId) {
+  const m = episodeId.match(/(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return 'Roll Over Easy';
+  const date = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 12));
+  return 'Roll Over Easy · ' + date.toLocaleDateString('en-US', {
+    timeZone: 'UTC', year: 'numeric', month: 'long', day: 'numeric',
+  });
+}
+
+const NAME_STOPWORDS = new Set(['the', 'and', 'from', 'with', 'of', 'dr', 'mr', 'mrs', 'ms']);
+const WORD_SPLIT = /[^\p{L}\p{N}'’-]+/u;
+
+// Edit distance, giving up early once it is over `max`.
+function editDistance(a, b, max) {
+  if (Math.abs(a.length - b.length) > max) return max + 1;
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    let rowMin = i;
+    for (let j = 1; j <= b.length; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      rowMin = Math.min(rowMin, cur[j]);
+    }
+    if (rowMin > max) return max + 1;
+    prev = cur;
+  }
+  return prev[b.length];
+}
+
+/**
+ * Keep only guests whose name has some support in the transcript, so a name GPT
+ * made up can't reach the guest list or "Skip to interview". A guest is kept when:
+ * - any name part of 3+ letters appears as a word, or
+ * - a part of 5+ letters is a near-miss (1 edit; 2 edits at 7+ letters) of a
+ *   capitalized word, since Whisper and GPT often spell names differently, or
+ * - it is a regular from the spelling hints (e.g. Suldrew), or
+ * - it has no part of 3+ letters ("DK", "2K"), which can't be checked.
+ * Measured on 703 reviewed guests with local transcripts: 1 would be dropped.
+ */
+export function guestsInTranscript(guests, transcriptText) {
+  const words = new Set(), capitalized = new Set();
+  for (const tok of transcriptText.split(WORD_SPLIT)) {
+    if (!tok) continue;
+    const lower = tok.toLowerCase();
+    words.add(lower);
+    if (/^\p{Lu}/u.test(tok)) capitalized.add(lower);
+  }
+  return guests.filter(g => {
+    if (typeof g !== 'string') return false;
+    if (PROMPT_TERMS.has(normalizeTerm(g))) return true;
+    const parts = g.toLowerCase().split(WORD_SPLIT).filter(p => p.length >= 3 && !NAME_STOPWORDS.has(p));
+    if (parts.length === 0) return true;
+    if (parts.some(p => words.has(p))) return true;
+    return parts.some(p => {
+      const max = p.length >= 7 ? 2 : p.length >= 5 ? 1 : 0;
+      if (!max) return false;
+      for (const w of capitalized) if (editDistance(p, w, max) <= max) return true;
+      return false;
+    });
+  });
+}
+
 /**
  * @param {D1Database} db
  * @param {string} episodeId
- * @param {Array<{text: string}>} segments
+ * @param {Array<{start_ms: number, end_ms: number, text: string}>} segments
  * @param {string} openaiApiKey
+ * @param {number} [durationMs] - audio length, for the thin-transcript check
  */
-export async function generateSummary(db, episodeId, segments, openaiApiKey) {
+export async function generateSummary(db, episodeId, segments, openaiApiKey, durationMs) {
+  if (isThinTranscript(segments, durationMs)) {
+    const title = neutralTitle(episodeId);
+    await db.prepare('UPDATE episodes SET title = ? WHERE id = ?').bind(title, episodeId).run();
+    console.warn(`  Transcript too thin to summarize (${segments.length} segments); titled "${title}", no summary or guests.`);
+    return { title, summary: null, guests: [], skipped: true };
+  }
+
   const transcriptText = segments.map(s => s.text).join('\n');
 
   // Extract date from episode ID
@@ -22,7 +108,7 @@ export async function generateSummary(db, episodeId, segments, openaiApiKey) {
     sunData = await fetchSunriseSunset(dateStr);
   }
 
-  // Build system prompt (matches scripts/process-episode.js exactly)
+  // System prompt. The local scripts keep their own copy (scripts/prompts.js), which has drifted.
   const systemLines = [
     'You summarize transcripts from "Roll Over Easy," a live morning radio show on BFF.fm broadcast from the Ferry Building in San Francisco.',
     '',
@@ -52,7 +138,7 @@ export async function generateSummary(db, episodeId, segments, openaiApiKey) {
       systemLines.push(`- Sunrise: ${sunData.sunrise} PT`);
       systemLines.push(`- Sunset: ${sunData.sunset} PT`);
     }
-    systemLines.push('Include the weather and temperature explicitly in your summary (pull temperature from what the hosts mention in the transcript). Also mention what time sunrise and sunset were that day.');
+    systemLines.push('Mention the weather and temperature only if the hosts talk about them in the transcript; never guess. Also mention what time sunrise and sunset were that day.');
   }
 
   const res = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -90,6 +176,13 @@ export async function generateSummary(db, episodeId, segments, openaiApiKey) {
   } catch {
     summary = content;
   }
+
+  const kept = guestsInTranscript(guests, transcriptText);
+  if (kept.length < guests.length) {
+    const dropped = guests.filter(g => !kept.includes(g));
+    console.warn(`  Dropped guest names not found in the transcript: ${dropped.join(', ')}`);
+  }
+  guests = kept;
 
   // Update D1
   if (title) {
