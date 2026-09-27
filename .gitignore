@@ -23,7 +23,7 @@ r2-cors.json
 # Batch processing checkpoint
 scripts/batch-progress.json
 scripts/backfill-sentiment-progress.json
-scripts/pipeline-errors.log
+scripts/*.log
 scripts/episode-manifest.json
 
 # Generated data artifacts from business harvester
@@ -43,6 +43,7 @@ scripts/.crossref-checkpoint.json
 
 # Local planning/spec scratchpads
 docs/superpowers/
+tasks/
 
 # superpowers plugin local state
 .superpowers/
