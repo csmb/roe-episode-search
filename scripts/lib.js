@@ -134,3 +134,22 @@ export function logWarn(message) {
 	console.warn(`  ${message}`);
 	fs.appendFileSync(path.join(projectRoot, 'scripts', 'pipeline-errors.log'), line + '\n');
 }
+
+// ── Audio ──────────────────────────────────────────────────────────────
+
+/**
+ * Convert an audio file to the .m4a the site streams (AAC 128k, faststart so
+ * the browser can seek before the whole file downloads). Returns the path of
+ * `converted.m4a` inside `tmpDir`. `-vn` drops embedded cover art, which ffmpeg
+ * otherwise tries to put in the .m4a as video and fails on.
+ */
+export function convertAudio(inputPath, tmpDir) {
+	const outPath = path.join(tmpDir, 'converted.m4a');
+	execFileSync('ffmpeg', [
+		'-nostdin', '-y', '-i', inputPath,
+		'-vn', '-c:a', 'aac', '-b:a', '128k',
+		'-movflags', '+faststart',
+		outPath,
+	], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
+	return outPath;
+}

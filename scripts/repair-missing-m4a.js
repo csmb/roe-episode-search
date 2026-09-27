@@ -23,8 +23,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { escapeSQL, wranglerExec, runSQL, queryJSON, projectRoot, parseEpisodeDate } from './lib.js';
-import { convertAudio } from './upload-audio.js';
+import { escapeSQL, wranglerExec, runSQL, queryJSON, projectRoot, parseEpisodeDate, convertAudio } from './lib.js';
 
 const R2_BUCKET = 'roe-audio';
 const R2_PUBLIC_URL = 'https://pub-e95bd2be3f9d4147b2955503d75e50c1.r2.dev';
