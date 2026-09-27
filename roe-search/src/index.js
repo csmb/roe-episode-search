@@ -673,11 +673,14 @@ async function rawMp3Key(episodeId, env) {
 
 async function handleEpisodeById(episodeId, env, request) {
 	try {
-		const { results } = await env.DB.prepare(
-			'SELECT id, title, duration_ms, summary FROM episodes WHERE id = ?1'
-		)
-			.bind(episodeId)
-			.all();
+		const [{ results }, { results: guestRows }] = await Promise.all([
+			env.DB.prepare(
+				'SELECT id, title, duration_ms, summary, guest_start_ms FROM episodes WHERE id = ?1'
+			).bind(episodeId).all(),
+			env.DB.prepare(
+				'SELECT guest_name FROM episode_guests WHERE episode_id = ?1'
+			).bind(episodeId).all(),
+		]);
 
 		if (results.length === 0) {
 			return json({ error: 'Episode not found' }, 404, request);
@@ -691,6 +694,8 @@ async function handleEpisodeById(episodeId, env, request) {
 				duration_ms: ep.duration_ms,
 				summary: ep.summary,
 				audio_file: `/audio/${ep.id}.m4a`,
+				guest_start_ms: ep.guest_start_ms,
+				guests: guestRows.map(r => r.guest_name),
 			},
 		}, 200, request);
 	} catch (err) {
