@@ -368,6 +368,8 @@ function formatGuestLabel(guests) {
 async function loadEpisodes() {
 	try {
 		const res = await fetch('/api/episodes');
+		// A 429 or 500 has a JSON body too, just no episodes: fail instead of saying there are none.
+		if (!res.ok) throw new Error('HTTP ' + res.status);
 		const data = await res.json();
 
 		if (!data.episodes || data.episodes.length === 0) {
@@ -453,7 +455,8 @@ async function loadEpisodes() {
 			episodesEl.appendChild(div);
 		}
 	} catch (err) {
-		statusEl.textContent = 'Error loading episodes: ' + err.message;
+		statusEl.textContent = "Couldn't load episodes — try again.";
+		console.error(err);
 	}
 }
 
@@ -513,6 +516,7 @@ const playPauseBtn = document.getElementById('play-pause-btn');
 let currentAudioSrc = '';
 let pendingSeek = 0;
 let activeBtn = null;
+let lastPlay = null; // playEpisode's last arguments, for trying a failed load again
 
 function formatTime(seconds) {
 	const h = Math.floor(seconds / 3600);
@@ -523,6 +527,7 @@ function formatTime(seconds) {
 }
 
 function playEpisode(audioUrl, startSeconds, title) {
+	lastPlay = [audioUrl, startSeconds, title];
 	playerBar.classList.add('active');
 	playerTitle.textContent = title;
 
@@ -570,7 +575,18 @@ audioPlayer.addEventListener('ended', () => {
 	playPauseBtn.textContent = '\u25B6\uFE0F';
 });
 
+// The file is missing or the connection dropped: say so. Forgetting the src makes the
+// next play of this episode load it again.
+audioPlayer.addEventListener('error', () => {
+	currentAudioSrc = '';
+	audioPlayer.pause();
+	if (activeBtn) { activeBtn.classList.remove('playing'); activeBtn = null; }
+	playerTitle.textContent = "Couldn't load the audio — try again.";
+});
+
 playPauseBtn.addEventListener('click', () => {
+	// After a failed load, play tries it again.
+	if (audioPlayer.error && lastPlay) return playEpisode(...lastPlay);
 	if (audioPlayer.paused) audioPlayer.play().catch(() => {});
 	else audioPlayer.pause();
 });

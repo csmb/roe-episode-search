@@ -189,6 +189,7 @@ function escapeHtml(str) {
 async function loadGuests() {
 	try {
 		const res = await fetch('/api/guests');
+		if (!res.ok) throw new Error('HTTP ' + res.status);
 		const data = await res.json();
 		const guests = (data.guests || []).filter(g => !HOST_NAMES.has(g.name));
 
@@ -252,7 +253,8 @@ async function loadGuests() {
 			}
 		}
 	} catch (err) {
-		statusEl.textContent = 'Error loading guests: ' + err.message;
+		statusEl.textContent = "Couldn't load guests — try again.";
+		console.error(err);
 	}
 }
 

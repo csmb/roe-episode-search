@@ -710,25 +710,44 @@ function showError(msg) {
 
 // ── Data loading ───────────────────────────────────────────────────────
 
+// The status and parsed body of a GET; body is null when the request or the server failed.
+async function getJson(url, options) {
+	try {
+		const res = await fetch(url, options);
+		return { status: res.status, body: res.ok ? await res.json() : null };
+	} catch (err) {
+		console.error(url, err);
+		return { status: 0, body: null };
+	}
+}
+
 async function loadAndRender() {
-	const [g, queueRes] = await Promise.all([
-		fetch('/api/guests').then(r => r.json()),
-		fetch('/api/admin/unreviewed', {
+	const [g, q] = await Promise.all([
+		getJson('/api/guests'),
+		getJson('/api/admin/unreviewed', {
 			headers: { 'X-Admin-Password': getPassword() },
 		}),
 	]);
-	if (queueRes.status === 401) {
+	if (q.status === 401) {
 		// Saved password no longer works (changed or cleared): drop it and show the login again.
 		sessionStorage.removeItem('admin_pw');
 		location.reload();
 		return;
 	}
-	const q = await queueRes.json();
-	allGuests = g.guests || [];
-	queueEpisodes = q.episodes || [];
-	renderGuests();
-	renderQueue();
-	updateBadge();
+	// A failed load says so instead of showing an empty list.
+	if (g.body) {
+		allGuests = g.body.guests || [];
+		renderGuests();
+	} else {
+		document.getElementById('guests-status').textContent = "Couldn't load guests — try again.";
+	}
+	if (q.body) {
+		queueEpisodes = q.body.episodes || [];
+		renderQueue();
+		updateBadge();
+	} else {
+		document.getElementById('queue-status').textContent = "Couldn't load the review queue — try again.";
+	}
 }
 
 function updateBadge() {
@@ -1202,6 +1221,7 @@ const playerTitle = document.getElementById('player-title');
 const audioPlayer = document.getElementById('audio-player');
 let currentAudioSrc = '';
 let pendingSeek = null;
+let lastPlay = null; // playAt's last arguments, for trying a failed load again
 
 audioPlayer.addEventListener('loadedmetadata', () => {
 	if (pendingSeek !== null) {
@@ -1212,6 +1232,7 @@ audioPlayer.addEventListener('loadedmetadata', () => {
 
 function playAt(audioUrl, startMs, title) {
 	const startSeconds = startMs / 1000;
+	lastPlay = [audioUrl, startMs, title];
 	playerBar.classList.add('active');
 	playerTitle.textContent = title + ' \u00b7 ' + formatSearchTime(startMs);
 
@@ -1232,6 +1253,8 @@ function playAt(audioUrl, startMs, title) {
 
 // Controls
 document.getElementById('play-pause-btn').addEventListener('click', () => {
+	// After a failed load, play tries it again.
+	if (audioPlayer.error && lastPlay) return playAt(...lastPlay);
 	if (audioPlayer.paused) audioPlayer.play().catch(() => {});
 	else audioPlayer.pause();
 });
@@ -1280,6 +1303,13 @@ audioPlayer.addEventListener('pause', () => {
 audioPlayer.addEventListener('ended', () => {
 	playerBar.classList.remove('playing');
 	document.getElementById('play-pause-btn').textContent = '\u25B6\uFE0F';
+});
+// The file is missing or the connection dropped: say so. Forgetting the src makes the
+// next play of this episode load it again.
+audioPlayer.addEventListener('error', () => {
+	currentAudioSrc = '';
+	audioPlayer.pause();
+	playerTitle.textContent = "Couldn't load the audio — try again.";
 });
 
 // ── Init ───────────────────────────────────────────────────────────────

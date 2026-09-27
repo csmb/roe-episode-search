@@ -507,6 +507,7 @@ document.addEventListener('click', (e) => {
 
 let currentAudioSrc = '';
 let pendingSeek = null;
+let lastPlay = null; // playAt's last arguments, for trying a failed load again
 
 // Seek once the browser has enough data
 audioPlayer.addEventListener('loadedmetadata', () => {
@@ -526,6 +527,7 @@ if (params.get('episode')) {
 }
 function playAt(audioUrl, startMs, title) {
 	const startSeconds = startMs / 1000;
+	lastPlay = [audioUrl, startMs, title];
 	playerBar.classList.add('active');
 	setupMarquee(title + ' \u00b7 ' + formatTime(startMs));
 
@@ -544,12 +546,21 @@ function playAt(audioUrl, startMs, title) {
 	}
 }
 
+// A shared link that fails would otherwise leave the top of the page blank.
+function showClipError(message) {
+	clipCardEl.innerHTML = '<div class="episode"><div class="clip-label">Shared Clip</div><div class="episode-summary">' + escapeHtml(message) + '</div></div>';
+}
+
 async function loadClip(episodeId, startMs) {
 	try {
 		const res = await fetch('/api/episode/' + encodeURIComponent(episodeId));
-		if (!res.ok) return;
+		if (res.status === 404) {
+			showClipError("Couldn't find that episode.");
+			return;
+		}
+		if (!res.ok) throw new Error('HTTP ' + res.status);
 		const data = await res.json();
-		if (data.error || !data.episode) return;
+		if (!data.episode) throw new Error('No episode in the response');
 
 		const ep = data.episode;
 		const dateStr = parseEpisodeDate(ep.id);
@@ -600,7 +611,8 @@ async function loadClip(episodeId, startMs) {
 			playAt(ep.audio_file, startMs, ep.title);
 		}
 	} catch (err) {
-		// Silently fail
+		showClipError("Couldn't load this episode — try again.");
+		console.error(err);
 	}
 }
 
@@ -801,6 +813,8 @@ function setupMarquee(text) {
 
 // Controls
 document.getElementById('play-pause-btn').addEventListener('click', () => {
+	// After a failed load, play tries it again.
+	if (audioPlayer.error && lastPlay) return playAt(...lastPlay);
 	if (audioPlayer.paused) audioPlayer.play().catch(() => {});
 	else audioPlayer.pause();
 });
@@ -862,6 +876,13 @@ audioPlayer.addEventListener('ended', () => {
 	playerBar.classList.remove('playing');
 	document.getElementById('play-pause-btn').textContent = '\u25B6\uFE0F';
 	stopWaveform();
+});
+// The file is missing or the connection dropped: say so. Forgetting the src makes the
+// next play of this episode load it again.
+audioPlayer.addEventListener('error', () => {
+	currentAudioSrc = '';
+	audioPlayer.pause();
+	setupMarquee("Couldn't load the audio — try again.");
 });
 
 // Waveform visualization (decorative). Don't route the <audio> element through
