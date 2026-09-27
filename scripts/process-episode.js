@@ -403,11 +403,16 @@ function transcribe(mp3Path, episodeId, force) {
 function seedDB(episodeId, force) {
 	const timer = stepTimer('SEED-DB');
 
-	// The episodes row is inserted AFTER all segments and acts as the
-	// completion marker for this step: a crash mid-seed leaves no row, so
-	// the next run re-seeds instead of skipping a half-seeded episode.
+	// transcript_segments.episode_id has a foreign key to episodes, so the
+	// episodes row must exist before segments are inserted (and must never be
+	// deleted while segments or guests reference it). The duration_ms update
+	// after all segments land is the completion marker: a crash mid-seed
+	// leaves duration_ms NULL, so the next run re-seeds instead of skipping.
 	if (!force) {
-		const existing = queryJSON(`SELECT id FROM episodes WHERE id = '${escapeSQL(episodeId)}'`);
+		const existing = queryJSON(
+			`SELECT id FROM episodes WHERE id = '${escapeSQL(episodeId)}' AND duration_ms IS NOT NULL
+			 AND EXISTS (SELECT 1 FROM transcript_segments WHERE episode_id = '${escapeSQL(episodeId)}')`
+		);
 		if (existing.length > 0) {
 			timer.done('episode already in DB, skipping');
 			return;
@@ -428,10 +433,13 @@ function seedDB(episodeId, force) {
 
 	// Clear partial segments from a previously crashed seed (no-op on a
 	// clean run); under --force this also clears the old complete seed.
+	// An existing episodes row is kept (audio_file, title, etc. survive a
+	// re-seed); a new one is created with NULL duration until seeding finishes.
 	runSQL(`DELETE FROM transcript_segments WHERE episode_id = '${escapeSQL(episodeId)}'`);
-	if (force) {
-		runSQL(`DELETE FROM episodes WHERE id = '${escapeSQL(episodeId)}'`);
-	}
+	runSQL(`UPDATE episodes SET duration_ms = NULL WHERE id = '${escapeSQL(episodeId)}'`);
+	runSQL(
+		`INSERT OR IGNORE INTO episodes (id, title) VALUES ('${escapeSQL(episodeId)}', '${escapeSQL(episodeId)}')`
+	);
 
 	// Insert segments in batches
 	for (let i = 0; i < segments.length; i += DB_BATCH_SIZE) {
@@ -442,12 +450,10 @@ function seedDB(episodeId, force) {
 		runSQL(`INSERT INTO transcript_segments (episode_id, start_ms, end_ms, text) VALUES ${values}`);
 	}
 
-	// Insert episode record last — the completion marker
+	// Set duration last — the completion marker
 	const lastSegment = segments[segments.length - 1];
 	const durationMs = lastSegment ? lastSegment.end_ms : 0;
-	runSQL(
-		`INSERT INTO episodes (id, title, duration_ms) VALUES ('${escapeSQL(episodeId)}', '${escapeSQL(episodeId)}', ${durationMs})`
-	);
+	runSQL(`UPDATE episodes SET duration_ms = ${durationMs} WHERE id = '${escapeSQL(episodeId)}'`);
 
 	timer.done(`${segments.length} segments inserted`);
 	purgeEpisode(episodeId);
