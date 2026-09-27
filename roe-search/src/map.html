@@ -285,12 +285,17 @@
 			listEl.classList.remove('hidden');
 		}
 
+		// Search results and ?place= links open a place the same way: the marker's click
+		// handler (bottom sheet on phones, detail popup on desktop).
+		function openPlace(circle) {
+			map.flyTo(circle.getLatLng(), 17, { duration: 0.6 });
+			circle.fire('click');
+		}
+
 		function selectResult(name, input, list) {
 			const marker = markersByName.get(name);
 			if (!marker) return;
-			const latlng = marker.getLatLng();
-			map.flyTo(latlng, 17, { duration: 0.6 });
-			marker.openPopup();
+			openPlace(marker);
 			input.value = '';
 			list.classList.add('hidden');
 			list.innerHTML = '';
@@ -564,6 +569,9 @@
 					let closeTimer = null;
 					circle.on('mouseover', () => {
 						clearTimeout(closeTimer);
+						// An open detail view stays until it's closed. Otherwise a marker that
+						// flies under the pointer after a search pick would replace it.
+						if (resetActiveDetailFlag) return;
 						circle.openPopup();
 					});
 					circle.on('mouseout', () => {
@@ -618,6 +626,9 @@
 			list.addEventListener('click', (e) => {
 				const row = e.target.closest('li[data-name]');
 				if (!row) return;
+				// selectResult empties the list, so Leaflet can no longer tell this click came
+				// from the search box: it would take it for a map click and close the popup.
+				L.DomEvent.stopPropagation(e);
 				selectResult(row.dataset.name, input, list);
 			});
 
@@ -658,8 +669,7 @@
 			if (!name) return;
 			const circle = markersByName.get(name);
 			if (!circle) { console.warn('Unknown place in URL:', name); return; }
-			map.flyTo(circle.getLatLng(), 17, { duration: 0.6 });
-			circle.fire('click');
+			openPlace(circle);
 		}
 
 		loadPlaces().then(applyDeepLink).catch(err => {
