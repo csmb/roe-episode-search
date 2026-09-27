@@ -58,7 +58,9 @@ export default {
   /**
    * Fetch handler for manual triggering and status checks.
    *
-   * POST /process?key=filename.mp3 — manually trigger pipeline
+   * POST /process?key=filename.mp3 — start a run, or resume one that failed or
+   *      has been silent for an hour (&force=1 wakes a live one now; &restart=1
+   *      starts over from scratch, only before the episode is published)
    * GET  /status?key=filename.mp3  — check pipeline status
    * GET  /                         — health check
    *
@@ -85,12 +87,14 @@ export default {
       const key = url.searchParams.get('key');
       if (!key) return Response.json({ error: 'Missing ?key= parameter' }, { status: 400 });
 
+      const force = url.searchParams.get('force') === '1';
+      const restart = url.searchParams.get('restart') === '1';
       const doId = env.EPISODE_PIPELINE.idFromName(key);
       const stub = env.EPISODE_PIPELINE.get(doId);
       const res = await stub.fetch('http://internal/process', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ key }),
+        body: JSON.stringify({ key, force, restart }),
       });
       return res;
     }

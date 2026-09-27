@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { isThinTranscript, neutralTitle, guestsInTranscript, generateSummary } from '../src/summary.js';
+import { isThinTranscript, neutralTitle, guestsInTranscript, composeSummary } from '../src/summary.js';
 
 afterEach(() => { vi.unstubAllGlobals(); });
 
@@ -60,17 +60,49 @@ describe('guestsInTranscript', () => {
   });
 });
 
-describe('generateSummary on a thin transcript', () => {
-  it('skips GPT and sets a neutral title', async () => {
+describe('composeSummary', () => {
+  const EP = 'roll-over-easy_2026-10-01_07-30-00';
+  const show = segs(2000, 3600).map((s, i) => ({ ...s, text: i === 50 ? 'Say hi to Heather Knight and Sequoia.' : `Line ${i}.` }));
+  const chat = (content, finish_reason = 'stop') => Response.json({ choices: [{ message: { content }, finish_reason }] });
+  function stubOpenAI(reply) {
+    const calls = [];
+    vi.stubGlobal('fetch', vi.fn(async (url, init) => {
+      calls.push({ url: String(url), init });
+      if (String(url).includes('sunrise-sunset')) return Response.json({ status: 'OK', results: { sunrise: '2026-10-01T14:07:00+00:00', sunset: '2026-10-02T01:52:00+00:00' } });
+      return reply();
+    }));
+    return calls;
+  }
+
+  it('skips GPT for a thin transcript and gives it a neutral title', async () => {
     const fetchSpy = vi.fn();
     vi.stubGlobal('fetch', fetchSpy);
-    const writes = [];
-    const db = { prepare: sql => ({ bind: (...args) => ({ run: async () => { writes.push({ sql, args }); } }) }) };
-
-    const out = await generateSummary(db, 'roll-over-easy_2015-01-01_07-30-00', segs(1), 'sk-test', TWO_HOURS);
-
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const out = await composeSummary('roll-over-easy_2015-01-01_07-30-00', segs(1), 'sk-test', TWO_HOURS);
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(out).toEqual({ title: 'Roll Over Easy · January 1, 2015', summary: null, guests: [], skipped: true });
-    expect(writes).toEqual([{ sql: 'UPDATE episodes SET title = ? WHERE id = ?', args: ['Roll Over Easy · January 1, 2015', 'roll-over-easy_2015-01-01_07-30-00'] }]);
+  });
+
+  it('returns the title, summary and the guests who are in the transcript, never the hosts', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const calls = stubOpenAI(() => chat(JSON.stringify({ title: 'Stairway Streets!', summary: 'Foggy.', guests: ['Heather Knight', 'Sequoia', 'The Early Bird', 'Mia Chen'] })));
+    const out = await composeSummary(EP, show, 'sk-test', TWO_HOURS);
+    expect(out).toEqual({ title: 'Stairway Streets!', summary: 'Foggy.', guests: ['Heather Knight'] });
+    expect(calls.every(c => c.init?.signal instanceof AbortSignal)).toBe(true);
+  });
+
+  it('throws on a cut-off or unreadable reply instead of publishing it', async () => {
+    stubOpenAI(() => chat('{"title": "Stairway', 'length'));
+    await expect(composeSummary(EP, show, 'sk-test', TWO_HOURS)).rejects.toThrow('cut off');
+    stubOpenAI(() => chat('Sure! Here is a summary of the show.'));
+    await expect(composeSummary(EP, show, 'sk-test', TWO_HOURS)).rejects.toThrow('not readable');
+  });
+
+  it('marks a 4xx answer as permanent and a 5xx as worth retrying', async () => {
+    stubOpenAI(() => new Response('bad key', { status: 401 }));
+    await expect(composeSummary(EP, show, 'sk-test', TWO_HOURS)).rejects.toMatchObject({ permanent: true });
+    stubOpenAI(() => new Response('overloaded', { status: 503 }));
+    await expect(composeSummary(EP, show, 'sk-test', TWO_HOURS)).rejects.not.toHaveProperty('permanent');
   });
 });

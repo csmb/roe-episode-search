@@ -1,6 +1,10 @@
 /**
  * Generate windowed embeddings and upsert to Vectorize.
+ * Vector IDs come from the episode and each window's start, so running this
+ * again for the same transcript overwrites the same vectors.
  */
+
+import { PermanentError, TIMEOUT_MS, withTimeout } from './limits.js';
 
 const WINDOW_SEC = 45;
 const STEP_SEC = 35;
@@ -20,6 +24,7 @@ function isAscii(text) {
  * @returns {number} Number of vectors upserted
  */
 export async function generateEmbeddings(ai, vectorize, episodeId, segments, durationMs) {
+  if (!ai || !vectorize) throw new PermanentError('The AI or VECTORIZE binding is missing');
   if (segments.length === 0) return 0;
 
   // Build windowed chunks
@@ -60,7 +65,7 @@ export async function generateEmbeddings(ai, vectorize, episodeId, segments, dur
     const batch = chunks.slice(i, i + EMBED_BATCH_SIZE);
     const texts = batch.map(c => c.text);
 
-    const result = await ai.run('@cf/baai/bge-base-en-v1.5', { text: texts });
+    const result = await withTimeout(ai.run('@cf/baai/bge-base-en-v1.5', { text: texts }), TIMEOUT_MS.ai, 'Workers AI');
 
     for (let j = 0; j < batch.length; j++) {
       vectors.push({
@@ -76,7 +81,7 @@ export async function generateEmbeddings(ai, vectorize, episodeId, segments, dur
   // Upsert to Vectorize in batches
   for (let i = 0; i < vectors.length; i += UPSERT_BATCH_SIZE) {
     const batch = vectors.slice(i, i + UPSERT_BATCH_SIZE);
-    await vectorize.upsert(batch);
+    await withTimeout(vectorize.upsert(batch), TIMEOUT_MS.ai, 'Vectorize upsert');
     console.log(`  Upserted ${Math.min(i + UPSERT_BATCH_SIZE, vectors.length)}/${vectors.length}`);
   }
 

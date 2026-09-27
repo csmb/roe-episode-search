@@ -82,6 +82,22 @@ export function cleanSegments(segments) {
 }
 
 /**
+ * Drop every copy of a line longer than 20 characters that appears more than 20
+ * times: a lyric or phrase Whisper got stuck on across the show. This used to
+ * run in D1 after seeding; running it here means the database, search and the
+ * summary all see the same lines.
+ */
+export function dropRepeatedLines(segments) {
+  const counts = new Map();
+  for (const seg of segments) counts.set(seg.text, (counts.get(seg.text) || 0) + 1);
+  const looped = new Set([...counts].filter(([text, n]) => n > 20 && text.length > 20).map(([text]) => text));
+  if (looped.size === 0) return segments;
+  const kept = segments.filter(seg => !looped.has(seg.text));
+  console.log(`  Dropped ${segments.length - kept.length} repeated lines (${looped.size} phrase(s))`);
+  return kept;
+}
+
+/**
  * Detect internal looping: a phrase of 3-8 words repeating 4+ times consecutively.
  */
 function hasInternalLoop(text) {

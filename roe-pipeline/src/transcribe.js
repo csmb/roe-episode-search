@@ -1,99 +1,138 @@
 /**
- * Transcribe an MP3 from R2 using OpenAI Whisper API.
- * Handles files >25MB by chunking and stitching timestamps.
+ * Transcribe an MP3 from R2 using OpenAI Whisper API, one ~20 MB chunk at a time.
+ *
+ * Files over Whisper's 25 MB limit are cut on MP3 frame boundaries, so each
+ * chunk is a self-contained stream Whisper can decode alone. The pipeline sends
+ * one chunk per alarm and stores the result before the next, so a long show
+ * never has to fit in one alarm's 15 minutes, and a crash costs one chunk.
  */
 
-import { cleanSegments, isMostlyNonLatin, isPromptEcho } from './clean-segments.js';
+import { cleanSegments, dropRepeatedLines, isMostlyNonLatin, isPromptEcho } from './clean-segments.js';
 import { pickChunkSlice } from './mp3-frames.js';
 import { fillGaps, retryHole, findBoundaryHole, findGaps, MIN_GAP_MS } from './gap-retry.js';
 import { SF_VOCAB_PROMPT } from './whisper-prompt.js';
+import { apiError, PermanentError, TIMEOUT_MS } from './limits.js';
 
-const TARGET_CHUNK = 20 * 1024 * 1024; // ~20MB, under the 25MB Whisper limit
+export const TARGET_CHUNK = 20 * 1024 * 1024; // ~20MB, under the 25MB Whisper limit
 const TAIL_MARGIN  = 64 * 1024;        // extra bytes read past TARGET_CHUNK so
                                        // findChunkEnd can always find the next
                                        // frame boundary just past the limit.
 const COMPRESSION_RATIO_MAX = 2.4;     // Whisper's own "this segment is looping" threshold
 
 /**
- * Transcribe a full MP3 from R2, chunking on frame boundaries so each chunk
- * is a self-contained mp3 stream that Whisper can decode in isolation.
+ * Progress of a new transcription of the R2 object `head` describes. The size
+ * and etag let a later alarm notice that the file was replaced mid-run.
+ */
+export function newTranscription(head) {
+  return { size: head.size, etag: head.etag, fileOffset: 0, timeOffset: 0, chunks: 0, prev: null };
+}
+
+/** True once every byte of the file has been sent to Whisper. */
+export function transcriptionDone(tx) {
+  return tx.fileOffset >= tx.size;
+}
+
+/**
+ * Transcribe the chunk at `tx.fileOffset`, retrying holes Whisper left in it.
  *
  * @param {R2Bucket} bucket - R2 bucket binding
  * @param {string} key - R2 object key
  * @param {string} openaiApiKey - OpenAI API key
- * @param {object} [_resume] - Reserved for future resume support; unused.
- * @returns {{ segments: Array, durationMs: number, totalChunks: number, holes: Array }}
- *   `holes` are stretches of 5+ minutes still without transcript after every
- *   retry: long music, dead air, or audio Whisper couldn't recover.
+ * @param {object} tx - progress from newTranscription() or the previous call
+ * @param {object} [opts]
+ * @param {Array} [opts.prevSegments] - the previous chunk's own segments, for a
+ *   hole that straddles the boundary between the two chunks
+ * @param {number} [opts.deadline] - epoch ms after which no more retry clips are
+ *   sent, so the alarm finishes in time; those stretches stay holes
+ * @returns {{ tx: object, segments: Array, boundary: Array }} the advanced
+ *   progress, this chunk's segments, and any recovered across the boundary
  */
-export async function transcribeFromR2(bucket, key, openaiApiKey, _resume) {
-  const head = await bucket.head(key);
-  if (!head) throw new Error(`R2 object not found: ${key}`);
-  const fileSize = head.size;
+export async function transcribeNextChunk(bucket, key, openaiApiKey, tx, { prevSegments = [], deadline = Infinity, targetChunk = TARGET_CHUNK } = {}) {
+  const windowLen = Math.min(targetChunk + TAIL_MARGIN, tx.size - tx.fileOffset);
+  const window = await readRange(bucket, key, tx.fileOffset, windowLen);
 
-  const allSegments = [];
-  let timeOffset = 0;
-  let fileOffset = 0;
-  let chunkIdx = 0;
-  let prev = null; // the previous chunk, for holes that straddle a chunk boundary
-  const whisper = (clip, offsetSec) => transcribeChunk(clip, openaiApiKey, offsetSec);
-
-  while (fileOffset < fileSize) {
-    const windowLen = Math.min(TARGET_CHUNK + TAIL_MARGIN, fileSize - fileOffset);
-
-    const obj = await bucket.get(key, { range: { offset: fileOffset, length: windowLen } });
-    if (!obj) throw new Error(`Failed to read R2 range: offset=${fileOffset}, length=${windowLen} (key: ${key})`);
-    const window = new Uint8Array(await obj.arrayBuffer());
-
-    const isLastChunk = (fileOffset + windowLen) >= fileSize;
-    let sliceStart, sliceEnd;
-    try {
-      ({ sliceStart, sliceEnd } = pickChunkSlice(window, fileOffset, isLastChunk, TARGET_CHUNK));
-    } catch (err) {
-      throw new Error(`Chunker failed at file offset ${fileOffset} (key: ${key}): ${err.message}`);
-    }
-
-    const chunkBytes = window.subarray(sliceStart, sliceEnd);
-    const first = await transcribeChunk(chunkBytes, openaiApiKey, timeOffset);
-    const duration = first.duration;
-    const { segments } = await fillGaps(chunkBytes, first.segments, timeOffset, duration, whisper);
-
-    // A hole that ends one chunk and starts the next is too short for either
-    // chunk's own check; retry both halves while the previous chunk's bytes
-    // are still in memory.
-    const chunkStartMs = Math.round(timeOffset * 1000);
-    if (prev) {
-      const hole = findBoundaryHole(prev.segments, prev.endMs, segments, chunkStartMs);
-      if (hole) {
-        const got = [
-          ...await retryHole(prev.bytes, prev.startSec, hole.prev, whisper),
-          ...await retryHole(chunkBytes, timeOffset, hole.cur, whisper),
-        ];
-        console.log(`  Boundary gap ${(hole.prev.startMs / 1000).toFixed(0)}s–${(hole.cur.endMs / 1000).toFixed(0)}s: recovered ${got.length} segments`);
-        allSegments.push(...got);
-      }
-    }
-
-    allSegments.push(...segments);
-    prev = { bytes: chunkBytes, startSec: timeOffset, endMs: chunkStartMs + Math.round(duration * 1000), segments };
-    timeOffset += duration;
-    fileOffset += sliceEnd;
-    chunkIdx++;
-
-    console.log(`  Chunk ${chunkIdx}: ${chunkBytes.length} bytes, ${segments.length} segments, +${duration.toFixed(1)}s`);
+  const isLastChunk = (tx.fileOffset + windowLen) >= tx.size;
+  let sliceStart, sliceEnd;
+  try {
+    ({ sliceStart, sliceEnd } = pickChunkSlice(window, tx.fileOffset, isLastChunk, targetChunk));
+  } catch (err) {
+    throw new PermanentError(`Chunker failed at file offset ${tx.fileOffset} (key: ${key}): ${err.message}`);
   }
 
-  allSegments.sort((a, b) => a.start_ms - b.start_ms);
-  const cleaned = cleanSegments(allSegments);
-  const durationMs = Math.round(timeOffset * 1000);
-  console.log(`  Total: ${cleaned.length} segments (${allSegments.length - cleaned.length} removed by cleaning), ${durationMs}ms`);
+  const chunkBytes = window.subarray(sliceStart, sliceEnd);
+  const timeOffset = tx.timeOffset;
+  const first = await transcribeChunk(chunkBytes, openaiApiKey, timeOffset);
+  const duration = first.duration;
+  const whisper = retryWhisper(openaiApiKey, deadline);
+  const { segments } = await fillGaps(chunkBytes, first.segments, timeOffset, duration, whisper);
+
+  // A hole that ends one chunk and starts the next is too short for either
+  // chunk's own check; retry both halves. The previous chunk's bytes went with
+  // the alarm that sent them, so read them from R2 again.
+  const chunkStartMs = Math.round(timeOffset * 1000);
+  let boundary = [];
+  if (tx.prev) {
+    const hole = findBoundaryHole(prevSegments, tx.prev.endMs, segments, chunkStartMs);
+    if (hole) {
+      const prevBytes = await readRange(bucket, key, tx.prev.byteStart, tx.prev.byteEnd - tx.prev.byteStart);
+      boundary = [
+        ...await retryHole(prevBytes, tx.prev.startSec, hole.prev, whisper),
+        ...await retryHole(chunkBytes, timeOffset, hole.cur, whisper),
+      ];
+      console.log(`  Boundary gap ${(hole.prev.startMs / 1000).toFixed(0)}s–${(hole.cur.endMs / 1000).toFixed(0)}s: recovered ${boundary.length} segments`);
+    }
+  }
+
+  const next = {
+    ...tx,
+    fileOffset: tx.fileOffset + sliceEnd,
+    timeOffset: timeOffset + duration,
+    chunks: tx.chunks + 1,
+    prev: {
+      byteStart: tx.fileOffset + sliceStart,
+      byteEnd: tx.fileOffset + sliceEnd,
+      startSec: timeOffset,
+      endMs: chunkStartMs + Math.round(duration * 1000),
+    },
+  };
+  console.log(`  Chunk ${next.chunks}: ${chunkBytes.length} bytes, ${segments.length} segments, +${duration.toFixed(1)}s`);
+  return { tx: next, segments, boundary };
+}
+
+/**
+ * Put the stored chunks together: sort, clean, and list the stretches of 5+
+ * minutes still without transcript after every retry (long music, dead air,
+ * or audio Whisper couldn't recover).
+ *
+ * @param {Array} segments - every chunk's segments plus the boundary recoveries
+ * @param {number} durationMs - length of the audio
+ * @returns {{ segments: Array, holes: Array<{startMs: number, endMs: number}> }}
+ */
+export function finishTranscription(segments, durationMs) {
+  const sorted = [...segments].sort((a, b) => a.start_ms - b.start_ms);
+  const cleaned = dropRepeatedLines(cleanSegments(sorted));
+  console.log(`  Total: ${cleaned.length} segments (${sorted.length - cleaned.length} removed by cleaning), ${durationMs}ms`);
 
   const holes = findGaps(cleaned, 0, durationMs, MIN_GAP_MS);
   if (holes.length > 0) {
     console.warn(`  ${holes.length} hole(s) of 5+ min left: ${holes.map(h => `${Math.round(h.startMs / 60000)}–${Math.round(h.endMs / 60000)} min`).join(', ')}`);
   }
+  return { segments: cleaned, holes };
+}
 
-  return { segments: cleaned, durationMs, totalChunks: chunkIdx, holes };
+async function readRange(bucket, key, offset, length) {
+  const obj = await bucket.get(key, { range: { offset, length } });
+  if (!obj) throw new Error(`Failed to read R2 range: offset=${offset}, length=${length} (key: ${key})`);
+  return new Uint8Array(await obj.arrayBuffer());
+}
+
+// Retry clips get a shorter time limit, and stop once the alarm's time budget is
+// spent. retryHole logs and skips a clip that throws, so the rest stays a hole.
+function retryWhisper(apiKey, deadline) {
+  return (clip, offsetSec) => {
+    if (Date.now() > deadline) return Promise.reject(new Error('no time left in this alarm for retries'));
+    return transcribeChunk(clip, apiKey, offsetSec, { timeoutMs: TIMEOUT_MS.whisperRetry });
+  };
 }
 
 /**
@@ -108,7 +147,7 @@ export async function transcribeFromR2(bucket, key, openaiApiKey, _resume) {
  *
  * @param {Uint8Array} chunkBytes - mp3 bytes (caller guarantees frame boundaries).
  */
-export async function transcribeChunk(chunkBytes, apiKey, timeOffsetSec) {
+export async function transcribeChunk(chunkBytes, apiKey, timeOffsetSec, { timeoutMs = TIMEOUT_MS.whisper } = {}) {
   const CRLF = '\r\n';
   const boundary = '----roePipeline' + crypto.randomUUID().replace(/-/g, '');
   const enc = new TextEncoder();
@@ -152,11 +191,11 @@ export async function transcribeChunk(chunkBytes, apiKey, timeOffsetSec) {
       'Content-Type': `multipart/form-data; boundary=${boundary}`,
     },
     body,
+    signal: AbortSignal.timeout(timeoutMs),
   });
 
   if (!res.ok) {
-    const errBody = await res.text();
-    throw new Error(`Whisper API error ${res.status}: ${errBody}`);
+    throw apiError('Whisper API', res.status, await res.text());
   }
 
   const data = await res.json();

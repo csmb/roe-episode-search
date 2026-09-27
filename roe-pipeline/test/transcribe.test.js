@@ -50,5 +50,20 @@ describe('transcribeChunk', () => {
     const { segments } = await transcribeChunk(new Uint8Array([1]), 'sk-test', 0);
     expect(segments.map(s => s.text)).toEqual(['Good morning!', "It's perfect for me.", 'Sitting on the dock of the bay.', 'Back to the show.']);
   });
+
+  it('puts a time limit on every request: 5 minutes for a chunk, 90 s for a retry clip', async () => {
+    stubWhisper([]);
+    const timeout = vi.spyOn(AbortSignal, 'timeout');
+    await transcribeChunk(new Uint8Array([1]), 'sk-test', 0);
+    await transcribeChunk(new Uint8Array([1]), 'sk-test', 0, { timeoutMs: 90_000 });
+    expect(timeout.mock.calls).toEqual([[300_000], [90_000]]);
+  });
+
+  it('marks a rejected file as permanent and a server error as worth retrying', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('Invalid file format', { status: 400 })));
+    await expect(transcribeChunk(new Uint8Array([1]), 'sk-test', 0)).rejects.toMatchObject({ permanent: true, status: 400 });
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('busy', { status: 502 })));
+    await expect(transcribeChunk(new Uint8Array([1]), 'sk-test', 0)).rejects.toMatchObject({ status: 502 });
+  });
 });
 

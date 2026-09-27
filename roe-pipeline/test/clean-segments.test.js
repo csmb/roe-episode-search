@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { cleanSegments, isMostlyNonLatin, isPromptEcho } from '../src/clean-segments.js';
+import { cleanSegments, dropRepeatedLines, isMostlyNonLatin, isPromptEcho } from '../src/clean-segments.js';
 
 describe('cleanSegments', () => {
   it('removes zero-duration segments', () => {
@@ -99,5 +99,25 @@ describe('cleanSegments wrong-language and prompt-echo lines', () => {
       { start_ms: 12000, end_ms: 16000, text: 'Café au lait at the Ferry Building.' },
     ]);
     expect(result.map(s => s.text)).toEqual(['Good morning, San Francisco!', 'Café au lait at the Ferry Building.']);
+  });
+});
+
+describe('dropRepeatedLines', () => {
+  const line = (i, text) => ({ start_ms: i * 1000, end_ms: i * 1000 + 900, text });
+
+  it('drops every copy of a long line repeated more than 20 times', () => {
+    const lyric = 'Sitting on the dock of the bay, watching';
+    const segs = [line(0, 'Good morning, San Francisco!')];
+    for (let i = 1; i <= 21; i++) segs.push(line(i * 2, lyric), line(i * 2 + 1, `Something new number ${i}`));
+    const kept = dropRepeatedLines(segs);
+    expect(kept.some(s => s.text === lyric)).toBe(false);
+    expect(kept).toHaveLength(22);
+  });
+
+  it('keeps short lines and lines repeated 20 times or fewer, as the old D1 rule did', () => {
+    const segs = [];
+    for (let i = 0; i < 30; i++) segs.push(line(i * 2, 'Thank you so much.'));   // 18 characters
+    for (let i = 0; i < 20; i++) segs.push(line(100 + i, 'We will be right back after this.'));
+    expect(dropRepeatedLines(segs)).toHaveLength(50);
   });
 });

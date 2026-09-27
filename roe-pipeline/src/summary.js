@@ -1,9 +1,12 @@
 /**
  * Generate episode title, summary, and guest list via GPT-4o-mini.
- * Updates D1 with results.
+ * Nothing is written here: the seed-db step writes the result together with
+ * the transcript, so an episode never appears on the site half-made.
  */
 
 import { PROMPT_TERMS, normalizeTerm } from './whisper-prompt.js';
+import { isHost } from './hosts.js';
+import { apiError, TIMEOUT_MS } from './limits.js';
 
 // Below either line the transcript is too thin to summarize honestly: GPT fills
 // the gaps with invented weather and guests (1/1/2015 has one transcript line
@@ -82,16 +85,17 @@ export function guestsInTranscript(guests, transcriptText) {
 }
 
 /**
- * @param {D1Database} db
  * @param {string} episodeId
  * @param {Array<{start_ms: number, end_ms: number, text: string}>} segments
  * @param {string} openaiApiKey
  * @param {number} [durationMs] - audio length, for the thin-transcript check
+ * @returns {Promise<{title: string, summary: string|null, guests: string[], skipped?: boolean}>}
+ *   Throws on a failed, cut-off or unreadable reply, so the step is retried and
+ *   a raw or half reply never becomes the summary.
  */
-export async function generateSummary(db, episodeId, segments, openaiApiKey, durationMs) {
+export async function composeSummary(episodeId, segments, openaiApiKey, durationMs) {
   if (isThinTranscript(segments, durationMs)) {
     const title = neutralTitle(episodeId);
-    await db.prepare('UPDATE episodes SET title = ? WHERE id = ?').bind(title, episodeId).run();
     console.warn(`  Transcript too thin to summarize (${segments.length} segments); titled "${title}", no summary or guests.`);
     return { title, summary: null, guests: [], skipped: true };
   }
@@ -154,60 +158,41 @@ export async function generateSummary(db, episodeId, segments, openaiApiKey, dur
         { role: 'user', content: `Summarize this Roll Over Easy episode transcript:\n\n${transcriptText}` },
       ],
       temperature: 0.5,
-      max_tokens: 400,
+      max_tokens: 600,
       response_format: { type: 'json_object' },
     }),
+    signal: AbortSignal.timeout(TIMEOUT_MS.summary),
   });
 
   if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`OpenAI API error ${res.status}: ${body}`);
+    throw apiError('OpenAI API', res.status, await res.text());
   }
 
   const data = await res.json();
-  const content = data.choices[0].message.content.trim();
+  const choice = data.choices?.[0];
+  if (choice?.finish_reason === 'length') throw new Error('The summary reply was cut off');
 
-  let title, summary, guests = [];
+  let parsed;
   try {
-    const parsed = JSON.parse(content);
-    title = parsed.title?.trim();
-    summary = parsed.summary?.trim();
-    guests = Array.isArray(parsed.guests) ? parsed.guests : [];
+    parsed = JSON.parse(choice.message.content.trim());
   } catch {
-    summary = content;
+    throw new Error('The summary reply was not readable JSON');
   }
+  const title = typeof parsed.title === 'string' && parsed.title.trim() ? parsed.title.trim() : neutralTitle(episodeId);
+  const summary = typeof parsed.summary === 'string' ? parsed.summary.trim() : '';
+  if (!summary) throw new Error('The summary reply had no summary');
 
-  const kept = guestsInTranscript(guests, transcriptText);
-  if (kept.length < guests.length) {
-    const dropped = guests.filter(g => !kept.includes(g));
+  const named = (Array.isArray(parsed.guests) ? parsed.guests : [])
+    .filter(g => typeof g === 'string' && g.trim() && !isHost(g))
+    .map(g => g.trim());
+  const guests = [...new Set(guestsInTranscript(named, transcriptText))];
+  if (guests.length < named.length) {
+    const dropped = named.filter(g => !guests.includes(g));
     console.warn(`  Dropped guest names not found in the transcript: ${dropped.join(', ')}`);
   }
-  guests = kept;
 
-  // Update D1
-  if (title) {
-    await db.prepare('UPDATE episodes SET title = ?, summary = ? WHERE id = ?')
-      .bind(title, summary, episodeId).run();
-  } else {
-    await db.prepare('UPDATE episodes SET summary = ? WHERE id = ?')
-      .bind(summary, episodeId).run();
-  }
-
-  // Insert guests
-  if (guests.length > 0) {
-    await db.prepare('DELETE FROM episode_guests WHERE episode_id = ?')
-      .bind(episodeId).run();
-    for (const guest of guests) {
-      const name = guest.trim();
-      if (name) {
-        await db.prepare('INSERT OR IGNORE INTO episode_guests (episode_id, guest_name) VALUES (?, ?)')
-          .bind(episodeId, name).run();
-      }
-    }
-  }
-
-  console.log(`  Title: ${title || '(none)'}`);
-  console.log(`  Summary: ${(summary || '').slice(0, 100)}...`);
+  console.log(`  Title: ${title}`);
+  console.log(`  Summary: ${summary.slice(0, 100)}...`);
   if (guests.length > 0) console.log(`  Guests: ${guests.join(', ')}`);
 
   return { title, summary, guests };
@@ -226,7 +211,7 @@ async function fetchSunriseSunset(dateStr) {
   // Ferry Building coordinates
   const url = `https://api.sunrise-sunset.org/json?lat=37.7955&lng=-122.3937&date=${dateStr}&formatted=0`;
   try {
-    const res = await fetch(url);
+    const res = await fetch(url, { signal: AbortSignal.timeout(TIMEOUT_MS.sunrise) });
     const data = await res.json();
     if (data.status !== 'OK') return null;
     return {
