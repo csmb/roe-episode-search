@@ -21,11 +21,11 @@
  * Once the marker is on disk, the episode's remote state is already correct
  * and the episode is skipped on rerun — timestamps can never be divided twice.
  *
- * After running this script, also run the D1 fix:
- *   npx wrangler d1 execute roe-episodes --remote \
- *     --command="UPDATE transcript_segments SET start_ms = start_ms / 10, end_ms = end_ms / 10"
- *   npx wrangler d1 execute roe-episodes --remote \
- *     --command="UPDATE episodes SET duration_ms = duration_ms / 10"
+ * D1 is NOT touched here. NEVER run a blanket D1 `start_ms / 10` UPDATE:
+ * most episodes are already correct and a global divide corrupts them
+ * (13 episodes were found 10x too small in D1 on 2026-09-26 and had to be
+ * multiplied back). Fix D1 per-episode only, for episodes whose D1 segments
+ * run past their audio duration — see the query printed at the end of a run.
  *
  * Prerequisites:
  *   CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN must be set.
