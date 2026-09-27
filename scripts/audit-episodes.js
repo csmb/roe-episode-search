@@ -48,15 +48,10 @@ function scanDir(dir, label) {
 		const filePath = path.join(dir, filename);
 		const stat = fs.statSync(filePath);
 
-		// Suppress the console.warn from parseEpisodeId fallback
-		const warnOrig = console.warn;
-		let warnCalled = false;
-		console.warn = () => { warnCalled = true; };
+		// parseEpisodeId returns null for names it can't read
 		const episodeId = parseEpisodeId(filePath);
-		console.warn = warnOrig;
-
-		const date = episodeDateFromId(episodeId);
-		const parseable = date !== null && !warnCalled;
+		const date = episodeId ? episodeDateFromId(episodeId) : null;
+		const parseable = date !== null;
 
 		entries.push({ filename, filePath, label, date, episodeId, fileSize: stat.size, parseable });
 	}

@@ -49,6 +49,11 @@ async function main() {
 		// whisper.cpp pipeline — so transcripts produced here are found by
 		// process-all.js / discover-episodes.js instead of re-transcribed.
 		const episodeId = parseEpisodeId(file);
+		if (!episodeId) {
+			console.warn(`  Skipping "${file}": can't work out its episode ID from the name.`);
+			skipped.push(file);
+			continue;
+		}
 		const transcriptPath = path.join(transcriptsDir, `${episodeId}.json`);
 		if (fs.existsSync(transcriptPath)) {
 			skipped.push(file);

@@ -196,6 +196,28 @@ export function parseEpisodeId(mp3Path) {
 		return `roll-over-easy_${y}-${m}-${d}_07-30-00`;
 	}
 
+	// Roll Over Easy YYYY-MM-DD (space-separated, dashes in date — how the archive is
+	// named today, with an optional part number: "Roll Over Easy 2015-05-14 2")
+	const roeSpaceDashMatch = stem.match(/^Roll Over Easy\s+(\d{4})-(\d{2})-(\d{2})(?:\s|$)/i);
+	if (roeSpaceDashMatch) {
+		const [, y, m, d] = roeSpaceDashMatch;
+		return `roll-over-easy_${y}-${m}-${d}_07-30-00`;
+	}
+
+	// roll_over_easy-YYYY-MM-DD
+	const roeUnderscoreMatch = stem.match(/^roll_over_easy-(\d{4})-(\d{2})-(\d{2})/i);
+	if (roeUnderscoreMatch) {
+		const [, y, m, d] = roeUnderscoreMatch;
+		return `roll-over-easy_${y}-${m}-${d}_07-30-00`;
+	}
+
+	// roll-over-easy YYYY-MM-DD (space instead of underscore)
+	const roeSpaceMatch = stem.match(/^roll-over-easy\s+(\d{4})-(\d{2})-(\d{2})/i);
+	if (roeSpaceMatch) {
+		const [, y, m, d] = roeSpaceMatch;
+		return `roll-over-easy_${y}-${m}-${d}_07-30-00`;
+	}
+
 	// Roll_Over_Easy_-_YYYY-MM-DD
 	const roeUnderMatch = stem.match(/^Roll_Over_Easy_-_(\d{4})-(\d{2})-(\d{2})/i);
 	if (roeUnderMatch) {
@@ -207,6 +229,13 @@ export function parseEpisodeId(mp3Path) {
 	const recYMDMatch = stem.match(/^rec_(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})/);
 	if (recYMDMatch) {
 		const [, y, m, d] = recYMDMatch;
+		return `roll-over-easy_${y}-${m}-${d}_07-30-00`;
+	}
+
+	// rec_(YYYY_MM_DD)_N
+	const recParenYMDMatch = stem.match(/^rec_\((\d{4})_(\d{2})_(\d{2})\)_/);
+	if (recParenYMDMatch) {
+		const [, y, m, d] = recParenYMDMatch;
 		return `roll-over-easy_${y}-${m}-${d}_07-30-00`;
 	}
 
@@ -234,10 +263,9 @@ export function parseEpisodeId(mp3Path) {
 		}
 	}
 
-	// Fallback: use filename stem, warn user
-	console.warn(`  Warning: Could not parse episode ID from filename "${stem}". Using as-is.`);
-	console.warn('  Use --episode-id to override.');
-	return stem;
+	// Unknown name: return null rather than the raw file name, which would become a
+	// junk episode ID (with spaces) on the live site. Callers must handle null.
+	return null;
 }
 
 // ── Transcript cleanup ─────────────────────────────────────────────────
@@ -782,6 +810,11 @@ async function main() {
 	}
 
 	const episodeId = opts.episodeId || parseEpisodeId(mp3Path);
+	if (!episodeId) {
+		console.error(`Could not work out the episode ID from "${path.basename(mp3Path)}".`);
+		console.error('Pass it explicitly: --episode-id roll-over-easy_YYYY-MM-DD_07-30-00');
+		process.exit(1);
+	}
 	const skip = opts.skip;
 	const force = opts.force;
 

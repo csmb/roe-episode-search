@@ -84,8 +84,8 @@ export function discoverEpisodes(audioDir, opts = {}) {
 		const filePath = path.join(resolvedDir, filename);
 		const episodeId = parseEpisodeId(filePath);
 
-		// If parseEpisodeId returned the raw stem (fallback), it's unparseable
-		const date = episodeDate(episodeId);
+		// parseEpisodeId returns null for names it can't read
+		const date = episodeId ? episodeDate(episodeId) : null;
 		if (!date) {
 			unparseable.push(filename);
 			continue;
