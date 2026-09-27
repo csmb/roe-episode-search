@@ -153,6 +153,7 @@ All scripts are in `scripts/` and run locally with Node.js:
 | `clean-hallucinations.js` | Remove hallucinated repeated-phrase segments from D1. |
 | `delete-episode.js` | Remove an episode from D1, Vectorize, R2 and its local transcript. |
 | `repair-missing-m4a.js` | Make and upload the .m4a for episodes that only have their MP3. |
+| `redo-places.js` | Redo one episode's places and their sentiment with the pipeline's own code (`--no-places` for every episode that has none). |
 
 Retired one-off scripts (the April map build, old archive tools) are kept in `scripts/archive/` for reference only; its README says which must not be run again.
 ### Batch processing

@@ -35,6 +35,7 @@ roe-episode-search/
 │   ├── discover-episodes.js   # Scan directory, parse filenames
 │   ├── generate-summaries.js  # Regenerate AI summaries
 │   ├── cleanup-places.js      # Remove false positive places from D1
+│   ├── redo-places.js         # Redo one episode's places with roe-pipeline's code
 │   ├── delete-episode.js      # Remove an episode from D1, Vectorize, R2
 │   ├── archive/               # Retired one-off scripts, reference only (see its README)
 │   └── ...                    # ~15 more utility scripts
@@ -109,7 +110,8 @@ node scripts/generate-summaries.js
 ### Places on the map
 
 New episodes get their places from roe-pipeline's `extract-places` step, which only keeps
-names the transcript mentions. `scripts/cleanup-places.js` removes false positives from D1.
+names the transcript mentions. `scripts/redo-places.js <episode-id>` runs the same code for
+an existing episode. `scripts/cleanup-places.js` removes false positives from D1.
 The April 2026 map build (external business lists matched against transcripts) is archived
 in `scripts/archive/`: it caused the fake pins and common-word places cleaned up in
 September, so don't re-run it as is. Guest lists are edited in the admin page; the old
