@@ -518,6 +518,8 @@
 
 		async function loadPlaces() {
 			const res = await fetch('/api/map-places');
+			// A 429 or 500 still has a JSON body, just no places: stop while the loading box can say so.
+			if (!res.ok) throw new Error(`HTTP ${res.status}`);
 			const data = await res.json();
 			const places = data.places;
 
@@ -673,7 +675,12 @@
 		}
 
 		loadPlaces().then(applyDeepLink).catch(err => {
-			document.getElementById('loading').textContent = 'Failed to load places.';
+			// The loading box is still up only if no places were drawn.
+			const loading = document.getElementById('loading');
+			if (loading) {
+				loading.textContent = `Couldn't load places — try again.`;
+				document.getElementById('place-count').textContent = 'places unavailable';
+			}
 			console.error(err);
 		});
 	</script>
