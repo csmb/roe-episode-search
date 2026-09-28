@@ -5,6 +5,11 @@
  * episode-backup.js (transcripts/.backups/). Without --yes it only shows what
  * it would remove.
  *
+ * Its search vectors are every ID in the index that starts with
+ * "<episode_id>:" (the backup lists the index to find them), so the ones an
+ * older transcript left go too. With --local, Vectorize is neither read nor
+ * changed.
+ *
  * The local transcript file is moved into the backup. The episode's .m4a in R2
  * is kept unless --delete-audio is given (then it is backed up first); raw MP3
  * uploads are never touched.
@@ -19,24 +24,13 @@ import path from 'node:path';
 
 import {
 	loadEnv, escapeSQL, queryJSON, runSQL, wranglerExec,
-	transcriptsDir, R2_BUCKET, VECTORIZE_INDEX,
+	transcriptsDir, R2_BUCKET,
 } from './lib.js';
+import { deleteEpisodeVectors } from '../roe-pipeline/src/embeddings.js';
 import { backupEpisode } from './episode-backup.js';
+import { remoteVectorize } from './remote-cloudflare.js';
 
 loadEnv();
-
-const DELETE_BATCH_SIZE = 100;
-
-function deleteVectors(ids) {
-	for (let i = 0; i < ids.length; i += DELETE_BATCH_SIZE) {
-		const batch = ids.slice(i, i + DELETE_BATCH_SIZE);
-		wranglerExec(
-			['vectorize', 'delete-vectors', VECTORIZE_INDEX, '--ids', ...batch],
-			{ stdio: 'pipe' }
-		);
-		console.log(`  Deleted ${batch.length} vectors (${i + batch.length}/${ids.length})`);
-	}
-}
 
 function rowCounts(episodeId, target) {
 	const id = escapeSQL(episodeId);
@@ -53,10 +47,10 @@ function rowCounts(episodeId, target) {
 /**
  * Back up an episode, then delete it. Returns the backup (see episode-backup.js).
  * @param {string} episodeId
- * @param {{isLocal?: boolean, deleteAudio?: boolean, backup?: object, reason?: string}} [opts]
+ * @param {{isLocal?: boolean, deleteAudio?: boolean, backup?: object, reason?: string, vectorize?: object}} [opts]
  *   backup: one taken since the episode last changed (merge-episode.js has one already).
  */
-export function deleteEpisode(episodeId, { isLocal = false, deleteAudio = false, backup = null, reason } = {}) {
+export async function deleteEpisode(episodeId, { isLocal = false, deleteAudio = false, backup = null, reason, vectorize = null } = {}) {
 	const target = { isLocal };
 	const id = escapeSQL(episodeId);
 
@@ -64,17 +58,17 @@ export function deleteEpisode(episodeId, { isLocal = false, deleteAudio = false,
 	console.log('\n=== Step 1/5: Back up ===');
 	if (backup) console.log(`  Already backed up: ${backup.dir}`);
 	// The .m4a goes into the backup too when it is about to be deleted
-	backup ??= backupEpisode(episodeId, { isLocal, withAudio: deleteAudio, reason: reason ?? 'before delete-episode.js deleted it' });
+	backup ??= await backupEpisode(episodeId, { isLocal, withAudio: deleteAudio, reason: reason ?? 'before delete-episode.js deleted it', vectorize });
 
 	// ── Step 2: Delete from Vectorize ────────────────────────────────────
-	// The IDs are the vectors the backup found, from the D1 transcript lines
+	// Every vector the backup's listing has under the episode's ID
 	console.log('\n=== Step 2/5: Delete Vectorize embeddings ===');
 	if (isLocal) {
-		console.log(`  --local: Vectorize has no local copy, so its ${backup.vectorIds.length} vectors are left alone`);
+		console.log('  --local: Vectorize has no local copy, so it was neither read nor changed');
 	} else if (backup.vectorIds.length > 0) {
-		deleteVectors(backup.vectorIds);
+		await deleteEpisodeVectors(vectorize ?? remoteVectorize(), episodeId, backup.vectorIds);
 	} else {
-		console.log('  No vectors found for this episode');
+		console.log('  The index has no vectors for this episode');
 	}
 
 	// ── Step 3: Delete D1 rows ───────────────────────────────────────────
@@ -125,11 +119,11 @@ function usage(problem) {
 	console.error('  (no --yes)      Show what would be deleted, and change nothing');
 	console.error('  --yes           Back the episode up, then delete it from D1 and Vectorize');
 	console.error('  --delete-audio  Also delete its .m4a from R2 (raw MP3 uploads are never deleted)');
-	console.error('  --local         Use the local D1 copy and R2 (Vectorize is left alone)');
+	console.error('  --local         Use the local D1 copy and R2 (Vectorize is neither read nor changed)');
 	process.exit(1);
 }
 
-function main() {
+async function main() {
 	const args = process.argv.slice(2);
 	const options = new Set(['--yes', '--delete-audio', '--local']);
 	const unknown = args.filter((a) => a.startsWith('-') && !options.has(a));
@@ -156,7 +150,8 @@ function main() {
 	const hasTranscript = fs.existsSync(path.join(transcriptsDir, `${episodeId}.json`));
 	console.log(`Found: "${rows[0].title}"`);
 	console.log(`  audio_file: ${rows[0].audio_file ?? '(null)'}`);
-	console.log(`  ${counts.segments} transcript lines, ${counts.guests} guests, ${counts.places} place links, and its search vectors`);
+	console.log(`  ${counts.segments} transcript lines, ${counts.guests} guests, ${counts.places} place links`);
+	console.log(`  search vectors: ${isLocal ? 'left alone (--local)' : `every one whose ID starts with "${episodeId}:" (the index is listed when it runs)`}`);
 	console.log(`  local transcript: ${hasTranscript ? 'yes (moved into the backup)' : 'none'}`);
 	console.log(`  ${episodeId}.m4a: ${deleteAudio ? 'deleted from R2' : 'kept in R2 (--delete-audio to delete it)'}`);
 
@@ -165,15 +160,13 @@ function main() {
 		return;
 	}
 
-	deleteEpisode(episodeId, { isLocal, deleteAudio });
+	await deleteEpisode(episodeId, { isLocal, deleteAudio });
 	console.log('\n=== Done ===');
 }
 
 if (import.meta.main) {
-	try {
-		main();
-	} catch (err) {
+	main().catch((err) => {
 		console.error(`\nFATAL: ${err.message}`);
 		process.exit(1);
-	}
+	});
 }

@@ -31,15 +31,17 @@ import { execFileSync } from 'node:child_process';
 import {
 	loadEnv, escapeSQL, queryJSON, runSQL, wranglerExec,
 	transcriptsDir, projectRoot, applyWordCorrections, parseEpisodeDate, convertAudio,
-	probeDurationMs, R2_BUCKET, R2_PUBLIC_URL, VECTORIZE_INDEX,
+	probeDurationMs, R2_BUCKET, R2_PUBLIC_URL,
 } from './lib.js';
+import { deleteEpisodeVectors } from '../roe-pipeline/src/embeddings.js';
 import { purgeEpisode } from './clean-hallucinations.js';
 import { backupEpisode } from './episode-backup.js';
 import { deleteEpisode } from './delete-episode.js';
+import { remoteVectorize } from './remote-cloudflare.js';
+import { vectorIdSnapshot } from './vector-ids.js';
 
 loadEnv();
 
-const DELETE_BATCH_SIZE = 100;
 const DB_BATCH_SIZE = 50;
 // Whisper's last line can end a little after the audio does; more than this and it's another recording
 const LENGTH_TOLERANCE_MS = 30_000;
@@ -73,17 +75,6 @@ function parseArgs() {
 function formatMs(ms) {
 	const s = Math.round(ms / 1000);
 	return `${Math.floor(s / 3600)}:${String(Math.floor(s / 60) % 60).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
-}
-
-function deleteVectors(ids) {
-	for (let i = 0; i < ids.length; i += DELETE_BATCH_SIZE) {
-		const batch = ids.slice(i, i + DELETE_BATCH_SIZE);
-		wranglerExec(
-			['vectorize', 'delete-vectors', VECTORIZE_INDEX, '--ids', ...batch],
-			{ stdio: 'pipe' }
-		);
-		console.log(`    Deleted ${batch.length} vectors (${i + batch.length}/${ids.length})`);
-	}
 }
 
 function insertSegments(episodeId, segments, target) {
@@ -159,23 +150,28 @@ async function merge({ canonical, source, mp3, m4aPath, audioMs, sourceData, can
 
 	// ── Step 1: Back up both episodes (nothing changes if this fails) ────
 	console.log('\n=== Step 1/7: Back up both episodes ===');
+	// One listing of the index finds both episodes' vectors (--local leaves Vectorize alone)
+	const vectorize = local ? null : remoteVectorize();
+	const snapshot = local ? null : await vectorIdSnapshot(vectorize);
 	// With the audio: the canonical's .m4a is replaced below, and the source's deleted with --delete-audio
-	const canonicalBackup = backupEpisode(canonical, { isLocal: local, withAudio: true, reason: `before merge-episode.js merged ${source} into it` });
-	const sourceBackup = backupEpisode(source, {
-		isLocal: local, withAudio: deleteAudio, reason: `before merge-episode.js merged it into ${canonical} and deleted it`,
+	const canonicalBackup = await backupEpisode(canonical, {
+		isLocal: local, withAudio: true, reason: `before merge-episode.js merged ${source} into it`, snapshot, vectorize,
+	});
+	const sourceBackup = await backupEpisode(source, {
+		isLocal: local, withAudio: deleteAudio, reason: `before merge-episode.js merged it into ${canonical} and deleted it`, snapshot, vectorize,
 	});
 
 	// ── Step 2: Delete the canonical's old vectors ───────────────────────
-	// Vector IDs are `${episode_id}:${chunkStartMs}` on the OLD timeline, so
-	// they are taken from the backup before anything else changes. That also
-	// makes a merge that stopped partway safe to run again.
+	// Every vector listed under the canonical's ID (the old timeline) goes
+	// before anything else changes; step 7 makes the new ones from D1. If step
+	// 7 fails, the canonical has no vectors rather than wrong-timeline ones.
 	console.log('\n=== Step 2/7: Delete the canonical\'s old vectors ===');
 	if (local) {
-		console.log(`  --local: Vectorize has no local copy, so its ${canonicalBackup.vectorIds.length} vectors are left alone`);
+		console.log('  --local: Vectorize has no local copy, so it was neither read nor changed');
 	} else if (canonicalBackup.vectorIds.length > 0) {
-		deleteVectors(canonicalBackup.vectorIds);
+		await deleteEpisodeVectors(vectorize, canonical, canonicalBackup.vectorIds);
 	} else {
-		console.log('  No old vectors found');
+		console.log('  The index has no vectors for it');
 	}
 
 	// ── Step 3: Swap transcript file, set internal episode_id ────────────
@@ -255,8 +251,10 @@ async function merge({ canonical, source, mp3, m4aPath, audioMs, sourceData, can
 	}
 
 	// ── Delete the source (already backed up) ────────────────────────────
+	// All the vectors listed under its ID: a merge that deleted only the ones its
+	// transcript made left 118 behind on 2016-03-24
 	console.log('\n=== Delete the source duplicate ===');
-	deleteEpisode(source, { isLocal: local, deleteAudio, backup: sourceBackup });
+	await deleteEpisode(source, { isLocal: local, deleteAudio, backup: sourceBackup, vectorize });
 
 	// ── Verify ────────────────────────────────────────────────────────────
 	console.log('\n=== Verify canonical ===');
@@ -278,7 +276,9 @@ async function merge({ canonical, source, mp3, m4aPath, audioMs, sourceData, can
 	console.log('\n=== Done ===');
 }
 
-main().catch((err) => {
-	console.error(`\nFATAL: ${err.message}`);
-	process.exit(1);
-});
+if (import.meta.main) {
+	main().catch((err) => {
+		console.error(`\nFATAL: ${err.message}`);
+		process.exit(1);
+	});
+}
