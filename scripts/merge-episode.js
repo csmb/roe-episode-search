@@ -136,6 +136,15 @@ async function main() {
 			'it is not the recording the transcript came from');
 	}
 
+	// Whose title, summary, guests and interview time the canonical ends up with
+	const keep = includeReviewed ? null : canonicalRow.guests_reviewed ? 'canonical' : sourceRow.guests_reviewed ? 'source' : null;
+
+	// The keys step 7 needs, checked before anything changes
+	if (!local) {
+		const missing = ['CLOUDFLARE_ACCOUNT_ID', 'CLOUDFLARE_API_TOKEN', ...(keep ? [] : ['OPENAI_API_KEY'])].filter((k) => !process.env[k]);
+		if (missing.length > 0) usage(`Missing ${missing.join(', ')} (in .env): the embeddings${keep ? '' : ' and the summary'} need them`);
+	}
+
 	console.log(`=== Merging episode${local ? ' (local D1 copy)' : ''} ===`);
 	console.log(`  Canonical:  ${canonical}  "${canonicalRow.title}"${canonicalRow.guests_reviewed ? ' (reviewed)' : ''}`);
 	console.log(`  Source:     ${source}  "${sourceRow.title}"${sourceRow.guests_reviewed ? ' (reviewed)' : ''}`);
@@ -146,13 +155,13 @@ async function main() {
 	try {
 		console.log('  Converting the MP3 to M4A...');
 		const m4aPath = convertAudio(mp3, tmpDir);
-		await merge({ canonical, source, mp3, m4aPath, audioMs, sourceData, canonicalRow, sourceRow, includeReviewed, deleteAudio, local });
+		await merge({ canonical, source, mp3, m4aPath, audioMs, sourceData, canonicalRow, sourceRow, keep, deleteAudio, local });
 	} finally {
 		fs.rmSync(tmpDir, { recursive: true, force: true });
 	}
 }
 
-async function merge({ canonical, source, mp3, m4aPath, audioMs, sourceData, canonicalRow, sourceRow, includeReviewed, deleteAudio, local }) {
+async function merge({ canonical, source, mp3, m4aPath, audioMs, sourceData, canonicalRow, sourceRow, keep, deleteAudio, local }) {
 	const target = { isLocal: local };
 	const canonicalTranscript = path.join(transcriptsDir, `${canonical}.json`);
 
@@ -192,8 +201,8 @@ async function merge({ canonical, source, mp3, m4aPath, audioMs, sourceData, can
 	// ── Step 5: Title, summary, guests and interview time ────────────────
 	console.log('\n=== Step 5/7: Title, summary, guests and interview time ===');
 	const id = escapeSQL(canonical);
-	let remake = false;
-	if (canonicalRow.guests_reviewed && !includeReviewed) {
+	const remake = !keep;
+	if (keep === 'canonical') {
 		console.log('  The canonical was reviewed: its title, summary, guests and interview time are kept.');
 		if (canonicalRow.guest_start_ms > audioMs) {
 			console.warn(`  WARNING: the interview time (${formatMs(canonicalRow.guest_start_ms)}) is past the end of the new audio. Set it again`);
@@ -201,7 +210,7 @@ async function merge({ canonical, source, mp3, m4aPath, audioMs, sourceData, can
 		} else if (canonicalRow.guest_start_ms != null) {
 			console.log(`  Check the interview time (${formatMs(canonicalRow.guest_start_ms)}) against the new audio.`);
 		}
-	} else if (sourceRow.guests_reviewed && !includeReviewed) {
+	} else if (keep === 'source') {
 		console.log('  The source was reviewed: copying its title, summary, guests and interview time.');
 		const guests = queryJSON(`SELECT guest_name FROM episode_guests WHERE episode_id = '${escapeSQL(source)}'`, target);
 		const title = sourceRow.title !== source ? sourceRow.title : canonicalRow.title; // an untitled source keeps the canonical's
@@ -216,7 +225,6 @@ async function merge({ canonical, source, mp3, m4aPath, audioMs, sourceData, can
 		}
 	} else {
 		// Made again by process-episode.js below, from the new transcript
-		remake = true;
 		console.log('  Clearing guests and the interview time (made again from the new transcript)...');
 		runSQL(`DELETE FROM episode_guests WHERE episode_id = '${id}'`, target);
 		runSQL(`UPDATE episodes SET guest_start_ms = NULL, guests_reviewed = 0 WHERE id = '${id}'`, target);
