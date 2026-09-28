@@ -31,6 +31,7 @@ import { execFileSync } from 'node:child_process';
 import {
 	loadEnv, escapeSQL, queryJSON, runSQL, wranglerExec,
 	transcriptsDir, projectRoot, applyWordCorrections, parseEpisodeDate, convertAudio,
+	probeDurationMs, R2_BUCKET, R2_PUBLIC_URL, VECTORIZE_INDEX,
 } from './lib.js';
 import { purgeEpisode } from './clean-hallucinations.js';
 import { backupEpisode } from './episode-backup.js';
@@ -38,9 +39,6 @@ import { deleteEpisode } from './delete-episode.js';
 
 loadEnv();
 
-const INDEX_NAME = 'roe-transcripts';
-const R2_BUCKET = 'roe-audio';
-const R2_PUBLIC_URL = 'https://pub-e95bd2be3f9d4147b2955503d75e50c1.r2.dev';
 const DELETE_BATCH_SIZE = 100;
 const DB_BATCH_SIZE = 50;
 // Whisper's last line can end a little after the audio does; more than this and it's another recording
@@ -77,18 +75,11 @@ function formatMs(ms) {
 	return `${Math.floor(s / 3600)}:${String(Math.floor(s / 60) % 60).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
 }
 
-function audioDurationMs(file) {
-	const out = execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', file], { encoding: 'utf-8' });
-	const seconds = parseFloat(out);
-	if (!Number.isFinite(seconds) || seconds <= 0) throw new Error(`ffprobe could not read the length of ${file}`);
-	return Math.round(seconds * 1000);
-}
-
 function deleteVectors(ids) {
 	for (let i = 0; i < ids.length; i += DELETE_BATCH_SIZE) {
 		const batch = ids.slice(i, i + DELETE_BATCH_SIZE);
 		wranglerExec(
-			['vectorize', 'delete-vectors', INDEX_NAME, '--ids', ...batch],
+			['vectorize', 'delete-vectors', VECTORIZE_INDEX, '--ids', ...batch],
 			{ stdio: 'pipe' }
 		);
 		console.log(`    Deleted ${batch.length} vectors (${i + batch.length}/${ids.length})`);
@@ -131,7 +122,7 @@ async function main() {
 	// The audio must be the recording the transcript came from
 	const sourceData = JSON.parse(fs.readFileSync(sourceTranscript, 'utf-8'));
 	const transcriptEndMs = sourceData.segments.reduce((end, s) => Math.max(end, s.end_ms), 0);
-	const audioMs = audioDurationMs(mp3);
+	const audioMs = probeDurationMs(mp3);
 	if (transcriptEndMs > audioMs + LENGTH_TOLERANCE_MS) {
 		usage(`The source transcript runs to ${formatMs(transcriptEndMs)} but ${path.basename(mp3)} is ${formatMs(audioMs)} long: ` +
 			'it is not the recording the transcript came from');

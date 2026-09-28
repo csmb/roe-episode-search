@@ -8,24 +8,11 @@
  *   node scripts/audit-guests.js --local   # local D1
  */
 
-import { queryJSON as libQueryJSON } from './lib.js';
+import { loadEnv, parseFlags, queryJSON as libQueryJSON } from './lib.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
-// ── Load .env ─────────────────────────────────────────────────────────
-
-const envPath = path.resolve(path.dirname(decodeURIComponent(new URL(import.meta.url).pathname)), '..', '.env');
-if (fs.existsSync(envPath)) {
-	for (const line of fs.readFileSync(envPath, 'utf-8').split('\n')) {
-		const trimmed = line.trim();
-		if (!trimmed || trimmed.startsWith('#')) continue;
-		const eq = trimmed.indexOf('=');
-		if (eq === -1) continue;
-		const key = trimmed.slice(0, eq);
-		const val = trimmed.slice(eq + 1);
-		if (!process.env[key]) process.env[key] = val;
-	}
-}
+loadEnv();
 
 // lib.js runs wrangler without a shell, so a name with "$" or backticks stays as typed.
 function queryJSON(sql, isLocal) {
@@ -60,15 +47,21 @@ function nameSimilarity(a, b) {
 // ── Main ──────────────────────────────────────────────────────────────
 
 function main() {
-	if (process.argv.includes('--help') || process.argv.includes('-h')) {
-		console.log('Usage: node scripts/audit-guests.js [--local]');
+	const usage = 'Usage: node scripts/audit-guests.js [--local]';
+	const { flags, rest } = parseFlags(process.argv.slice(2), { '--local': 'flag', '--help': 'flag', '-h': 'flag' }, usage);
+	if (flags.help || flags.h) {
+		console.log(usage);
 		console.log('');
 		console.log('Lists all guests, flags fuzzy duplicate pairs, previews pending corrections.');
 		console.log('  --local   Target local D1 database');
 		process.exit(0);
 	}
+	if (rest.length > 0) {
+		console.error(`Unexpected argument: ${rest.join(' ')}\n\n${usage}`);
+		process.exit(1);
+	}
 
-	const isLocal = process.argv.includes('--local');
+	const isLocal = !!flags.local;
 
 	console.log(`Target: ${isLocal ? 'local' : 'remote'} D1 database`);
 	console.log();

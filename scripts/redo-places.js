@@ -14,7 +14,7 @@
  * Needs OPENAI_API_KEY (read from .env). About a cent per episode.
  */
 
-import { loadEnv, queryJSON, escapeSQL } from './lib.js';
+import { loadEnv, queryJSON, escapeSQL, parseFlags } from './lib.js';
 import { remoteD1 } from './remote-d1.js';
 import { extractAndSeedPlaces } from '../roe-pipeline/src/places.js';
 import { scoreAndSeedSentiment } from '../roe-pipeline/src/sentiment.js';
@@ -40,21 +40,22 @@ async function redoPlaces(db, episodeId, apiKey, target) {
 
 async function main() {
 	loadEnv();
-	const args = process.argv.slice(2);
-	const local = args.includes('--local');
+	const usage = 'Usage: node scripts/redo-places.js [--local] (<episode-id> … | --no-places)';
+	const { flags, rest } = parseFlags(process.argv.slice(2), { '--local': 'flag', '--no-places': 'flag' }, usage);
+	const local = !!flags.local;
 	const target = { isLocal: local };
 	const apiKey = process.env.OPENAI_API_KEY;
 	if (!apiKey) throw new Error('OPENAI_API_KEY is not set (add it to .env)');
 
-	let ids = args.filter(a => !a.startsWith('--'));
-	if (args.includes('--no-places')) {
+	let ids = rest;
+	if (flags['no-places']) {
 		ids = queryJSON(
 			'SELECT id FROM episodes e WHERE NOT EXISTS (SELECT 1 FROM place_mentions pm WHERE pm.episode_id = e.id) ORDER BY id',
 			target,
 		).map(r => r.id);
 	}
 	if (ids.length === 0) {
-		console.error('Usage: node scripts/redo-places.js [--local] (<episode-id> … | --no-places)');
+		console.error(usage);
 		process.exit(1);
 	}
 

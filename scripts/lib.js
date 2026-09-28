@@ -1,6 +1,9 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+
+export { EMBED_MODEL } from '../roe-pipeline/src/embeddings.js';
 
 // ── Path constants ────────────────────────────────────────────────────
 
@@ -16,6 +19,16 @@ export const transcriptsDir = process.env.ROE_PERSIST_TO
 const DB_NAME = 'roe-episodes';
 
 const wranglerBin = path.join(workerDir, 'node_modules', '.bin', 'wrangler');
+
+// The show's original recordings. ROE_ARCHIVE_DIR points somewhere else.
+export const ARCHIVE_DIR = process.env.ROE_ARCHIVE_DIR
+	|| path.join(os.homedir(), 'Library', 'Mobile Documents', 'com~apple~CloudDocs', 'BFF.fm', 'Roll Over Easy', 'All episodes');
+
+// ── Cloudflare resources (the same ones the Workers use) ─────────────
+
+export const R2_BUCKET = 'roe-audio';
+export const R2_PUBLIC_URL = 'https://pub-e95bd2be3f9d4147b2955503d75e50c1.r2.dev';
+export const VECTORIZE_INDEX = 'roe-transcripts';
 
 // ── Environment ───────────────────────────────────────────────────────
 
@@ -43,6 +56,42 @@ export function loadEnv() {
 			process.env[key] = val;
 		}
 	}
+}
+
+// ── Command line ──────────────────────────────────────────────────────
+
+/**
+ * Read a script's options strictly. `spec` maps each option to 'flag' or
+ * 'value' (takes the next argument). An unknown option, or a value left out,
+ * prints `usage` and stops: a mistyped --local would otherwise run against
+ * production.
+ *
+ * @returns {{flags: Record<string, true|string>, rest: string[]}} options keyed
+ *   without their dashes ("--dry-run" -> flags['dry-run']), and everything else
+ */
+export function parseFlags(argv, spec, usage) {
+	const stop = (problem) => {
+		console.error(`${problem}\n\n${usage}`);
+		process.exit(1);
+	};
+	const flags = {};
+	const rest = [];
+	for (let i = 0; i < argv.length; i++) {
+		const arg = argv[i];
+		if (!arg.startsWith('-')) {
+			rest.push(arg);
+			continue;
+		}
+		if (!spec[arg]) stop(`Unknown option: ${arg}`);
+		if (spec[arg] === 'value') {
+			const value = argv[++i];
+			if (value === undefined || value.startsWith('-')) stop(`${arg} needs a value`);
+			flags[arg.replace(/^-+/, '')] = value;
+		} else {
+			flags[arg.replace(/^-+/, '')] = true;
+		}
+	}
+	return { flags, rest };
 }
 
 // ── Text utilities ────────────────────────────────────────────────────
@@ -174,6 +223,14 @@ export function logWarn(message) {
 }
 
 // ── Audio ──────────────────────────────────────────────────────────────
+
+/** An audio file's real length in ms (ffprobe), for checks that shouldn't trust a transcript's last line. */
+export function probeDurationMs(file) {
+	const out = execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', file], { encoding: 'utf-8' });
+	const seconds = parseFloat(out);
+	if (!Number.isFinite(seconds) || seconds <= 0) throw new Error(`ffprobe could not read the length of ${file}`);
+	return Math.round(seconds * 1000);
+}
 
 /**
  * Convert an audio file to the .m4a the site streams (AAC 128k, faststart so

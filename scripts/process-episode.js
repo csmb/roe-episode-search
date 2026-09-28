@@ -35,8 +35,10 @@ import os from 'node:os';
 import {
 	loadEnv, escapeSQL, isAscii, wranglerExec, queryJSON, runSQL,
 	stepTimer, logWarn, transcriptsDir,
-	applyWordCorrections, parseEpisodeDate, fetchSunriseSunset,
+	applyWordCorrections, parseEpisodeDate, fetchSunriseSunset, convertAudio,
+	R2_BUCKET, R2_PUBLIC_URL, VECTORIZE_INDEX, EMBED_MODEL,
 } from './lib.js';
+import { SF_VOCAB_PROMPT } from '../roe-pipeline/src/whisper-prompt.js';
 import { purgeEpisode } from './clean-hallucinations.js';
 import { generateSummaryFromText } from './generate-summaries.js';
 import { chunkEpisode } from './generate-embeddings.js';
@@ -45,11 +47,6 @@ import { detectGuestStart, MIN_START_MS } from './guest-start.js';
 loadEnv();
 
 // ── Constants ──────────────────────────────────────────────────────────
-
-const R2_BUCKET = 'roe-audio';
-const R2_PUBLIC_URL = 'https://pub-e95bd2be3f9d4147b2955503d75e50c1.r2.dev';
-const VECTORIZE_INDEX = 'roe-transcripts';
-const EMBED_MODEL = '@cf/baai/bge-base-en-v1.5';
 
 const EMBED_BATCH_SIZE = 100;
 const UPSERT_BATCH_SIZE = 1000;
@@ -66,43 +63,17 @@ const WHISPER_MODEL_PATH = WHISPER_MODEL_CANDIDATES.find((p) => fs.existsSync(p)
 
 const VAD_MODEL_PATH = path.join(os.homedir(), '.cache', 'whisper-cpp', 'ggml-silero-v6.2.0.bin');
 
-// Whisper prompt: ~224 token limit. Prioritize proper nouns whisper would mishear.
-const SF_VOCAB_PROMPT = [
-	// Show & station
-	'Roll Over Easy, BFF.fm, Stroll Over Easy,',
-	// Neighborhoods (compact)
-	'SoMa, the Tenderloin, Dogpatch, Bernal Heights, Japantown, Visitacion Valley,',
-	'Haight-Ashbury, Pac Heights, Noe Valley, Potrero Hill, the Fillmore, Bayview,',
-	// Landmarks & places
-	'the Ferry Building, Golden Gate Park, Sutro Baths, Lands End, McLaren Park,',
-	'JFK Promenade, Crosstown Trail, Pier 70, Wave Organ, Transamerica Pyramid,',
-	'Conservatory of Flowers, the Botanical Garden, Salesforce Park,',
-	// Venues & businesses
-	'Hamburger Haven, Club Fugazi, Manny\'s, The Lab, Spin City, Parklab,',
-	'La Cocina, Bi-Rite, Tartine, Humphry Slocombe, Lazy Bear, Toronado,',
-	'Wesburger, The New Wheel, Laughing Monk,',
-	// People & characters
-	'Emperor Norton, Herb Caen, Cosmic Amanda, Dr. Guacamole,',
-	// Organizations & media
-	'Muni Diaries, Noise Pop, Litquake, Litcrawl, KQED, KALW, Hoodline,',
-	'Mission Local, SFGate, Tablehopper, Total SF, Bay City Beacon,',
-	'BAYCAT, ODC, YBCA, Gray Area, SFMOMA, the Exploratorium,',
-	'Sisters of Perpetual Indulgence, Cacophony Society,',
-	// Transit
-	'Muni, BART, Caltrain, the N-Judah, the F-Market,',
-	// Culture & SF-specific
-	'Eichler Homes, Compton\'s Cafeteria, Critical Mass, Sketch Fest, Karl the Fog,',
-	'NIMBYism, YIMBYism, Dungeness crab, cioppino, dim sum, sourdough,',
-	// People
-	'Suldrew,',
-].join(' ');
+// The spelling-hint prompt is the Worker's (roe-pipeline/src/whisper-prompt.js):
+// the local one had grown past the ~224 tokens Whisper reads and lost the hosts' names.
 
 // ── Step 1: Prerequisite checks ────────────────────────────────────────
 
 // Only checks tools the steps that will actually run depend on. Whisper (CLI +
 // models) is transcribe-only; ffmpeg is used by both transcribe and upload-audio.
 // This keeps embed/summary-only runs (e.g. process-all phase 2, merge-episode)
-// from failing on a machine without whisper installed.
+// from failing on a machine without whisper installed. The keys those steps
+// need are checked here too, so a missing one stops the run before anything is
+// written, not halfway through it.
 function checkPrerequisites(skip = new Set()) {
 	const timer = stepTimer('PREREQUISITES');
 	const missing = [];
@@ -138,6 +109,13 @@ function checkPrerequisites(skip = new Set()) {
 		} catch {
 			missing.push('ffmpeg — install with: brew install ffmpeg');
 		}
+	}
+
+	if (!skip.has('summary') && !process.env.OPENAI_API_KEY) {
+		missing.push('OPENAI_API_KEY (for the summary) — add it to .env');
+	}
+	if (!skip.has('embeddings') && !db.isLocal && !(process.env.CLOUDFLARE_ACCOUNT_ID && process.env.CLOUDFLARE_API_TOKEN)) {
+		missing.push('CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN (for the embeddings) — add them to .env');
 	}
 
 	if (missing.length > 0) {
@@ -375,8 +353,8 @@ function transcribe(mp3Path, episodeId, force) {
 		// Convert MP3 → WAV (16kHz mono)
 		const wavPath = path.join(tmpDir, 'audio.wav');
 		console.log('  Converting to WAV (16kHz mono)...');
-		execFileSync('ffmpeg', ['-y', '-i', mp3Path, '-ar', '16000', '-ac', '1', wavPath], {
-			encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'],
+		execFileSync('ffmpeg', ['-nostdin', '-y', '-i', mp3Path, '-vn', '-ar', '16000', '-ac', '1', wavPath], {
+			encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'],
 		});
 
 		// Run whisper.cpp
@@ -388,6 +366,12 @@ function transcribe(mp3Path, episodeId, force) {
 			'--output-json-full',
 			'--output-file', whisperOutput,
 			'--prompt', SF_VOCAB_PROMPT,
+			// Don't feed Whisper its own recent text: that's what makes it go quiet after
+			// a song or repeat a line (added 3/14, lost in the April refactor; of 78
+			// transcripts that stop early, 76 were made without it). Carrying the prompt
+			// into every window keeps the spelling hints working without that context.
+			'--max-context', '0',
+			'--carry-initial-prompt',
 			'--vad',
 			'--vad-model', VAD_MODEL_PATH,
 			'--suppress-nst',
@@ -768,12 +752,9 @@ function uploadAudio(mp3Path, episodeId, force) {
 	const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'roe-upload-'));
 
 	try {
-		// Convert MP3 → M4A (AAC 128k, faststart)
+		// Convert MP3 → M4A (AAC 128k, faststart; lib.js drops cover art)
 		console.log('  Converting to M4A...');
-		const m4aPath = path.join(tmpDir, 'converted.m4a');
-		execFileSync('ffmpeg', ['-y', '-i', mp3Path, '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', m4aPath], {
-			encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'],
-		});
+		const m4aPath = convertAudio(mp3Path, tmpDir);
 
 		// Upload to R2
 		const r2Key = `${episodeId}.m4a`;

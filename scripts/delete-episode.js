@@ -19,21 +19,19 @@ import path from 'node:path';
 
 import {
 	loadEnv, escapeSQL, queryJSON, runSQL, wranglerExec,
-	transcriptsDir,
+	transcriptsDir, R2_BUCKET, VECTORIZE_INDEX,
 } from './lib.js';
 import { backupEpisode } from './episode-backup.js';
 
 loadEnv();
 
-const INDEX_NAME = 'roe-transcripts';
-const R2_BUCKET = 'roe-audio';
 const DELETE_BATCH_SIZE = 100;
 
 function deleteVectors(ids) {
 	for (let i = 0; i < ids.length; i += DELETE_BATCH_SIZE) {
 		const batch = ids.slice(i, i + DELETE_BATCH_SIZE);
 		wranglerExec(
-			['vectorize', 'delete-vectors', INDEX_NAME, '--ids', ...batch],
+			['vectorize', 'delete-vectors', VECTORIZE_INDEX, '--ids', ...batch],
 			{ stdio: 'pipe' }
 		);
 		console.log(`  Deleted ${batch.length} vectors (${i + batch.length}/${ids.length})`);

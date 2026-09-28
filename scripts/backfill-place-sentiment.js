@@ -26,7 +26,7 @@ import {
   scoreMention,
   regenerateNarrativeFromRows,
 } from '../roe-pipeline/src/sentiment.js';
-import { loadEnv, wranglerExec } from './lib.js';
+import { loadEnv, wranglerExec, parseFlags } from './lib.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const TRANSCRIPTS_DIR = path.join(__dirname, '..', 'transcripts');
@@ -35,10 +35,11 @@ const PROGRESS_PATH = path.join(__dirname, 'backfill-sentiment-progress.json');
 loadEnv();
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 if (!OPENAI_API_KEY) { console.error('OPENAI_API_KEY required'); process.exit(1); }
-const REPLACE = process.argv.includes('--replace');
-const episodeArg = process.argv.indexOf('--episode');
-const ONLY_EPISODE = episodeArg > -1 ? process.argv[episodeArg + 1] : null;
-if (episodeArg > -1 && !ONLY_EPISODE) { console.error('--episode needs an episode id'); process.exit(1); }
+const USAGE = 'Usage: node scripts/backfill-place-sentiment.js [--replace] [--episode <episode-id>]';
+const { flags, rest } = parseFlags(process.argv.slice(2), { '--replace': 'flag', '--episode': 'value' }, USAGE);
+if (rest.length > 0) { console.error(`Unexpected argument: ${rest.join(' ')}\n\n${USAGE}`); process.exit(1); }
+const REPLACE = !!flags.replace;
+const ONLY_EPISODE = flags.episode ?? null;
 
 // Through lib.js, which runs wrangler without a shell. Through a shell, "$5.50"
 // in a quote became ".50" and anything in backticks would run as a command.

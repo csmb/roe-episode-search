@@ -21,12 +21,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { escapeSQL, queryJSON, wranglerExec, transcriptsDir } from './lib.js';
+import { escapeSQL, queryJSON, wranglerExec, transcriptsDir, R2_BUCKET, VECTORIZE_INDEX } from './lib.js';
 import { inlineParams } from './remote-d1.js';
 import { chunkEpisode } from './generate-embeddings.js';
 
-const INDEX_NAME = 'roe-transcripts';
-const R2_BUCKET = 'roe-audio';
 const GET_BATCH_SIZE = 20; // wrangler vectorize get-vectors takes at most 20 IDs
 const backupsDir = path.join(transcriptsDir, '.backups');
 
@@ -43,7 +41,7 @@ function candidateVectorIds(episodeId, lines, localTranscript) {
 function getVectors(ids) {
 	const found = [];
 	for (let i = 0; i < ids.length; i += GET_BATCH_SIZE) {
-		const out = wranglerExec(['vectorize', 'get-vectors', INDEX_NAME, '--ids', ...ids.slice(i, i + GET_BATCH_SIZE)]);
+		const out = wranglerExec(['vectorize', 'get-vectors', VECTORIZE_INDEX, '--ids', ...ids.slice(i, i + GET_BATCH_SIZE)]);
 		// A banner, then the vectors as a JSON array (nothing when none match)
 		const start = out.indexOf('\n[');
 		if (start !== -1) found.push(...JSON.parse(out.slice(start)));
@@ -132,7 +130,7 @@ function readme({ episodeId, dir, rows, vectors, candidates, hasTranscript, audi
 		'  cd roe-search',
 		`  env -u CLOUDFLARE_API_TOKEN npx wrangler d1 execute roe-episodes ${where} --file "${path.join(dir, 'restore.sql')}"`,
 		...(vectors.length > 0 && !isLocal
-			? [`  env -u CLOUDFLARE_API_TOKEN npx wrangler vectorize upsert ${INDEX_NAME} --file "${path.join(dir, 'vectors.ndjson')}"`]
+			? [`  env -u CLOUDFLARE_API_TOKEN npx wrangler vectorize upsert ${VECTORIZE_INDEX} --file "${path.join(dir, 'vectors.ndjson')}"`]
 			: []),
 		...(hasTranscript ? [`  cp "${path.join(dir, `${episodeId}.json`)}" ../transcripts/`] : []),
 		...(audioFile
