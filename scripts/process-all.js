@@ -5,6 +5,8 @@
  *
  * Features:
  *   - Checkpoint/resume: tracks completed/failed/skipped episodes in batch-progress.json
+ *   - Leaves episodes that are already complete on the site alone (asks D1)
+ *   - Skips dates split into several files (MULTI-PART, see discover-episodes.js)
  *   - Spawns process-episode.js as a subprocess per episode (isolates memory/crashes)
  *   - Configurable cooldown between episodes for thermal management
  *   - Retry up to 2 times on failure
@@ -27,6 +29,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { discoverEpisodes } from './discover-episodes.js';
+import { queryJSON } from './lib.js';
 
 const projectRoot = path.resolve(path.dirname(decodeURIComponent(new URL(import.meta.url).pathname)), '..');
 const transcriptsDir = path.join(projectRoot, 'transcripts');
@@ -187,9 +190,19 @@ function main() {
 	// upload). Such episodes are re-run; process-episode.js skips the
 	// transcription step (and any other step already done) itself.
 	const progress = loadProgress();
+
+	// Episodes already complete on the site (a duration, a summary and audio)
+	// also count as done: most arrived by drag and drop after this checkpoint
+	// was last written. Re-running one would transcribe it again and replace its
+	// search vectors with ones built from a different transcript. A run of ours
+	// that stopped partway leaves one of the three empty, so it is still resumed.
+	const onSite = queryJSON(
+		"SELECT id FROM episodes WHERE duration_ms IS NOT NULL AND summary IS NOT NULL AND summary != '' AND audio_file IS NOT NULL"
+	).map((r) => r.id);
 	const alreadyDone = new Set([
 		...Object.keys(progress.completed),
 		...Object.keys(progress.skipped),
+		...onSite,
 	]);
 
 	let transcriptsOnDisk = 0;
@@ -222,6 +235,7 @@ function main() {
 	console.log(`  ${timestamp()} Unique dates: ${uniqueDates}`);
 	console.log(`  ${timestamp()} Previously completed: ${completedCount}`);
 	console.log(`  ${timestamp()} Previously failed: ${failedCount}`);
+	console.log(`  ${timestamp()} Complete on the site: ${onSite.length}`);
 	console.log(`  ${timestamp()} Transcripts on disk: ${transcriptsOnDisk}`);
 	console.log(`  ${timestamp()} To process this run: ${toProcess.length}`);
 	console.log(`  ${timestamp()} Cooldown: ${opts.cooldown}s between episodes`);
