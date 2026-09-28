@@ -18,25 +18,16 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { loadEnv, transcriptsDir, parseFlags, queryJSON } from './lib.js';
-import { chunkSegments, generateEmbeddings } from '../roe-pipeline/src/embeddings.js';
+import { generateEmbeddings } from '../roe-pipeline/src/embeddings.js';
 import { remoteAI, remoteVectorize } from './remote-cloudflare.js';
 
-loadEnv();
-
-/**
- * The windows a transcript file ({episode_id, title, segments}) is embedded in,
- * exactly as the Worker makes them. episode-backup.js uses it to find an
- * episode's vector IDs.
- */
-export function chunkEpisode(transcript) {
-	const { episode_id, title, segments } = transcript;
-	if (!segments || segments.length === 0) return [];
-	return chunkSegments(episode_id, segments, transcript.meta?.audio_ms).map((c) => ({ ...c, episode_id, title }));
-}
+// It lives in vector-ids.js now (importing this file loads no .env); transcribe.js and process-all.js import it from here
+export { chunkEpisode } from './vector-ids.js';
 
 const USAGE = 'Usage: node scripts/generate-embeddings.js (--only <episode-id>[,<episode-id>…] | --all)';
 
 async function main() {
+	loadEnv();
 	const { flags, rest } = parseFlags(process.argv.slice(2), { '--only': 'value', '--all': 'flag' }, USAGE);
 	if (rest.length > 0 || !flags.only === !flags.all) {
 		console.error(USAGE);
