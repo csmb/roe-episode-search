@@ -433,6 +433,10 @@ export async function prepareAudio(plan, { isLocal = false, log = console.log } 
 	}
 }
 
+/** A problem with a show's audio that no other try would fix: the job exits with AUDIO_PROBLEM. */
+class AudioProblem extends Error {}
+const AUDIO_PROBLEM = 3;
+
 /**
  * One transcription, run as its own process (so a long whisper.cpp or OpenAI
  * run never holds up the publishing): make the audio ready, transcribe it with
@@ -444,13 +448,39 @@ async function runJob(job) {
 	const log = (line) => console.log(`[${stamp()}] ${line}`);
 	const { plan } = job;
 	log(`${plan.date}: ${job.engine === 'trial' ? 'the trial transcript' : `transcribing with ${job.engine}${job.model ? ` (${path.basename(job.model, '.bin')})` : ''}`}`);
-	const { file, facts } = await prepareAudio(plan, { isLocal: job.isLocal, log });
+	let file;
+	let facts;
+	try {
+		({ file, facts } = await prepareAudio(plan, { isLocal: job.isLocal, log }));
+	} catch (err) {
+		throw new AudioProblem(err.message);
+	}
+	let trial = null;
+	if (job.engine === 'trial') {
+		if (!fs.existsSync(plan.trialFile)) throw new AudioProblem(`No trial transcript: ${plan.trialFile}`);
+		trial = readJSON(plan.trialFile);
+		if (trial.episode_id !== plan.id || !trial.meta?.audio_ms) throw new AudioProblem(`${plan.trialFile} isn't a transcript of ${plan.id} with a meta block`);
+	}
+
+	// Before any transcribing: the audio has to be the recording the site plays (for a join,
+	// the site has to be playing the part the worklist names), or no transcript of it could pass
+	const currentSiteMs = await siteAudioMs(plan.id, { isLocal: job.isLocal });
+	if (!currentSiteMs) throw new AudioProblem(`R2 has no ${siteAudioKey(plan.id)}, so the length of the site's audio is unknown`);
+	if (plan.action === 'join') {
+		const part = facts.parts.find((p) => p.n === plan.join.sitePart);
+		if (Math.abs(currentSiteMs - part.ms) > SITE_AUDIO_SLACK_MS) {
+			throw new AudioProblem(`the site's audio (${minutes(currentSiteMs)} min) isn't part ${part.n} (${minutes(part.ms)} min), so the times can't be moved by the right amount`);
+		}
+	} else {
+		const audioMs = trial ? trial.meta.audio_ms : probeDurationMs(file);
+		if (Math.abs(audioMs - currentSiteMs) > SITE_AUDIO_SLACK_MS) {
+			throw new AudioProblem(`${trial ? 'the trial transcript\'s recording' : path.basename(file)} is ${minutes(audioMs)} min, the site's audio ${minutes(currentSiteMs)} min: a different recording`);
+		}
+	}
 
 	let transcript;
-	if (job.engine === 'trial') {
-		if (!fs.existsSync(plan.trialFile)) throw new Error(`No trial transcript: ${plan.trialFile}`);
-		transcript = readJSON(plan.trialFile);
-		if (transcript.episode_id !== plan.id || !transcript.meta?.audio_ms) throw new Error(`${plan.trialFile} isn't a transcript of ${plan.id} with a meta block`);
+	if (trial) {
+		transcript = trial;
 	} else if (job.engine === 'openai') {
 		const { transcribeFile } = await import('./transcribe.js');
 		transcript = await transcribeFile(file, plan.id);
@@ -459,8 +489,7 @@ async function runJob(job) {
 		transcript = whisperCppTranscript(file, plan.id, job.noGpu, { modelPath: job.model });
 	}
 
-	// The length of what the site plays: the joined show for a join (the upload replaces the site's audio)
-	const currentSiteMs = await siteAudioMs(plan.id, { isLocal: job.isLocal });
+	// What the site will play: the joined show for a join (the upload replaces the site's audio)
 	const result = {
 		engine: job.engine,
 		model: transcript.meta?.model ?? null,
@@ -491,6 +520,24 @@ class Run {
 		this.shifted = []; // interview times moved
 		this.setAsideList = []; // shows left for the owner
 		this.setAsideInARow = 0;
+		this.dbQueue = Promise.resolve();
+	}
+
+	/**
+	 * One caller at a time on D1: a check waits while an episode publishes. Production D1
+	 * answers no other queries during a seed's import, and a local copy is one SQLite file
+	 * that two wrangler processes can't both open (SQLITE_BUSY).
+	 */
+	async withDb(fn) {
+		const before = this.dbQueue;
+		let release;
+		this.dbQueue = new Promise((resolve) => { release = resolve; });
+		await before;
+		try {
+			return await fn();
+		} finally {
+			release();
+		}
 	}
 
 	rec(plan) {
@@ -578,7 +625,7 @@ class Run {
 			// when the run is stopping: a checked one is published by this run (at the cost
 			// cap) or the next
 			if (fs.existsSync(stagingPath(plan.id)) && fs.existsSync(resultPath(plan.id))) {
-				const verdict = this.check(plan);
+				const verdict = await this.withDb(() => this.check(plan));
 				if (verdict.ok) {
 					Object.assign(r, { state: 'staged', stage: null, error: null, updated_at: new Date().toISOString() });
 					this.save();
@@ -600,6 +647,7 @@ class Run {
 				this.setAside(plan, `no transcript passed the checks (${tries.join(' | ')})`);
 				return false;
 			}
+			let reserved = 0; // this try's OpenAI estimate, counted against --max-cost
 			if (step.engine === 'openai') {
 				const cost = openaiCost(minutesLeft(plan));
 				if (this.spent + cost > this.opts.maxCost) {
@@ -613,6 +661,7 @@ class Run {
 					}
 					return false;
 				}
+				reserved = cost;
 				this.spent += cost;
 				r.paid_usd = Math.round(((r.paid_usd ?? 0) + cost) * 100) / 100;
 			}
@@ -624,15 +673,19 @@ class Run {
 			const job = { plan, engine: step.engine, model: step.model ?? null, noGpu: this.opts.noGpu, isLocal: this.opts.local };
 			const { code, output } = await this.child(plan, [SCRIPT, '--job', JSON.stringify(job)]);
 			attempt.finished_at = new Date().toISOString();
+			if (code === AUDIO_PROBLEM) {
+				// Found before any transcribing, and no other try would fix it: nothing was paid
+				this.spent = Math.max(0, this.spent - reserved);
+				r.paid_usd = Math.max(0, Math.round(((r.paid_usd ?? 0) - reserved) * 100) / 100);
+				attempt.error = `the audio: ${lastError(output) || 'see the log'}`;
+				this.save();
+				this.setAside(plan, attempt.error);
+				return false;
+			}
 			if (code !== 0 || !fs.existsSync(stagingPath(plan.id))) {
 				attempt.error = `the ${step.engine} run failed: ${lastError(output) || `exit ${code}`}`;
 				this.save();
 				this.note(plan, `${attempt.error} (see ${logPath(plan.date)})`);
-				// Audio that can't be made or found, or a failed trial, won't come right by trying again
-				if (step.engine === 'trial' || !fs.existsSync(plan.audio?.kind === 'archive' ? plan.audio.file : audioFactsPath(plan.id))) {
-					this.setAside(plan, attempt.error);
-					return false;
-				}
 			}
 		}
 	}
@@ -853,9 +906,9 @@ class Run {
 			if (!this.failure && ready.length > 0) {
 				const plan = ready.shift();
 				try {
-					if (plan.action === 'lines') await this.cleanLines(plan);
-					else if (plan.action === 'duration') await this.fixDuration(plan);
-					else await this.publish(plan);
+					if (plan.action === 'lines') await this.withDb(() => this.cleanLines(plan));
+					else if (plan.action === 'duration') await this.withDb(() => this.fixDuration(plan));
+					else await this.withDb(() => this.publish(plan));
 				} catch (err) {
 					this.fail(plan, 'publish', err.message);
 				}
@@ -1003,7 +1056,12 @@ function keepAwake() {
 async function main() {
 	const argv = process.argv.slice(2);
 	if (argv[0] === '--job') {
-		await runJob(JSON.parse(argv[1]));
+		try {
+			await runJob(JSON.parse(argv[1]));
+		} catch (err) {
+			console.error(`[${stamp()}] Error: ${err.message}`);
+			process.exit(err instanceof AudioProblem ? AUDIO_PROBLEM : 1);
+		}
 		return;
 	}
 	loadEnv();
@@ -1052,8 +1110,10 @@ async function main() {
 	const only = listOf(flags.only);
 	const except = new Set(listOf(flags.except) ?? []);
 	const acts = listOf(flags.acts);
-	const unknownDates = (only ?? []).filter((d) => !rows.some((r) => r.date === d));
+	const unknownDates = [...(only ?? []), ...except].filter((d) => !rows.some((r) => r.date === d));
 	if (unknownDates.length > 0) stop(`Not on the worklist: ${unknownDates.join(', ')}`);
+	const unknownActs = (acts ?? []).filter((a) => !ACTS[a]);
+	if (unknownActs.length > 0) stop(`--acts: no act called ${unknownActs.join(', ')} (acts: ${Object.keys(ACTS).join(', ')})`);
 	const trialDir = flags['trial-dir'] ? path.resolve(flags['trial-dir']) : undefined;
 	const plans = rows
 		.filter((r) => (!only || only.includes(r.date)) && !except.has(r.date) && (!acts || acts.includes(r.act)))

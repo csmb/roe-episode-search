@@ -15,6 +15,7 @@ import { pipeline } from 'node:stream/promises';
 import { R2_BUCKET, R2_PUBLIC_URL, probeDurationMs, wranglerExec } from './lib.js';
 
 const FETCH_TIMEOUT_MS = 30 * 60_000; // a two-hour show is about 115 MB
+const LOCAL_BUSY_TRIES = 5;
 
 export const siteAudioKey = (episodeId) => `${episodeId}.m4a`;
 export const publicUrl = (key) => `${R2_PUBLIC_URL}/${key.split('/').map(encodeURIComponent).join('/')}`;
@@ -28,11 +29,17 @@ export async function downloadR2Object(key, file, { isLocal = false } = {}) {
 	const part = `${file}.part`;
 	try {
 		if (isLocal) {
-			try {
-				wranglerExec(['r2', 'object', 'get', `${R2_BUCKET}/${key}`, '--local', `--file=${part}`]);
-			} catch (err) {
-				if (/The specified key does not exist|not found/i.test(err.message)) return false;
-				throw err;
+			// The local copy is SQLite files that other wrangler processes (a test run's parallel
+			// jobs, or a publish) may hold for a moment: SQLITE_BUSY, or an "internal error"
+			for (let attempt = 1; ; attempt++) {
+				try {
+					wranglerExec(['r2', 'object', 'get', `${R2_BUCKET}/${key}`, '--local', `--file=${part}`]);
+					break;
+				} catch (err) {
+					if (/The specified key does not exist|not found/i.test(err.message)) return false;
+					if (attempt >= LOCAL_BUSY_TRIES) throw err;
+					await new Promise((resolve) => setTimeout(resolve, 2000 * attempt));
+				}
 			}
 		} else {
 			const res = await fetch(publicUrl(key), { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
