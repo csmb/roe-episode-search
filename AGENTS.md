@@ -39,6 +39,7 @@ roe-episode-search/
 │   ├── cleanup-places.js      # Remove false positive places from D1
 │   ├── redo-places.js         # Redo one episode's places with roe-pipeline's code
 │   ├── delete-episode.js      # Remove an episode from D1, Vectorize, R2
+│   ├── episode-backup.js      # Back up an episode (with restore SQL) before a delete or merge
 │   ├── archive/               # Retired one-off scripts, reference only (see its README)
 │   └── ...                    # ~15 more utility scripts
 ├── schema.sql                 # D1 schema (episodes, segments, FTS5, guests, places)
