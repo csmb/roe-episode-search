@@ -33,15 +33,18 @@ const AUDIO_EXTENSIONS = new Set(['.mp3', '.m4a', '.wav', '.ogg', '.flac', '.aac
 // Minimum file size (5 MB) — smaller files are likely fragments
 const MIN_SIZE_BYTES = 5 * 1024 * 1024;
 
-// A part number at the end of the name: "Roll Over Easy 2015-05-14 2.mp3".
-const PART_NUMBER = /\s\d{1,2}\.[^.]+$/;
+// A part number at the end of the name: "Roll Over Easy 2015-05-14 2.mp3", "rec_(2014_01_13)_1.mp3".
+const PART_NUMBER = /[\s_]\d{1,2}\.[^.]+$/;
 // "(1)" or "copy" marks a duplicate of another file, not a part.
 const DUPLICATE = /\(\d+\)|\bcopy\b/i;
 
 /**
- * True when a date has numbered parts that are not all the same recording.
- * Numbered files of one size are copies (most of the archive's numbered dates
- * are), and even a short part counts: a missing 4-minute intro is still missing.
+ * True when a date has a numbered file and its files (duplicates aside) are not
+ * all the same size, i.e. the same recording. Numbered files of one size are
+ * copies (most of the archive's numbered dates are), and even a short part
+ * counts: a missing 4-minute intro is still missing. A false alarm (say a name
+ * ending in a day, "Roll Over Easy March 20.mp3", next to another recording)
+ * only means the date is listed for a person to look at.
  */
 function isMultiPart(files) {
 	const originals = files.filter((f) => !DUPLICATE.test(f.filename));
