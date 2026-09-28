@@ -13,6 +13,9 @@
  *
  * Usage:
  *   node scripts/process-episode.js /path/to/roll-over-easy_2026-02-16_07-30-00.mp3
+ *   node scripts/process-episode.js --episode-id ID --skip transcribe,seed-db,upload-audio …
+ *     (only transcribe, seed-db and upload-audio read the audio: without them
+ *     the file can be left out, e.g. to redo an episode's embeddings)
  *
  * Options:
  *   --episode-id ID          Override auto-parsed episode ID
@@ -641,6 +644,7 @@ const ENGINES = ['whisper.cpp', 'openai'];
 function usage(problem) {
 	if (problem) console.error(`${problem}\n`);
 	console.error('Usage: node scripts/process-episode.js <mp3-file> [options]');
+	console.error('       (with --episode-id and transcribe, seed-db and upload-audio skipped, no file is needed)');
 	console.error('');
 	console.error('Options:');
 	console.error('  --episode-id ID          Override auto-parsed episode ID');
@@ -700,7 +704,9 @@ function parseArgs(args) {
 
 	const both = [...opts.force].filter((s) => opts.skip.has(s));
 	if (both.length > 0) usage(`Can't both force and skip: ${both.join(', ')}`);
-	if (!opts.mp3Path) usage();
+	// Only these steps read the audio (seed-db to upgrade an old transcript file)
+	const readsAudio = ['transcribe', 'seed-db', 'upload-audio'].some((s) => !opts.skip.has(s));
+	if (!opts.mp3Path && (readsAudio || !opts.episodeId)) usage();
 	return opts;
 }
 
@@ -708,8 +714,8 @@ async function main() {
 	const opts = parseArgs(process.argv.slice(2));
 	db.isLocal = opts.local;
 
-	const mp3Path = path.resolve(opts.mp3Path);
-	if (!fs.existsSync(mp3Path)) {
+	const mp3Path = opts.mp3Path ? path.resolve(opts.mp3Path) : null;
+	if (mp3Path && !fs.existsSync(mp3Path)) {
 		console.error(`File not found: ${mp3Path}`);
 		process.exit(1);
 	}
@@ -727,7 +733,7 @@ async function main() {
 	if (reseed) force.add('seed-db');
 
 	console.log('=== Roll Over Easy — Episode Processing Pipeline ===');
-	console.log(`  File:       ${path.basename(mp3Path)}`);
+	console.log(`  File:       ${mp3Path ? path.basename(mp3Path) : '(none: no step here reads the audio)'}`);
 	console.log(`  Episode ID: ${episodeId}`);
 	console.log(`  Force:      ${force.size > 0 ? [...force].join(', ') : 'none'}${reseed ? ' (seed-db because transcribe is)' : ''}`);
 	if (skip.size > 0) console.log(`  Skipping:   ${[...skip].join(', ')}`);
