@@ -7,39 +7,56 @@ import FERRY_BUILDING_WEBP from './ferry-building-v1.webp';
 import { HOST_NAMES } from '../../roe-pipeline/src/hosts.js';
 
 // ── Rate limiting ─────────────────────────────────────────────────────
-// Simple sliding-window rate limiter per IP. Limits are per Worker isolate
-// (not globally distributed), which is sufficient for basic cost protection.
+// Per-IP budgets, counted by Cloudflare's rate-limiting bindings ("ratelimits"
+// in wrangler.jsonc, which also sets their sizes), so every copy of the Worker
+// draws on the same count. Cloudflare counts per location and may let a few
+// extra through: this slows one client hammering the site; it isn't exact
+// accounting.
+//
+// Each kind of route has its own budget, so a busy map session can't use up
+// search. Routes with none: the pages, /audio, the admin API (behind its
+// password) and the public feeds /api/episodes/latest and /api/episodes/stats,
+// which other sites read and browsers cache for an hour.
+function rateLimiterFor(pathname) {
+	switch (pathname) {
+		case '/api/search':
+			return 'SEARCH_LIMITER';
+		case '/api/semantic-search':
+			return 'SEMANTIC_LIMITER';
+		case '/api/map-places':
+		case '/api/place-detail':
+		case '/api/episodes':
+		case '/api/guests':
+		case '/api/on-this-day':
+			return 'BROWSE_LIMITER';
+	}
+	// One episode, or its places. A bigger budget: /episodes asks for each card's
+	// places as it scrolls into view, so a quick scroll makes hundreds of these.
+	if (pathname.startsWith('/api/episode/')) return 'EPISODE_LIMITER';
+	return null;
+}
 
-const rateLimitState = new Map();
-const RATE_WINDOW_MS = 60_000;
-const RATE_LIMIT_SEMANTIC = 10; // semantic search: 10 req/min (uses Workers AI)
-const RATE_LIMIT_SEARCH = 30;   // keyword search, map and episode lists: 30 req/min
+const missingLimiters = new Set();
 
-function checkRateLimit(ip, bucket, limit) {
-	const key = `${bucket}:${ip}`;
-	const now = Date.now();
-	let timestamps = rateLimitState.get(key);
-	if (!timestamps) {
-		timestamps = [];
-		rateLimitState.set(key, timestamps);
-	}
-	// Evict expired entries
-	while (timestamps.length > 0 && timestamps[0] <= now - RATE_WINDOW_MS) {
-		timestamps.shift();
-	}
-	if (timestamps.length >= limit) {
-		return false;
-	}
-	timestamps.push(now);
-	// Periodically prune stale keys (every ~100 checks)
-	if (Math.random() < 0.01) {
-		for (const [k, v] of rateLimitState) {
-			if (v.length === 0 || v[v.length - 1] <= now - RATE_WINDOW_MS) {
-				rateLimitState.delete(k);
-			}
+// Whether this request is within its budget. With no binding (an old local
+// config) or a failed check the request goes through: a fault in the limiter
+// shouldn't take the site down with it.
+async function withinRateLimit(env, name, key) {
+	const limiter = env[name];
+	if (!limiter) {
+		if (!missingLimiters.has(name)) {
+			missingLimiters.add(name);
+			console.warn(`No ${name} binding, so its routes are not rate limited`);
 		}
+		return true;
 	}
-	return true;
+	try {
+		const { success } = await limiter.limit({ key });
+		return success;
+	} catch (err) {
+		console.error(`${name} failed; letting the request through`, err);
+		return true;
+	}
 }
 
 // ── Security headers ──────────────────────────────────────────────────
@@ -151,52 +168,38 @@ async function handleRequest(request, env) {
 		return handleAdminApi(url, env, request);
 	}
 
+	// Spend the route's budget, if it has one (see Rate limiting). The 429 has
+	// the same CORS headers as the route's other answers.
+	const limiter = rateLimiterFor(url.pathname);
+	if (limiter && !(await withinRateLimit(env, limiter, clientIP))) {
+		return json({ error: 'Rate limit exceeded. Try again in a minute.' }, 429, request, { 'Retry-After': '60' });
+	}
+
 	if (url.pathname === '/map') {
 		return new Response(MAP_HTML, { headers: HTML_HEADERS });
 	}
 	if (url.pathname === '/api/map-places') {
-		if (!checkRateLimit(clientIP, 'search', RATE_LIMIT_SEARCH)) {
-			return json({ error: 'Rate limit exceeded. Try again in a minute.' }, 429, request);
-		}
 		return handleMapPlaces(env, request);
 	}
 	if (url.pathname === '/api/place-detail') {
-		if (!checkRateLimit(clientIP, 'search', RATE_LIMIT_SEARCH)) {
-			return json({ error: 'Rate limit exceeded. Try again in a minute.' }, 429, request);
-		}
 		return handlePlaceDetail(url, env, request);
 	}
 
 	if (url.pathname === '/api/search') {
-		if (!checkRateLimit(clientIP, 'search', RATE_LIMIT_SEARCH)) {
-			return json({ error: 'Rate limit exceeded. Try again in a minute.' }, 429, request);
-		}
 		return handleSearch(url, env, request);
 	}
 	if (url.pathname === '/api/semantic-search') {
-		if (!checkRateLimit(clientIP, 'semantic', RATE_LIMIT_SEMANTIC)) {
-			return json({ error: 'Rate limit exceeded. Try again in a minute.' }, 429, request);
-		}
 		return handleSemanticSearch(url, env, request);
 	}
 	// Ahead of /api/episodes for readability only — that route is an exact
 	// match, so it could not swallow this one.
 	if (url.pathname === '/api/episodes/latest') {
-		if (!checkRateLimit(clientIP, 'search', RATE_LIMIT_SEARCH)) {
-			return json({ error: 'Rate limit exceeded. Try again in a minute.' }, 429, request);
-		}
 		return handleLatestEpisode(url, env, request);
 	}
 	if (url.pathname === '/api/episodes/stats') {
-		if (!checkRateLimit(clientIP, 'search', RATE_LIMIT_SEARCH)) {
-			return json({ error: 'Rate limit exceeded. Try again in a minute.' }, 429, request);
-		}
 		return handleEpisodeStats(env, request);
 	}
 	if (url.pathname === '/api/episodes') {
-		if (!checkRateLimit(clientIP, 'search', RATE_LIMIT_SEARCH)) {
-			return json({ error: 'Rate limit exceeded. Try again in a minute.' }, 429, request);
-		}
 		return handleEpisodes(env, request);
 	}
 	if (url.pathname === '/api/on-this-day') {

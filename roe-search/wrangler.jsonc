@@ -29,6 +29,37 @@
   "ai": {
     "binding": "AI"
   },
+  // Per-IP request budgets, one for each kind of API route: rateLimiterFor() in
+  // src/index.js says which route spends which. A namespace_id can be any
+  // positive integer, but it is account-wide: a Worker reusing one shares its counts.
+  "ratelimits": [
+    // Keyword search. Only the admin page has a search box, but the route is public.
+    {
+      "name": "SEARCH_LIMITER",
+      "namespace_id": "1001",
+      "simple": { "limit": 30, "period": 60 }
+    },
+    // Semantic search: every request runs Workers AI and Vectorize, which are billed.
+    {
+      "name": "SEMANTIC_LIMITER",
+      "namespace_id": "1002",
+      "simple": { "limit": 10, "period": 60 }
+    },
+    // Map places, place detail, the episode and guest lists, On This Day. A page
+    // view asks for one of these, plus one per place opened on the map.
+    {
+      "name": "BROWSE_LIMITER",
+      "namespace_id": "1003",
+      "simple": { "limit": 120, "period": 60 }
+    },
+    // One episode, or its places. Each card on /episodes asks for its places as
+    // it scrolls into view: scrolling the whole archive makes hundreds of these.
+    {
+      "name": "EPISODE_LIMITER",
+      "namespace_id": "1004",
+      "simple": { "limit": 1000, "period": 60 }
+    }
+  ],
   "observability": {
     "enabled": true
   },

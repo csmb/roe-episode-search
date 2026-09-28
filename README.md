@@ -61,7 +61,7 @@ chunk at most, and the run can be resumed (see "Processing a new episode").
 
 ### Components
 
-**Cloudflare Worker** (`roe-search/src/index.js`) — serves the frontend and handles all API routes: keyword search (FTS5), semantic search (Vectorize), episode/guest/place listings, and audio proxying from R2 with range request support.
+**Cloudflare Worker** (`roe-search/src/index.js`) — serves the frontend and handles all API routes: keyword search (FTS5), semantic search (Vectorize), episode/guest/place listings, and audio proxying from R2 with range request support. API requests are rate limited per IP by Cloudflare's rate-limiting bindings (`ratelimits` in `roe-search/wrangler.jsonc`), with a budget per kind of route each minute: 30 keyword searches, 10 semantic searches, 120 for the pages' lists and details (map places, place detail, episodes, guests, On This Day) and 1,000 for `/api/episode/…`, which `/episodes` calls once per card as you scroll. The public feeds `/api/episodes/latest` and `/api/episodes/stats`, the pages, `/audio` and the admin API are not limited.
 
 **Cloudflare D1** — SQLite database with episode metadata, timestamped transcript segments, an FTS5 virtual table, and guest-episode links.
 

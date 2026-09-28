@@ -150,7 +150,7 @@ September, so don't re-run it as is. Guest lists are edited in the admin page; t
 | File | What's In It |
 |------|-------------|
 | `schema.sql` | D1 schema — episodes, transcript_segments, transcript_fts (FTS5), episode_guests, places, place_mentions |
-| `roe-search/wrangler.jsonc` | Worker config — D1, R2, Vectorize, AI bindings |
+| `roe-search/wrangler.jsonc` | Worker config — D1, R2, Vectorize, AI bindings, and the per-IP rate limits (`ratelimits`) |
 | `roe-pipeline/wrangler.jsonc` | Worker config — D1, R2, Vectorize, Durable Object, queue bindings |
 | `.env` | Secrets: CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN, OPENAI_API_KEY, PIPELINE_TOKEN (for roe-pipeline's /process and /status) |
 | `r2-cors.json` | R2 CORS rules (GET/HEAD from all origins) |
