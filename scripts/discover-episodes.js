@@ -3,6 +3,10 @@
 /**
  * Scan an audio directory, parse filenames, deduplicate, and return a sorted episode manifest.
  *
+ * A date recorded as several different files ("Roll Over Easy 2015-05-14 1.mp3",
+ * "… 2.mp3") is skipped and reported as MULTI-PART: no one file is the whole show,
+ * so join the parts into one file first.
+ *
  * Usage (standalone preview):
  *   node scripts/discover-episodes.js "/path/to/All episodes/"
  *
@@ -28,6 +32,22 @@ const AUDIO_EXTENSIONS = new Set(['.mp3', '.m4a', '.wav', '.ogg', '.flac', '.aac
 
 // Minimum file size (5 MB) — smaller files are likely fragments
 const MIN_SIZE_BYTES = 5 * 1024 * 1024;
+
+// A part number at the end of the name: "Roll Over Easy 2015-05-14 2.mp3".
+const PART_NUMBER = /\s\d{1,2}\.[^.]+$/;
+// "(1)" or "copy" marks a duplicate of another file, not a part.
+const DUPLICATE = /\(\d+\)|\bcopy\b/i;
+
+/**
+ * True when a date has numbered parts that are not all the same recording.
+ * Numbered files of one size are copies (most of the archive's numbered dates
+ * are), and even a short part counts: a missing 4-minute intro is still missing.
+ */
+function isMultiPart(files) {
+	const originals = files.filter((f) => !DUPLICATE.test(f.filename));
+	return originals.some((f) => PART_NUMBER.test(f.filename))
+		&& new Set(originals.map((f) => f.fileSize)).size > 1;
+}
 
 /**
  * Extract the date portion (YYYY-MM-DD) from a canonical episode ID.
@@ -66,7 +86,9 @@ function filePreferenceScore(filename) {
  * @param {string} audioDir - Path to directory containing MP3 files
  * @param {Object} [opts] - Options
  * @param {Set<string>} [opts.alreadyProcessed] - Set of episode IDs to exclude
- * @returns {{ episodeId: string, date: string, filePath: string, fileSize: number }[]}
+ * @returns {{ episodes: { episodeId: string, date: string, filePath: string, fileSize: number }[],
+ *   multiPart: { date: string, files: string[] }[], unparseable: string[], totalFiles: number, uniqueDates: number }}
+ *   multiPart lists the dates skipped because they are split into parts (only dates not already processed).
  */
 export function discoverEpisodes(audioDir, opts = {}) {
 	const resolvedDir = path.resolve(audioDir);
@@ -111,8 +133,17 @@ export function discoverEpisodes(audioDir, opts = {}) {
 
 	// Pick the best file for each date
 	const episodes = [];
+	const multiPart = [];
 
 	for (const [date, files] of byDate) {
+		// A split show: skip it rather than quietly pick one part
+		if (isMultiPart(files)) {
+			if (!files.some((f) => alreadyProcessed.has(f.episodeId))) {
+				multiPart.push({ date, files: files.map((f) => f.filePath).sort() });
+			}
+			continue;
+		}
+
 		// Filter out small files if there are larger alternatives
 		let viable = files.filter((f) => f.fileSize >= MIN_SIZE_BYTES);
 		if (viable.length === 0) {
@@ -142,8 +173,9 @@ export function discoverEpisodes(audioDir, opts = {}) {
 
 	// Sort chronologically
 	episodes.sort((a, b) => a.date.localeCompare(b.date));
+	multiPart.sort((a, b) => a.date.localeCompare(b.date));
 
-	return { episodes, unparseable, totalFiles: allFiles.length, uniqueDates: byDate.size };
+	return { episodes, multiPart, unparseable, totalFiles: allFiles.length, uniqueDates: byDate.size };
 }
 
 // ── CLI ────────────────────────────────────────────────────────────────
@@ -167,7 +199,7 @@ if (import.meta.main) {
 		}
 	}
 
-	const { episodes, unparseable, totalFiles, uniqueDates } = discoverEpisodes(audioDir, { alreadyProcessed });
+	const { episodes, multiPart, unparseable, totalFiles, uniqueDates } = discoverEpisodes(audioDir, { alreadyProcessed });
 
 	console.log('=== Episode Discovery ===');
 	console.log(`  Total MP3 files:      ${totalFiles}`);
@@ -177,6 +209,11 @@ if (import.meta.main) {
 	if (unparseable.length > 0) {
 		console.log(`  Unparseable (skipped): ${unparseable.length}`);
 		unparseable.forEach((f) => console.log(`    - ${f}`));
+	}
+	if (multiPart.length > 0) {
+		console.log('');
+		multiPart.forEach((m) => console.log(`MULTI-PART ${m.date}: ${m.files.length} files — skipped`));
+		console.log('  (join each show\'s parts into one file to process it)');
 	}
 
 	console.log(`\n=== Episodes to process (${episodes.length}) ===`);

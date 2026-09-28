@@ -197,13 +197,15 @@ function main() {
 		transcriptsOnDisk = fs.readdirSync(transcriptsDir).filter((f) => f.endsWith('.json')).length;
 	}
 
-	// Discover episodes
-	const { episodes, totalFiles, uniqueDates } = discoverEpisodes(opts.audioDir, { alreadyProcessed: alreadyDone });
+	// Discover episodes (dates split into parts are left out and listed in multiPart)
+	const { episodes, multiPart, totalFiles, uniqueDates } = discoverEpisodes(opts.audioDir, { alreadyProcessed: alreadyDone });
 
 	// Apply --start-from filter
 	let toProcess = episodes;
+	let splitDates = multiPart;
 	if (opts.startFrom) {
 		toProcess = toProcess.filter((e) => e.date >= opts.startFrom);
+		splitDates = splitDates.filter((m) => m.date >= opts.startFrom);
 	}
 
 	// Apply --max limit
@@ -225,6 +227,9 @@ function main() {
 	console.log(`  ${timestamp()} Cooldown: ${opts.cooldown}s between episodes`);
 	if (opts.startFrom) console.log(`  ${timestamp()} Starting from: ${opts.startFrom}`);
 	if (opts.timeLimitMs) console.log(`  ${timestamp()} Time limit: ${opts.timeLimitMs / 3600000}h`);
+	for (const m of splitDates) {
+		console.log(`  ${timestamp()} MULTI-PART ${m.date}: ${m.files.length} files — skipped (join the parts into one file first)`);
+	}
 	console.log('');
 
 	if (opts.dryRun) {
