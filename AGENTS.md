@@ -45,6 +45,10 @@ roe-episode-search/
 │   ├── redo-places.js         # Redo one episode's places with roe-pipeline's code
 │   ├── delete-episode.js      # Back up, then remove an episode from D1 and Vectorize (--yes)
 │   ├── episode-backup.js      # Back up an episode (with restore SQL) before a delete or merge
+│   ├── repair-archive.js      # Redo damaged transcripts from a worklist: stage, check, then publish one at a time
+│   ├── scan-transcripts.js    # Read-only scan of D1's transcripts (loops, holes, early stops, junk, durations)
+│   ├── clean-junk-lines.js    # Delete junk lines in D1 by rule, then redo the embeddings (dry run unless --yes)
+│   ├── transcript-checks.js   # The checks those three share (and the old prompt's terms)
 │   ├── test/                  # node:test files for the scripts' own logic
 │   ├── archive/               # Retired one-off scripts, reference only (see its README)
 │   └── ...                    # ~15 more utility scripts
@@ -97,14 +101,14 @@ cd roe-pipeline && npm test
 
 ### Run the scripts' tests
 ```
-node --test scripts/test/*.test.js    # discover-episodes' alternates, process-all's fallback choice
+node --test scripts/test/*.test.js    # discover-episodes, process-all, the seed SQL, the repair tools' checks and plans
 ```
 
 ### Test the scripts on a scratch D1
 Scripts with `--local` use the local D1 copy (and local R2). With `ROE_PERSIST_TO=<dir>` that copy,
-the transcripts and the backups all live in `<dir>` (transcripts in `<dir>/transcripts`), and
-`lib.js` refuses any `--remote` wrangler call or Vectorize write, so a test can't touch production
-or your own local state:
+the transcripts, the backups and the warnings log all live in `<dir>` (transcripts in
+`<dir>/transcripts`), and `lib.js` refuses any `--remote` wrangler call or Vectorize write, so a test
+can't touch production or your own local state:
 ```
 export ROE_PERSIST_TO=/tmp/roe-test
 (cd roe-search && npx wrangler d1 execute roe-episodes --local --persist-to $ROE_PERSIST_TO --file=../schema.sql)
@@ -136,8 +140,13 @@ holes, coverage). The seed step refuses a transcript that ends past its recordin
 90% of it unless `--accept-short`, re-seeds when D1 holds a different transcript (lines off by 20%+
 or the end by 60 s+, and only from a complete file), sets `duration_ms` to the recording's real
 length, and cleans an old file without `meta` the new way first (the original goes to
-`transcripts/.backups/`). The embeddings step deletes the vectors a replaced transcript had and the
+`transcripts/.backups/`). It replaces the lines in one D1 import (`seedSQL`, run with
+`wrangler d1 execute --file`): a crash leaves the old transcript or the new one, never part of one,
+and production D1 answers no other queries for the few seconds the import takes. (Staging the new
+lines under a temporary episode ID would need a temporary `episodes` row for the foreign key, which
+the site would list.) The embeddings step deletes the vectors a replaced transcript had and the
 new one doesn't. Episodes needing another pass are listed in `transcripts/.retranscribe/episodes.json`.
+With `--episode-id` and transcribe, seed-db and upload-audio skipped, no audio file is needed.
 
 An episode whose guests were reviewed (`guests_reviewed = 1`) keeps its title, summary, guests and
 interview time, even with `--force`, unless `--include-reviewed` is given (new AI guests then go
@@ -156,6 +165,26 @@ rejects a transcript, the date's next recording (discover-episodes' `alternates`
 that date, not copies of the same size) is tried in the same run, under the date's episode ID. Every
 rejected file is recorded (name and size) in `batch-progress.json`, and its transcript goes to
 `transcripts/.rejected/`; a later run skips the date until a file it hasn't rejected appears.
+
+### Repair damaged transcripts
+```
+node scripts/repair-archive.js --worklist repair-worklist.csv --dry-run      # plan, audio, GPU time, cost
+node scripts/repair-archive.js --worklist repair-worklist.csv --acts T        # a stage (or --only <dates>)
+node scripts/scan-transcripts.js --only <dates> --m4a --json after.json      # read-only, before and after
+```
+The worklist's `act` column: W/O redo whole, J join a split show then redo, T install
+`transcripts/.trial-2026-09-27/<id>.json`, L junk lines only (`clean-junk-lines.js`), M fix
+`duration_ms`, X leave alone. Transcripts are made in `transcripts/.repair/staging/` (whisper.cpp
+`large-v3-turbo` on the GPU by default; `--engine openai` is paid and capped by `--max-cost`, default
+$0), checked (coverage, no loops, 80% of the old words, the site's audio length; holes are only
+listed), then published one at a time: backup, install, `process-episode.js --force seed-db` (joins
+also `upload-audio`), and checks on D1 (lines, keyword search, length, reviewed fields unchanged). A
+show that fails twice is set aside and the run goes on; a publishing failure stops it. It resumes
+from `transcripts/.repair/progress.json`. Joined shows' interview and quote times move by the parts
+added before the site's part. Each episode's backup (`transcripts/.backups/<date>-<id>/`) undoes it:
+`restore.sql`, `vectors.ndjson`, the old transcript and, for joins, the old .m4a. Details: README,
+"Repairing damaged transcripts". Every write to production is gated by the owner: rehearse with
+`--local` on a scratch D1 first.
 
 ### Apply schema to D1
 ```
