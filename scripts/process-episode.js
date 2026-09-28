@@ -39,8 +39,10 @@
  * fixes and loop removal before saving, a meta block, the re-transcribe list).
  * The seed step refuses a transcript that ends past its recording or before 90%
  * of it, re-seeds when D1 holds a different version of the transcript, and
- * gives the episode the recording's real length. The embeddings step deletes
- * the vectors a replaced transcript had and the new one doesn't.
+ * gives the episode the recording's real length. It replaces the lines in one
+ * D1 import, so a crash leaves the old transcript or the new one, never part of
+ * one. The embeddings step deletes the vectors a replaced transcript had and
+ * the new one doesn't.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -49,7 +51,7 @@ import path from 'node:path';
 import os from 'node:os';
 
 import {
-	loadEnv, escapeSQL, wranglerExec, queryJSON, runSQL,
+	loadEnv, escapeSQL, wranglerExec, queryJSON, runSQL, runSQLFile,
 	stepTimer, logWarn, transcriptsDir, applyWordCorrections, convertAudio, probeDurationMs,
 	R2_BUCKET, R2_PUBLIC_URL,
 } from './lib.js';
@@ -355,11 +357,6 @@ function seedDB(episodeId, force, mp3Path, acceptShort) {
 	const coverage = checkCoverage(segments, meta.audio_ms || probeDurationMs(mp3Path));
 	const shortProblem = coverage.ok ? null : `Transcript for ${episodeId}: ${coverage.problems.join('; ')}`;
 
-	// transcript_segments.episode_id has a foreign key to episodes, so the
-	// episodes row must exist before segments are inserted (and must never be
-	// deleted while segments or guests reference it). The duration_ms update
-	// after all segments land is the completion marker: a crash mid-seed
-	// leaves duration_ms NULL, so the next run re-seeds instead of skipping.
 	const [inD1] = queryJSON(
 		`SELECT e.duration_ms AS duration_ms,
 			(SELECT COUNT(*) FROM transcript_segments WHERE episode_id = '${id}') AS lines,
@@ -399,30 +396,52 @@ function seedDB(episodeId, force, mp3Path, acceptShort) {
 		rememberStaleVectors(episodeId, chunkSegments(episodeId, oldLines).map((c) => c.id));
 	}
 
-	// Clear partial segments from a previously crashed seed (no-op on a
-	// clean run); under --force this also clears the old complete seed.
-	// An existing episodes row is kept (audio_file, title, etc. survive a
-	// re-seed); a new one is created with NULL duration until seeding finishes.
-	runSQL(`DELETE FROM transcript_segments WHERE episode_id = '${id}'`, db);
-	runSQL(`UPDATE episodes SET duration_ms = NULL WHERE id = '${id}'`, db);
-	runSQL(`INSERT OR IGNORE INTO episodes (id, title) VALUES ('${id}', '${id}')`, db);
+	// The old lines go, the new ones go in and the length is set in one D1 import,
+	// so a crash leaves the old transcript or the new one, never part of one. The
+	// length is the recording's real length, not the last line's end, which would
+	// hide a transcript that stops early.
+	const durationMs = meta.audio_ms || endMs;
+	runSQLFile(seedSQL(episodeId, segments, durationMs), db);
 
-	// Insert segments in batches (spelling fixes are in the file already; applying
-	// them again changes nothing)
+	const [seeded] = queryJSON(
+		`SELECT duration_ms, (SELECT COUNT(*) FROM transcript_segments WHERE episode_id = '${id}') AS lines FROM episodes WHERE id = '${id}'`,
+		db
+	);
+	if (seeded?.lines !== segments.length || seeded?.duration_ms !== durationMs) {
+		throw new Error(`The seed of ${episodeId} did not land: D1 has ${seeded?.lines ?? 0} lines and duration ${seeded?.duration_ms ?? 'none'}, not ${segments.length} and ${durationMs}`);
+	}
+	timer.done(`${segments.length} segments inserted, duration ${Math.round(durationMs / 60000)} min`);
+}
+
+/**
+ * The SQL that replaces an episode's transcript lines, for one D1 import
+ * (lib.js runSQLFile): all of it applies or none of it does.
+ *
+ * - transcript_segments.episode_id has a foreign key to episodes, so a missing
+ *   episodes row is created first. An existing one is kept as it is (title,
+ *   audio, guests and places survive a re-seed) and never deleted: guests and
+ *   places point at it too.
+ * - duration_ms is set last.
+ *
+ * Staging the new lines under a temporary episode ID and swapping them in with
+ * one UPDATE would avoid the import's pause, but the foreign key would need a
+ * temporary episodes row too, and the site lists every episodes row.
+ */
+export function seedSQL(episodeId, segments, durationMs) {
+	const id = escapeSQL(episodeId);
+	const sql = [
+		`INSERT OR IGNORE INTO episodes (id, title) VALUES ('${id}', '${id}');`,
+		`DELETE FROM transcript_segments WHERE episode_id = '${id}';`,
+	];
+	// 50 lines to a statement (spelling fixes are in the file already; applying them again changes nothing)
 	for (let i = 0; i < segments.length; i += DB_BATCH_SIZE) {
-		const batch = segments.slice(i, i + DB_BATCH_SIZE);
-		const values = batch
+		const values = segments.slice(i, i + DB_BATCH_SIZE)
 			.map((s) => `('${id}', ${s.start_ms}, ${s.end_ms}, '${escapeSQL(applyWordCorrections(s.text))}')`)
 			.join(', ');
-		runSQL(`INSERT INTO transcript_segments (episode_id, start_ms, end_ms, text) VALUES ${values}`, db);
+		sql.push(`INSERT INTO transcript_segments (episode_id, start_ms, end_ms, text) VALUES ${values};`);
 	}
-
-	// Set duration last — the completion marker. It's the recording's real
-	// length, not the last line's end, which would hide a transcript that stops early.
-	const durationMs = meta.audio_ms || endMs;
-	runSQL(`UPDATE episodes SET duration_ms = ${durationMs} WHERE id = '${id}'`, db);
-
-	timer.done(`${segments.length} segments inserted, duration ${Math.round(durationMs / 60000)} min`);
+	sql.push(`UPDATE episodes SET duration_ms = ${durationMs} WHERE id = '${id}';`);
+	return sql.join('\n') + '\n';
 }
 
 // ── Step 5: Generate embeddings → Vectorize ────────────────────────────

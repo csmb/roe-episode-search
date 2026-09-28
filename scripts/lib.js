@@ -164,6 +164,23 @@ export function runSQL(sql, { isLocal = false } = {}) {
 	]);
 }
 
+/**
+ * Run a file's worth of SQL statements as one D1 import (`wrangler d1 execute
+ * --file`): all of them apply, or none do if one fails or the run is cut off.
+ * Production D1 doesn't answer other queries while an import runs (a few
+ * seconds for one episode's transcript).
+ */
+export function runSQLFile(sql, { isLocal = false } = {}) {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'roe-sql-'));
+	const file = path.join(dir, 'statements.sql');
+	try {
+		fs.writeFileSync(file, sql);
+		wranglerExec(['d1', 'execute', DB_NAME, isLocal ? '--local' : '--remote', `--file=${file}`, '--yes']);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+}
+
 // ── Date / weather ────────────────────────────────────────────────────
 
 export function parseEpisodeDate(episodeId) {
