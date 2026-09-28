@@ -65,7 +65,7 @@ The MP3 archive (661 files) is outside the repo, in iCloud Drive at
 
 ### Run roe-search locally
 ```
-cd roe-search && npx wrangler dev --port 8791    # http://roe.localhost:8791
+cd roe-search && npm run dev    # http://roe.localhost:8791 (the port is pinned in package.json)
 ```
 
 ### Deploy roe-search
@@ -76,7 +76,7 @@ npm run smoke    # checks every route the pages use on rollovereasy.org; run aft
 
 ### Run roe-pipeline locally
 ```
-cd roe-pipeline && npm run dev
+cd roe-pipeline && npm run dev    # http://127.0.0.1:8793
 ```
 
 ### Deploy roe-pipeline

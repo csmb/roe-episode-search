@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev",
+    "dev": "wrangler dev --ip 127.0.0.1 --port 8793",
     "deploy": "wrangler deploy",
     "test": "vitest run"
   },

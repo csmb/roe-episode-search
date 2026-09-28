@@ -269,8 +269,9 @@ node scripts/process-all.js "/path/to/All episodes/" --cooldown 120
 
 ```bash
 cd roe-search
-npx wrangler dev --port 8791
-# Visit http://roe.localhost:8791 (its own origin, so no cookies or storage shared with other projects)
+npm run dev    # port 8791, pinned in package.json (roe-pipeline's npm run dev uses 8793)
+# Visit http://roe.localhost:8791 (its own origin, so no cookies or storage shared with other projects;
+# every page also unregisters any service worker another project left there)
 node smoke-test.mjs http://roe.localhost:8791   # the post-deploy route check, against the local copy
 ```
 
