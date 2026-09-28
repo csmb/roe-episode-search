@@ -162,7 +162,7 @@ async function main() {
 			path.join(projectRoot, 'scripts', 'process-episode.js'),
 			mp3,
 			'--episode-id', canonical,
-			'--force',
+			'--force', 'embeddings,summary,guest-start',
 			'--skip', 'transcribe,seed-db,upload-audio',
 		],
 		{ cwd: projectRoot, stdio: 'inherit' }

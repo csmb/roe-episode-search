@@ -14,8 +14,15 @@
  *
  * Options:
  *   --episode-id ID          Override auto-parsed episode ID
- *   --force                  Re-run all steps even if already done
+ *   --force step1,step2      Redo these steps even if already done
  *   --skip step1,step2       Skip specific steps (transcribe, seed-db, embeddings, summary, guest-start, upload-audio)
+ *   --include-reviewed       Also redo a reviewed episode's title, summary, guests and interview time
+ *   --local                  Use the local D1 copy and R2 instead of production (no embeddings)
+ *
+ * An episode whose guests were reviewed by hand (guests_reviewed = 1) keeps its
+ * title, summary, guests and interview time, even with --force, unless
+ * --include-reviewed is given. The interview time is only filled in when empty,
+ * unless guest-start is forced. A mistyped option or step name stops the run.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -45,6 +52,9 @@ const EMBED_MODEL = '@cf/baai/bge-base-en-v1.5';
 const EMBED_BATCH_SIZE = 100;
 const UPSERT_BATCH_SIZE = 1000;
 const DB_BATCH_SIZE = 50;
+
+// Which D1 (and R2) every step uses: production, or the local copy with --local.
+const db = { isLocal: false };
 
 const WHISPER_MODEL_CANDIDATES = [
 	path.join(os.homedir(), '.cache', 'whisper-cpp', 'ggml-large-v3.bin'),
@@ -438,7 +448,8 @@ function seedDB(episodeId, force) {
 	if (!force) {
 		const existing = queryJSON(
 			`SELECT id FROM episodes WHERE id = '${escapeSQL(episodeId)}' AND duration_ms IS NOT NULL
-			 AND EXISTS (SELECT 1 FROM transcript_segments WHERE episode_id = '${escapeSQL(episodeId)}')`
+			 AND EXISTS (SELECT 1 FROM transcript_segments WHERE episode_id = '${escapeSQL(episodeId)}')`,
+			db
 		);
 		if (existing.length > 0) {
 			timer.done('episode already in DB, skipping');
@@ -462,10 +473,11 @@ function seedDB(episodeId, force) {
 	// clean run); under --force this also clears the old complete seed.
 	// An existing episodes row is kept (audio_file, title, etc. survive a
 	// re-seed); a new one is created with NULL duration until seeding finishes.
-	runSQL(`DELETE FROM transcript_segments WHERE episode_id = '${escapeSQL(episodeId)}'`);
-	runSQL(`UPDATE episodes SET duration_ms = NULL WHERE id = '${escapeSQL(episodeId)}'`);
+	runSQL(`DELETE FROM transcript_segments WHERE episode_id = '${escapeSQL(episodeId)}'`, db);
+	runSQL(`UPDATE episodes SET duration_ms = NULL WHERE id = '${escapeSQL(episodeId)}'`, db);
 	runSQL(
-		`INSERT OR IGNORE INTO episodes (id, title) VALUES ('${escapeSQL(episodeId)}', '${escapeSQL(episodeId)}')`
+		`INSERT OR IGNORE INTO episodes (id, title) VALUES ('${escapeSQL(episodeId)}', '${escapeSQL(episodeId)}')`,
+		db
 	);
 
 	// Insert segments in batches
@@ -474,22 +486,27 @@ function seedDB(episodeId, force) {
 		const values = batch
 			.map((s) => `('${escapeSQL(episodeId)}', ${s.start_ms}, ${s.end_ms}, '${escapeSQL(applyWordCorrections(s.text))}')`)
 			.join(', ');
-		runSQL(`INSERT INTO transcript_segments (episode_id, start_ms, end_ms, text) VALUES ${values}`);
+		runSQL(`INSERT INTO transcript_segments (episode_id, start_ms, end_ms, text) VALUES ${values}`, db);
 	}
 
 	// Set duration last — the completion marker
 	const lastSegment = segments[segments.length - 1];
 	const durationMs = lastSegment ? lastSegment.end_ms : 0;
-	runSQL(`UPDATE episodes SET duration_ms = ${durationMs} WHERE id = '${escapeSQL(episodeId)}'`);
+	runSQL(`UPDATE episodes SET duration_ms = ${durationMs} WHERE id = '${escapeSQL(episodeId)}'`, db);
 
 	timer.done(`${segments.length} segments inserted`);
-	purgeEpisode(episodeId);
+	purgeEpisode(episodeId, db);
 }
 
 // ── Step 5: Generate embeddings → Vectorize ────────────────────────────
 
 async function generateEmbeddings(episodeId) {
 	const timer = stepTimer('EMBEDDINGS');
+
+	if (db.isLocal) {
+		timer.done('--local: Vectorize has no local copy, skipping');
+		return;
+	}
 
 	const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
 	const apiToken = process.env.CLOUDFLARE_API_TOKEN;
@@ -583,22 +600,23 @@ async function generateEmbeddings(episodeId) {
 
 // ── Step 6: Generate summary ───────────────────────────────────────────
 
-async function generateSummary(episodeId, force) {
+async function generateSummary(episodeId, force, includeReviewed) {
 	const timer = stepTimer('SUMMARY');
 
-	// Check if summary already exists
-	if (!force) {
-		try {
-			const existing = queryJSON(
-				`SELECT summary FROM episodes WHERE id = '${escapeSQL(episodeId)}' AND summary IS NOT NULL AND summary != ''`
-			);
-			if (existing.length > 0) {
-				timer.done('summary already exists, skipping');
-				return;
-			}
-		} catch (err) {
-			logWarn(`[${episodeId}] DB check failed in generateSummary: ${err.message}`);
-		}
+	// A reviewed episode keeps its title, summary and guests (even with --force),
+	// and any episode keeps an existing summary unless forced. If the check
+	// itself fails, the error stops the run rather than risk overwriting them.
+	const [row] = queryJSON(
+		`SELECT summary, guests_reviewed FROM episodes WHERE id = '${escapeSQL(episodeId)}'`,
+		db
+	);
+	if (row?.guests_reviewed && !includeReviewed) {
+		timer.done('guests reviewed by hand, left alone (--include-reviewed to redo)');
+		return;
+	}
+	if (!force && row?.summary) {
+		timer.done('summary already exists, skipping');
+		return;
 	}
 
 	// Read transcript
@@ -631,18 +649,18 @@ async function generateSummary(episodeId, force) {
 
 	// Update D1
 	if (title) {
-		runSQL(`UPDATE episodes SET title = '${escapeSQL(title)}', summary = '${escapeSQL(summary)}' WHERE id = '${escapeSQL(episodeId)}'`);
+		runSQL(`UPDATE episodes SET title = '${escapeSQL(title)}', summary = '${escapeSQL(summary)}' WHERE id = '${escapeSQL(episodeId)}'`, db);
 	} else {
-		runSQL(`UPDATE episodes SET summary = '${escapeSQL(summary)}' WHERE id = '${escapeSQL(episodeId)}'`);
+		runSQL(`UPDATE episodes SET summary = '${escapeSQL(summary)}' WHERE id = '${escapeSQL(episodeId)}'`, db);
 	}
 
 	// Insert guests (idempotent: clear first, then insert)
 	if (guests.length > 0) {
-		runSQL(`DELETE FROM episode_guests WHERE episode_id = '${escapeSQL(episodeId)}'`);
+		runSQL(`DELETE FROM episode_guests WHERE episode_id = '${escapeSQL(episodeId)}'`, db);
 		for (const guest of guests) {
 			const name = guest.trim();
 			if (name) {
-				runSQL(`INSERT OR IGNORE INTO episode_guests (episode_id, guest_name) VALUES ('${escapeSQL(episodeId)}', '${escapeSQL(name)}')`);
+				runSQL(`INSERT OR IGNORE INTO episode_guests (episode_id, guest_name) VALUES ('${escapeSQL(episodeId)}', '${escapeSQL(name)}')`, db);
 			}
 		}
 	}
@@ -655,26 +673,26 @@ async function generateSummary(episodeId, force) {
 // Depends on the summary step having populated episode_guests. Reads the
 // local transcript for segments and the guest list from D1, then writes
 // guest_start_ms — the field that gates the "Skip to interview" button.
-function detectGuestStartStep(episodeId, force) {
+function detectGuestStartStep(episodeId, force, includeReviewed) {
 	const timer = stepTimer('GUEST-START');
 
-	// Skip if already set (unless --force)
-	if (!force) {
-		try {
-			const existing = queryJSON(
-				`SELECT guest_start_ms FROM episodes WHERE id = '${escapeSQL(episodeId)}' AND guest_start_ms IS NOT NULL`
-			);
-			if (existing.length > 0) {
-				timer.done('guest_start_ms already set, skipping');
-				return;
-			}
-		} catch (err) {
-			logWarn(`[${episodeId}] DB check failed in detectGuestStartStep: ${err.message}`);
-		}
+	// Only an empty interview time is filled in, unless forced, and a reviewed
+	// episode's is left alone (even with --force). A failed check stops the run.
+	const [row] = queryJSON(
+		`SELECT guest_start_ms, guests_reviewed FROM episodes WHERE id = '${escapeSQL(episodeId)}'`,
+		db
+	);
+	if (row?.guests_reviewed && !includeReviewed) {
+		timer.done('guests reviewed by hand, interview time left alone (--include-reviewed to redo)');
+		return;
+	}
+	if (!force && row?.guest_start_ms != null) {
+		timer.done('guest_start_ms already set, skipping');
+		return;
 	}
 
 	// No guests → no interview marker
-	const guestRows = queryJSON(`SELECT guest_name FROM episode_guests WHERE episode_id = '${escapeSQL(episodeId)}'`);
+	const guestRows = queryJSON(`SELECT guest_name FROM episode_guests WHERE episode_id = '${escapeSQL(episodeId)}'`, db);
 	const guests = guestRows.map((g) => g.guest_name);
 	if (guests.length === 0) {
 		timer.done('no guests, skipping');
@@ -710,7 +728,11 @@ function detectGuestStartStep(episodeId, force) {
 		return;
 	}
 
-	runSQL(`UPDATE episodes SET guest_start_ms = ${startMs} WHERE id = '${escapeSQL(episodeId)}'`);
+	// Unless forced, the write also only lands on an empty value
+	runSQL(
+		`UPDATE episodes SET guest_start_ms = ${startMs} WHERE id = '${escapeSQL(episodeId)}'${force ? '' : ' AND guest_start_ms IS NULL'}`,
+		db
+	);
 
 	const minutes = Math.floor(startMs / 60000);
 	const seconds = Math.floor((startMs % 60000) / 1000);
@@ -725,18 +747,15 @@ function uploadAudio(mp3Path, episodeId, force) {
 	// Check if already uploaded. audio_file must point at this episode's
 	// .m4a — a raw-MP3 URL (e.g. from an ingest flow that stashed the
 	// original upload) does NOT count, since the player only ever requests
-	// /audio/{id}.m4a.
+	// /audio/{id}.m4a. A failed check stops the run.
 	if (!force) {
-		try {
-			const existing = queryJSON(
-				`SELECT audio_file FROM episodes WHERE id = '${escapeSQL(episodeId)}' AND audio_file IS NOT NULL AND audio_file != ''`
-			);
-			if (existing.length > 0 && existing[0].audio_file.endsWith(`/${episodeId}.m4a`)) {
-				timer.done('audio already uploaded, skipping');
-				return;
-			}
-		} catch (err) {
-			logWarn(`[${episodeId}] DB check failed in uploadAudio: ${err.message}`);
+		const existing = queryJSON(
+			`SELECT audio_file FROM episodes WHERE id = '${escapeSQL(episodeId)}' AND audio_file IS NOT NULL AND audio_file != ''`,
+			db
+		);
+		if (existing.length > 0 && existing[0].audio_file.endsWith(`/${episodeId}.m4a`)) {
+			timer.done('audio already uploaded, skipping');
+			return;
 		}
 	}
 
@@ -754,11 +773,11 @@ function uploadAudio(mp3Path, episodeId, force) {
 		const r2Key = `${episodeId}.m4a`;
 		const publicUrl = `${R2_PUBLIC_URL}/${r2Key}`;
 		console.log('  Uploading to R2...');
-		wranglerExec(['r2', 'object', 'put', '--remote', `${R2_BUCKET}/${r2Key}`, `--file=${m4aPath}`, '--content-type=audio/mp4']);
+		wranglerExec(['r2', 'object', 'put', db.isLocal ? '--local' : '--remote', `${R2_BUCKET}/${r2Key}`, `--file=${m4aPath}`, '--content-type=audio/mp4']);
 
 		// Update DB
 		console.log('  Updating database...');
-		runSQL(`UPDATE episodes SET audio_file = '${escapeSQL(publicUrl)}' WHERE id = '${escapeSQL(episodeId)}'`);
+		runSQL(`UPDATE episodes SET audio_file = '${escapeSQL(publicUrl)}' WHERE id = '${escapeSQL(episodeId)}'`, db);
 
 		timer.done();
 	} finally {
@@ -768,39 +787,65 @@ function uploadAudio(mp3Path, episodeId, force) {
 
 // ── CLI ────────────────────────────────────────────────────────────────
 
-function parseArgs() {
-	const args = process.argv.slice(2);
-	const opts = { force: false, skip: new Set(), episodeId: null, mp3Path: null };
+export const STEPS = ['transcribe', 'seed-db', 'embeddings', 'summary', 'guest-start', 'upload-audio'];
+
+function usage(problem) {
+	if (problem) console.error(`${problem}\n`);
+	console.error('Usage: node scripts/process-episode.js <mp3-file> [options]');
+	console.error('');
+	console.error('Options:');
+	console.error('  --episode-id ID          Override auto-parsed episode ID');
+	console.error('  --force step1,step2      Redo these steps even if already done');
+	console.error('  --skip step1,step2       Skip these steps');
+	console.error('  --include-reviewed       Also redo a reviewed episode\'s title, summary, guests and');
+	console.error('                           interview time (left alone otherwise, even with --force)');
+	console.error('  --local                  Use the local D1 copy and R2 (embeddings are skipped)');
+	console.error('');
+	console.error(`Steps, in order: ${STEPS.join(', ')}`);
+	process.exit(1);
+}
+
+/** Parse "summary,guest-start" for --force/--skip. A name that isn't a step stops the run. */
+function parseSteps(flag, value) {
+	const steps = (value ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+	if (steps.length === 0) usage(`${flag} needs a list of steps, e.g. ${flag} summary,guest-start`);
+	const unknown = steps.filter((s) => !STEPS.includes(s));
+	if (unknown.length > 0) usage(`${flag}: no step called ${unknown.join(', ')}`);
+	return steps;
+}
+
+function parseArgs(args) {
+	const opts = { force: new Set(), skip: new Set(), episodeId: null, mp3Path: null, includeReviewed: false, local: false };
 
 	for (let i = 0; i < args.length; i++) {
-		if (args[i] === '--force') {
-			opts.force = true;
-		} else if (args[i] === '--skip' && args[i + 1]) {
-			args[i + 1].split(',').forEach((s) => opts.skip.add(s.trim()));
-			i++;
-		} else if (args[i] === '--episode-id' && args[i + 1]) {
-			opts.episodeId = args[i + 1];
-			i++;
-		} else if (!args[i].startsWith('--')) {
-			opts.mp3Path = args[i];
+		const arg = args[i];
+		if (arg === '--force' || arg === '--skip') {
+			for (const step of parseSteps(arg, args[++i])) opts[arg.slice(2)].add(step);
+		} else if (arg === '--episode-id') {
+			opts.episodeId = args[++i];
+			if (!opts.episodeId || opts.episodeId.startsWith('-')) usage('--episode-id needs an episode ID');
+		} else if (arg === '--include-reviewed') {
+			opts.includeReviewed = true;
+		} else if (arg === '--local') {
+			opts.local = true;
+		} else if (arg.startsWith('-')) {
+			usage(`Unknown option: ${arg}`);
+		} else if (opts.mp3Path) {
+			usage(`One audio file at a time (got "${opts.mp3Path}" and "${arg}")`);
+		} else {
+			opts.mp3Path = arg;
 		}
 	}
 
+	const both = [...opts.force].filter((s) => opts.skip.has(s));
+	if (both.length > 0) usage(`Can't both force and skip: ${both.join(', ')}`);
+	if (!opts.mp3Path) usage();
 	return opts;
 }
 
 async function main() {
-	const opts = parseArgs();
-
-	if (!opts.mp3Path) {
-		console.error('Usage: node scripts/process-episode.js <mp3-file> [options]');
-		console.error('');
-		console.error('Options:');
-		console.error('  --episode-id ID          Override auto-parsed episode ID');
-		console.error('  --force                  Re-run all steps even if already done');
-		console.error('  --skip step1,step2       Skip steps (transcribe, seed-db, embeddings, summary, guest-start, upload-audio)');
-		process.exit(1);
-	}
+	const opts = parseArgs(process.argv.slice(2));
+	db.isLocal = opts.local;
 
 	const mp3Path = path.resolve(opts.mp3Path);
 	if (!fs.existsSync(mp3Path)) {
@@ -814,14 +859,15 @@ async function main() {
 		console.error('Pass it explicitly: --episode-id roll-over-easy_YYYY-MM-DD_07-30-00');
 		process.exit(1);
 	}
-	const skip = opts.skip;
-	const force = opts.force;
+	const { skip, force, includeReviewed } = opts;
 
 	console.log('=== Roll Over Easy — Episode Processing Pipeline ===');
 	console.log(`  File:       ${path.basename(mp3Path)}`);
 	console.log(`  Episode ID: ${episodeId}`);
-	console.log(`  Force:      ${force}`);
+	console.log(`  Force:      ${force.size > 0 ? [...force].join(', ') : 'none'}`);
 	if (skip.size > 0) console.log(`  Skipping:   ${[...skip].join(', ')}`);
+	if (includeReviewed) console.log('  Reviewed:   redo their title, summary, guests and interview time too');
+	if (opts.local) console.log('  Database:   local D1 copy');
 
 	const totalStart = Date.now();
 
@@ -830,14 +876,14 @@ async function main() {
 
 	// Step 2: Transcribe
 	if (!skip.has('transcribe')) {
-		transcribe(mp3Path, episodeId, force);
+		transcribe(mp3Path, episodeId, force.has('transcribe'));
 	} else {
 		console.log('\n[TRANSCRIBE] Skipped');
 	}
 
 	// Step 3: Seed D1
 	if (!skip.has('seed-db')) {
-		seedDB(episodeId, force);
+		seedDB(episodeId, force.has('seed-db'));
 	} else {
 		console.log('\n[SEED-DB] Skipped');
 	}
@@ -851,28 +897,28 @@ async function main() {
 
 	// Step 5: Summary
 	if (!skip.has('summary')) {
-		await generateSummary(episodeId, force);
+		await generateSummary(episodeId, force.has('summary'), includeReviewed);
 	} else {
 		console.log('\n[SUMMARY] Skipped');
 	}
 
 	// Step 6: Guest-interview start detection (needs guests from the summary step)
 	if (!skip.has('guest-start')) {
-		detectGuestStartStep(episodeId, force);
+		detectGuestStartStep(episodeId, force.has('guest-start'), includeReviewed);
 	} else {
 		console.log('\n[GUEST-START] Skipped');
 	}
 
 	// Step 7: Upload audio
 	if (!skip.has('upload-audio')) {
-		uploadAudio(mp3Path, episodeId, force);
+		uploadAudio(mp3Path, episodeId, force.has('upload-audio'));
 	} else {
 		console.log('\n[UPLOAD-AUDIO] Skipped');
 	}
 
 	const totalElapsed = ((Date.now() - totalStart) / 1000).toFixed(1);
 	console.log(`\n=== All done! (${totalElapsed}s total) ===`);
-	console.log(`  Episode "${episodeId}" is now live.`);
+	console.log(`  Episode "${episodeId}" is now ${opts.local ? 'in the local database' : 'live'}.`);
 }
 
 // Only run main() when executed directly (not when imported)

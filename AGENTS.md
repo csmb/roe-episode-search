@@ -91,8 +91,13 @@ cd roe-pipeline && npm test
 ### Process a single episode (local pipeline)
 ```
 node scripts/process-episode.js "/path/to/Roll Over Easy 2026-03-27.mp3"
-# Options: --episode-id ID, --force, --skip transcribe,seed-db
+# Options: --episode-id ID, --force summary,guest-start (steps to redo), --skip transcribe,seed-db,
+#          --include-reviewed, --local (the local D1 copy)
 ```
+An episode whose guests were reviewed (`guests_reviewed = 1`) keeps its title, summary, guests and
+interview time, even with `--force`, unless `--include-reviewed` is given; the same goes for
+`generate-summaries.js`, `backfill-guest-start.js` and `process-all.js`. The interview time is only
+filled in when empty unless its step is forced. A mistyped option or step name stops the script.
 
 ### Batch process episodes (local pipeline)
 ```
@@ -108,6 +113,7 @@ cd roe-search && npx wrangler d1 execute roe-episodes --remote --file=../schema.
 
 ### Regenerate summaries
 ```
+node scripts/generate-summaries.js --dry-run    # lists the episodes it would do (no OpenAI calls)
 node scripts/generate-summaries.js
 ```
 

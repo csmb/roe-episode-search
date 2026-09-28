@@ -14,13 +14,15 @@
 
 import { escapeSQL, queryJSON, runSQL } from './lib.js';
 
-export function purgeEpisode(episodeId) {
+/** @param {{isLocal?: boolean}} [target] - `isLocal: true` cleans the local D1 copy. */
+export function purgeEpisode(episodeId, target = {}) {
 	// Find hallucinated phrases: length > 20 chars, repeated > 20 times
 	const hallucinations = queryJSON(
 		`SELECT text, COUNT(*) as cnt FROM transcript_segments
 		 WHERE episode_id = '${escapeSQL(episodeId)}'
 		 GROUP BY text
-		 HAVING cnt > 20 AND length(text) > 20`
+		 HAVING cnt > 20 AND length(text) > 20`,
+		target
 	);
 
 	if (hallucinations.length === 0) {
@@ -32,7 +34,8 @@ export function purgeEpisode(episodeId) {
 	runSQL(
 		`DELETE FROM transcript_segments
 		 WHERE episode_id = '${escapeSQL(episodeId)}'
-		   AND text IN (${phrases})`
+		   AND text IN (${phrases})`,
+		target
 	);
 
 	const totalDeleted = hallucinations.reduce((sum, r) => sum + r.cnt, 0);

@@ -12,7 +12,11 @@
  * (e.g. ingested from a since-deleted checkout) are still handled.
  *
  * Usage:
- *   node scripts/backfill-guest-start.js [--local] [--force] [--dry-run]
+ *   node scripts/backfill-guest-start.js [--local] [--force] [--include-reviewed] [--dry-run]
+ *
+ * Only empty interview times are filled in, unless --force. Episodes whose
+ * guests were reviewed by hand keep theirs (even an empty one, and even with
+ * --force) unless --include-reviewed is given.
  */
 
 import fs from 'node:fs';
@@ -43,23 +47,37 @@ function loadSegments(episodeId, isLocal) {
 	return segments.length > 0 ? { segments, source: 'd1' } : null;
 }
 
-async function main() {
-	if (process.argv.includes('--help') || process.argv.includes('-h')) {
-		console.log('Usage: node scripts/backfill-guest-start.js [--local] [--force] [--dry-run]');
-		console.log('');
-		console.log('Detects guest interview start times from transcripts and updates episodes.guest_start_ms.');
-		console.log('  --local    Target local D1 database');
-		console.log('  --force    Re-detect for all episodes, even if guest_start_ms is already set');
-		console.log('  --dry-run  Print detected timestamps without writing to D1');
-		process.exit(0);
-	}
+const OPTIONS = new Set(['--local', '--force', '--include-reviewed', '--dry-run', '--help', '-h']);
 
-	const isLocal = process.argv.includes('--local');
-	const force = process.argv.includes('--force');
-	const dryRun = process.argv.includes('--dry-run');
+function usage(exitCode = 0) {
+	const log = exitCode ? console.error : console.log;
+	log('Usage: node scripts/backfill-guest-start.js [--local] [--force] [--include-reviewed] [--dry-run]');
+	log('');
+	log('Detects guest interview start times from transcripts and updates episodes.guest_start_ms.');
+	log('  --local             Target local D1 database');
+	log('  --force             Re-detect for all episodes, even if guest_start_ms is already set');
+	log('  --include-reviewed  Include episodes whose guests were reviewed by hand');
+	log('                      (left alone otherwise, even with --force)');
+	log('  --dry-run           Print detected timestamps without writing to D1');
+	process.exit(exitCode);
+}
+
+async function main() {
+	const args = process.argv.slice(2);
+	const unknown = args.filter((a) => !OPTIONS.has(a));
+	if (unknown.length > 0) {
+		console.error(`Unknown option: ${unknown.join(' ')}\n`);
+		usage(1);
+	}
+	if (args.includes('--help') || args.includes('-h')) usage();
+
+	const isLocal = args.includes('--local');
+	const force = args.includes('--force');
+	const includeReviewed = args.includes('--include-reviewed');
+	const dryRun = args.includes('--dry-run');
 
 	// Episodes and their current guest_start_ms
-	const episodes = queryJSON('SELECT id, duration_ms, guest_start_ms FROM episodes ORDER BY id', { isLocal });
+	const episodes = queryJSON('SELECT id, duration_ms, guest_start_ms, guests_reviewed FROM episodes ORDER BY id', { isLocal });
 
 	// Guest names per episode
 	const guestRows = queryJSON('SELECT episode_id, guest_name FROM episode_guests', { isLocal });
@@ -75,8 +93,15 @@ async function main() {
 
 	let updated = 0;
 	let skipped = 0;
+	let reviewed = 0;
 
 	for (const ep of episodes) {
+		// Reviewed by hand: hands off
+		if (ep.guests_reviewed && !includeReviewed) {
+			reviewed++;
+			continue;
+		}
+
 		// Skip episodes with no guests
 		const guests = guestsByEpisode.get(ep.id);
 		if (!guests || guests.length === 0) {
@@ -123,7 +148,11 @@ async function main() {
 		console.log(`  ${ep.id}: guest_start_ms=${startMs} (${timestamp}) [${loaded.source}] — guests: ${guests.join(', ')}`);
 
 		if (!dryRun) {
-			runSQL(`UPDATE episodes SET guest_start_ms = ${startMs} WHERE id = '${escapeSQL(ep.id)}'`, { isLocal });
+			// Unless --force, the write also only lands on an empty value
+			runSQL(
+				`UPDATE episodes SET guest_start_ms = ${startMs} WHERE id = '${escapeSQL(ep.id)}'${force ? '' : ' AND guest_start_ms IS NULL'}`,
+				{ isLocal }
+			);
 		}
 
 		updated++;
@@ -131,7 +160,7 @@ async function main() {
 
 	console.log();
 	console.log('=== Backfill Complete ===');
-	console.log(`Updated: ${updated}, Skipped: ${skipped}`);
+	console.log(`Updated: ${updated}, Skipped: ${skipped}, Reviewed (left alone): ${reviewed}`);
 }
 
 main().catch(err => {

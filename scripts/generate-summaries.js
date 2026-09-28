@@ -4,7 +4,10 @@
  * Generate AI summaries for episodes that don't have one yet.
  *
  * Usage:
- *   node scripts/generate-summaries.js [--local] [--force]
+ *   node scripts/generate-summaries.js [--local] [--force] [--include-reviewed] [--dry-run]
+ *
+ * Episodes whose guests were reviewed by hand keep their title, summary and
+ * guests, even with --force, unless --include-reviewed is given.
  */
 
 import fs from 'node:fs';
@@ -17,13 +20,19 @@ import { buildSummarySystemPrompt } from './prompts.js';
 
 loadEnv();
 
-function usage() {
-	console.log('Usage: node scripts/generate-summaries.js [--local] [--force]');
-	console.log('');
-	console.log('Generates AI summaries for episodes missing them.');
-	console.log('  --force   Regenerate summaries for all episodes, even if they already have one.');
-	console.log('Requires OPENAI_API_KEY environment variable.');
-	process.exit(0);
+const OPTIONS = new Set(['--local', '--force', '--include-reviewed', '--dry-run', '--help', '-h']);
+
+function usage(exitCode = 0) {
+	const log = exitCode ? console.error : console.log;
+	log('Usage: node scripts/generate-summaries.js [--local] [--force] [--include-reviewed] [--dry-run]');
+	log('');
+	log('Generates AI titles, summaries and guests for episodes missing a summary.');
+	log('  --force             Also redo episodes that already have a summary.');
+	log('  --include-reviewed  Also redo episodes whose guests were reviewed by hand');
+	log('                      (left alone otherwise, even with --force).');
+	log('  --dry-run           List the episodes it would do, without calling OpenAI or writing.');
+	log('Requires OPENAI_API_KEY (read from .env), except with --dry-run.');
+	process.exit(exitCode);
 }
 
 /**
@@ -79,12 +88,20 @@ export async function generateSummaryFromText(text, { dateStr, sunData } = {}) {
 }
 
 async function main() {
-	if (process.argv.includes('--help') || process.argv.includes('-h')) usage();
+	const args = process.argv.slice(2);
+	const unknown = args.filter((a) => !OPTIONS.has(a));
+	if (unknown.length > 0) {
+		console.error(`Unknown option: ${unknown.join(' ')}\n`);
+		usage(1);
+	}
+	if (args.includes('--help') || args.includes('-h')) usage();
 
-	const isLocal = process.argv.includes('--local');
-	const force = process.argv.includes('--force');
+	const isLocal = args.includes('--local');
+	const force = args.includes('--force');
+	const includeReviewed = args.includes('--include-reviewed');
+	const dryRun = args.includes('--dry-run');
 
-	if (!process.env.OPENAI_API_KEY) {
+	if (!dryRun && !process.env.OPENAI_API_KEY) {
 		console.error('Error: OPENAI_API_KEY environment variable is required');
 		process.exit(1);
 	}
@@ -94,26 +111,24 @@ async function main() {
 		process.exit(1);
 	}
 
-	// Find episodes to process
-	let needsSummary;
-	if (force) {
-		const allEpisodes = queryJSON('SELECT id FROM episodes', { isLocal });
-		needsSummary = new Set(allEpisodes.map((r) => r.id));
-	} else {
-		const episodesWithoutSummary = queryJSON(
-			"SELECT id FROM episodes WHERE summary IS NULL OR summary = ''",
-			{ isLocal }
-		);
-		needsSummary = new Set(episodesWithoutSummary.map((r) => r.id));
+	// Find episodes to process: those without a summary (all of them with
+	// --force), leaving out reviewed episodes unless --include-reviewed
+	const missing = "(summary IS NULL OR summary = '')";
+	const where = [force ? null : missing, includeReviewed ? null : 'COALESCE(guests_reviewed, 0) = 0'].filter(Boolean);
+	const rows = queryJSON(`SELECT id FROM episodes${where.length ? ` WHERE ${where.join(' AND ')}` : ''}`, { isLocal });
+	const needsSummary = new Set(rows.map((r) => r.id));
+	if (!includeReviewed) {
+		const [{ n }] = queryJSON(`SELECT COUNT(id) AS n FROM episodes WHERE guests_reviewed = 1${force ? '' : ` AND ${missing}`}`, { isLocal });
+		if (n > 0) console.log(`Leaving alone ${n} reviewed episode(s) (--include-reviewed to include them)`);
 	}
 
 	if (needsSummary.size === 0) {
-		console.log('All episodes already have summaries. Nothing to do.');
+		console.log('No episodes to summarize. Nothing to do.');
 		return;
 	}
 
 	console.log(`Found ${needsSummary.size} episode(s) ${force ? 'to regenerate' : 'needing summaries'}`);
-	console.log(`Target: ${isLocal ? 'local' : 'remote'} D1 database`);
+	console.log(`Target: ${isLocal ? 'local' : 'remote'} D1 database${dryRun ? ' (DRY RUN)' : ''}`);
 	console.log();
 
 	const files = fs.readdirSync(transcriptsDir).filter((f) => f.endsWith('.json')).sort();
@@ -125,6 +140,11 @@ async function main() {
 		const { episode_id, segments } = transcript;
 
 		if (!needsSummary.has(episode_id)) {
+			continue;
+		}
+		if (dryRun) {
+			console.log(`  Would summarize ${episode_id}`);
+			generated++;
 			continue;
 		}
 
@@ -185,7 +205,7 @@ async function main() {
 
 	console.log();
 	console.log('=== Summary ===');
-	console.log(`Generated: ${generated} summaries`);
+	console.log(`${dryRun ? 'Would generate' : 'Generated'}: ${generated} summaries`);
 	console.log(`Skipped: ${files.length - generated} (already had summaries or no transcript)`);
 }
 

@@ -23,12 +23,15 @@
  *   --dry-run               Show what would be processed without doing anything
  *   --max <n>               Process at most n episodes then stop
  *   --time-limit <hours>    Stop after this many hours (finishes current episode first)
+ *   --force step1,step2     Redo these process-episode.js steps even if already done
+ *   --include-reviewed      Also redo reviewed episodes' titles, summaries, guests and interview times
  */
 
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { discoverEpisodes } from './discover-episodes.js';
+import { STEPS } from './process-episode.js';
 import { queryJSON } from './lib.js';
 
 const projectRoot = path.resolve(path.dirname(decodeURIComponent(new URL(import.meta.url).pathname)), '..');
@@ -115,6 +118,23 @@ function timestamp() {
 	return new Date().toLocaleTimeString('en-US', { hour12: false });
 }
 
+/** The two process-episode.js runs for one file (node arguments). */
+export function episodeRuns(filePath, { force = [], includeReviewed = false } = {}) {
+	// Phase 1: transcribe only, so the quality gate can reject a bad
+	// transcript BEFORE anything goes live in D1/Vectorize/R2 (the
+	// interview time included).
+	const phase1 = [processEpisodeScript, filePath, '--skip', 'seed-db,embeddings,summary,guest-start,upload-audio'];
+	if (force.includes('transcribe')) phase1.push('--force', 'transcribe');
+
+	// Phase 2: the remaining steps. Transcription is skipped explicitly so
+	// --force can't redo it.
+	const phase2 = [processEpisodeScript, filePath, '--skip', 'transcribe'];
+	const forced = force.filter((s) => s !== 'transcribe');
+	if (forced.length > 0) phase2.push('--force', forced.join(','));
+	if (includeReviewed) phase2.push('--include-reviewed');
+	return [phase1, phase2];
+}
+
 // Run one process-episode.js invocation with retries.
 // Returns null on success, or the last error message.
 function runEpisodeStep(args) {
@@ -141,28 +161,56 @@ function runEpisodeStep(args) {
 
 // ── Main ───────────────────────────────────────────────────────────────
 
+function usage(problem) {
+	if (problem) console.error(`${problem}\n`);
+	console.error('Usage: node scripts/process-all.js <audio-directory> [options]');
+	console.error('');
+	console.error('Options:');
+	console.error('  --cooldown <seconds>    Cooldown between episodes (default: 120)');
+	console.error('  --start-from <date>     Start from YYYY-MM-DD, skipping earlier');
+	console.error('  --dry-run               Show what would be processed');
+	console.error('  --max <n>               Process at most n episodes');
+	console.error('  --time-limit <hours>    Stop after this many hours');
+	console.error('  --force step1,step2     Redo these steps even if already done');
+	console.error('  --include-reviewed      Also redo reviewed episodes\' titles, summaries, guests and interview times');
+	console.error('');
+	console.error(`Steps: ${STEPS.join(', ')}`);
+	process.exit(1);
+}
+
+// Mistyped options stop the run instead of being ignored
 function parseArgs() {
 	const args = process.argv.slice(2);
-	const opts = { audioDir: null, cooldown: 120, startFrom: null, dryRun: false, max: Infinity, timeLimitMs: null, force: false };
+	const opts = { audioDir: null, cooldown: 120, startFrom: null, dryRun: false, max: Infinity, timeLimitMs: null, force: [], includeReviewed: false };
+	const value = (i, check) => {
+		if (args[i + 1] === undefined || !check(args[i + 1])) usage(`${args[i]} needs a valid value`);
+		return args[i + 1];
+	};
+	const isNumber = (v) => Number.isFinite(Number(v)) && Number(v) >= 0;
 
 	for (let i = 0; i < args.length; i++) {
-		if (args[i] === '--cooldown' && args[i + 1]) {
-			opts.cooldown = parseInt(args[i + 1], 10);
-			i++;
-		} else if (args[i] === '--start-from' && args[i + 1]) {
-			opts.startFrom = args[i + 1];
-			i++;
+		if (args[i] === '--cooldown') {
+			opts.cooldown = parseInt(value(i++, isNumber), 10);
+		} else if (args[i] === '--start-from') {
+			opts.startFrom = value(i++, (v) => /^\d{4}-\d{2}-\d{2}$/.test(v));
 		} else if (args[i] === '--dry-run') {
 			opts.dryRun = true;
-		} else if (args[i] === '--max' && args[i + 1]) {
-			opts.max = parseInt(args[i + 1], 10);
-			i++;
-		} else if (args[i] === '--time-limit' && args[i + 1]) {
-			opts.timeLimitMs = parseFloat(args[i + 1]) * 60 * 60 * 1000;
-			i++;
+		} else if (args[i] === '--max') {
+			opts.max = parseInt(value(i++, isNumber), 10);
+		} else if (args[i] === '--time-limit') {
+			opts.timeLimitMs = parseFloat(value(i++, isNumber)) * 60 * 60 * 1000;
 		} else if (args[i] === '--force') {
-			opts.force = true;
-		} else if (!args[i].startsWith('--')) {
+			opts.force = value(i++, (v) => !v.startsWith('-')).split(',').map((s) => s.trim()).filter(Boolean);
+			const unknown = opts.force.filter((s) => !STEPS.includes(s));
+			if (opts.force.length === 0) usage('--force needs a list of steps, e.g. --force summary,guest-start');
+			if (unknown.length > 0) usage(`--force: no step called ${unknown.join(', ')}`);
+		} else if (args[i] === '--include-reviewed') {
+			opts.includeReviewed = true;
+		} else if (args[i].startsWith('-')) {
+			usage(`Unknown option: ${args[i]}`);
+		} else if (opts.audioDir) {
+			usage(`One audio directory at a time (got "${opts.audioDir}" and "${args[i]}")`);
+		} else {
 			opts.audioDir = args[i];
 		}
 	}
@@ -173,16 +221,7 @@ function parseArgs() {
 function main() {
 	const opts = parseArgs();
 
-	if (!opts.audioDir) {
-		console.error('Usage: node scripts/process-all.js <audio-directory> [options]');
-		console.error('');
-		console.error('Options:');
-		console.error('  --cooldown <seconds>    Cooldown between episodes (default: 120)');
-		console.error('  --start-from <date>     Start from YYYY-MM-DD, skipping earlier');
-		console.error('  --dry-run               Show what would be processed');
-		console.error('  --max <n>               Process at most n episodes');
-		process.exit(1);
-	}
+	if (!opts.audioDir) usage();
 
 	// Load checkpoint. Only episodes recorded as completed or quality-skipped
 	// count as done — a transcript on disk alone does NOT, because the
@@ -285,20 +324,14 @@ function main() {
 		console.log(`  ${timestamp()} ETA for remaining: ${etaStr}`);
 		console.log(`${'='.repeat(70)}`);
 
-		// Phase 1: transcribe only, so the quality gate can reject a bad
-		// transcript BEFORE anything goes live in D1/Vectorize/R2.
-		const phase1 = [processEpisodeScript, episode.filePath, '--skip', 'seed-db,embeddings,summary,upload-audio'];
-		if (opts.force) phase1.push('--force');
+		const [phase1, phase2] = episodeRuns(episode.filePath, opts);
 		let lastError = runEpisodeStep(phase1);
 
-		// Phase 2 (only if the transcript passes the gate): remaining steps.
-		// Transcription is skipped explicitly so --force can't redo it.
+		// Phase 2 only if the transcript passes the gate
 		let quality = null;
 		if (!lastError) {
 			quality = checkQuality(episode.episodeId);
 			if (quality.pass) {
-				const phase2 = [processEpisodeScript, episode.filePath, '--skip', 'transcribe'];
-				if (opts.force) phase2.push('--force');
 				lastError = runEpisodeStep(phase2);
 			}
 		}
@@ -399,4 +432,4 @@ function main() {
 	console.log(`\n  Progress file: ${progressPath}`);
 }
 
-main();
+if (import.meta.main) main();
