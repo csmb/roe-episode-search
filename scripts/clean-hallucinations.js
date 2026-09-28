@@ -10,6 +10,7 @@
  * Usage:
  *   node scripts/clean-hallucinations.js                           # all episodes
  *   node scripts/clean-hallucinations.js 2014-03-06 2014-05-08    # specific dates
+ *   node scripts/clean-hallucinations.js --local …                 # the local D1 copy
  */
 
 import { escapeSQL, queryJSON, runSQL } from './lib.js';
@@ -50,13 +51,22 @@ export function purgeEpisode(episodeId, target = {}) {
 }
 
 async function main() {
-	const args = process.argv.slice(2).filter((a) => !a.startsWith('--'));
+	const argv = process.argv.slice(2);
+	// A mistyped option would otherwise be dropped and the purge run on production
+	const unknown = argv.filter((a) => a.startsWith('-') && a !== '--local');
+	if (unknown.length > 0) {
+		console.error(`Unknown option: ${unknown.join(' ')}\n`);
+		console.error('Usage: node scripts/clean-hallucinations.js [--local] [YYYY-MM-DD …]');
+		process.exit(1);
+	}
+	const target = { isLocal: argv.includes('--local') };
+	const args = argv.filter((a) => !a.startsWith('-'));
 
 	let episodeIds;
 	if (args.length > 0) {
 		// Dates provided — expand to full episode IDs by querying DB
 		const dateFilters = args.map((d) => `id LIKE 'roll-over-easy_${escapeSQL(d)}%'`).join(' OR ');
-		const rows = queryJSON(`SELECT id FROM episodes WHERE ${dateFilters} ORDER BY id`);
+		const rows = queryJSON(`SELECT id FROM episodes WHERE ${dateFilters} ORDER BY id`, target);
 		if (rows.length === 0) {
 			console.error('No episodes found matching the provided dates.');
 			process.exit(1);
@@ -65,7 +75,7 @@ async function main() {
 		console.log(`Targeting ${episodeIds.length} episode(s) matching dates: ${args.join(', ')}`);
 	} else {
 		// All episodes
-		const rows = queryJSON(`SELECT id FROM episodes ORDER BY id`);
+		const rows = queryJSON(`SELECT id FROM episodes ORDER BY id`, target);
 		episodeIds = rows.map((r) => r.id);
 		console.log(`Scanning all ${episodeIds.length} episodes...`);
 	}
@@ -73,7 +83,7 @@ async function main() {
 	console.log();
 	let totalDeleted = 0;
 	for (const id of episodeIds) {
-		totalDeleted += purgeEpisode(id);
+		totalDeleted += purgeEpisode(id, target);
 	}
 
 	console.log();
