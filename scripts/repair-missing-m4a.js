@@ -116,7 +116,12 @@ async function main() {
 		const date = parseEpisodeDate(ep.id);
 		const rawName = `Roll Over Easy ${date}.mp3`;
 		const localPath = path.join(EPISODES_DIR, rawName);
-		if (fs.existsSync(localPath)) {
+		// A show that came in parts was joined by roe-pipeline, and only the joined
+		// file has all of it (a local file of that name may be part 1 alone)
+		const joinedKey = `joined/${rawName}`;
+		if (r2Keys.has(joinedKey)) {
+			jobs.push({ ...ep, source: 'r2', r2Key: joinedKey });
+		} else if (fs.existsSync(localPath)) {
 			jobs.push({ ...ep, source: 'local', localPath });
 		} else if (r2Keys.has(rawName)) {
 			jobs.push({ ...ep, source: 'r2', r2Key: rawName });
