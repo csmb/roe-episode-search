@@ -9,7 +9,10 @@ export const projectRoot = path.resolve(
 	'..'
 );
 const workerDir = path.join(projectRoot, 'roe-search');
-export const transcriptsDir = path.join(projectRoot, 'transcripts');
+// A test run (ROE_PERSIST_TO, see wranglerExec) keeps its transcripts and backups in its own folder
+export const transcriptsDir = process.env.ROE_PERSIST_TO
+	? path.join(path.resolve(process.env.ROE_PERSIST_TO), 'transcripts')
+	: path.join(projectRoot, 'transcripts');
 const DB_NAME = 'roe-episodes';
 
 const wranglerBin = path.join(workerDir, 'node_modules', '.bin', 'wrangler');
@@ -57,8 +60,10 @@ export function applyWordCorrections(text) {
 // ── Wrangler / D1 helpers ─────────────────────────────────────────────
 
 // ROE_PERSIST_TO=<dir> is for tests. Every --local call (D1 and R2) uses the
-// local state in <dir> instead of roe-search/.wrangler, and nothing may reach
-// production: --remote calls and Vectorize writes are refused.
+// local state in <dir> instead of roe-search/.wrangler, transcripts (and
+// backups) live in <dir>/transcripts, and wrangler may not reach production:
+// --remote calls and Vectorize writes are refused. (process-episode.js and
+// generate-embeddings.js check it too before their own Vectorize writes.)
 const VECTORIZE_WRITES = new Set(['insert', 'upsert', 'delete-vectors']);
 
 export function wranglerExec(args, opts = {}) {
@@ -81,9 +86,10 @@ export function wranglerExec(args, opts = {}) {
 			...opts,
 		});
 	} catch (err) {
-		// Say why it failed: wrangler prints the reason (as JSON with --json) on stdout or stderr
-		const reason = `${err.stdout ?? ''}${err.stderr ?? ''}`.trim();
-		if (reason) err.message += `\n${reason.slice(0, 2000)}`;
+		// Say why it failed: Node's message already has wrangler's stderr, but with
+		// --json wrangler prints its error (as JSON) on stdout
+		const out = `${err.stdout ?? ''}`.trim();
+		if (out && !err.message.includes(out)) err.message += `\n${out.slice(0, 2000)}`;
 		throw err;
 	}
 }

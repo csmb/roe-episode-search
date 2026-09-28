@@ -127,6 +127,7 @@ async function upsertVectors(vectors, baseUrl, apiToken) {
 }
 
 async function main() {
+	if (process.env.ROE_PERSIST_TO) throw new Error('ROE_PERSIST_TO is set (a test run): refusing to write embeddings to production');
 	const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
 	const apiToken = process.env.CLOUDFLARE_API_TOKEN;
 
