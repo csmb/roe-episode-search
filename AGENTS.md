@@ -98,6 +98,8 @@ node scripts/process-episode.js "/path/to/Roll Over Easy 2026-03-27.mp3"
 ```
 node scripts/process-all.js "/path/to/All episodes/" --cooldown 120 --dry-run
 ```
+Dates recorded as several different files are skipped and listed as `MULTI-PART`: join the parts
+into one file first. Episodes already complete on the site are left alone.
 
 ### Apply schema to D1
 ```
