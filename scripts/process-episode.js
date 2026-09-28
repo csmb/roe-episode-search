@@ -38,8 +38,10 @@
  * fixes and loop removal before saving, a meta block, the re-transcribe list).
  * The seed step refuses a transcript that ends past its recording or before 90%
  * of it, re-seeds when D1 holds a different version of the transcript, and
- * gives the episode the recording's real length. The embeddings step deletes
- * the vectors a replaced transcript had and the new one doesn't.
+ * gives the episode the recording's real length. The embeddings step embeds
+ * the lines and length D1 has (what the site shows), not the local file, then
+ * deletes every other vector of the episode: it lists the index for the IDs
+ * that start with the episode's (about half a minute).
  */
 
 import { execFileSync } from 'node:child_process';
@@ -56,9 +58,9 @@ import { SF_VOCAB_PROMPT } from '../roe-pipeline/src/whisper-prompt.js';
 import { parseEpisodeId as parseEpisodeKey } from '../roe-pipeline/src/parse-episode-id.js';
 import { cleanSegments } from '../roe-pipeline/src/clean-segments.js';
 import { checkCoverage } from '../roe-pipeline/src/coverage.js';
-import { chunkSegments, generateEmbeddings as embedEpisode } from '../roe-pipeline/src/embeddings.js';
+import { chunkSegments, replaceEmbeddings } from '../roe-pipeline/src/embeddings.js';
 import { summarizeEpisode, saveSummary } from './generate-summaries.js';
-import { chunkEpisode } from './generate-embeddings.js';
+import { chunkEpisode, vectorIdSnapshot } from './vector-ids.js';
 import { detectGuestStart, MIN_START_MS } from './guest-start.js';
 import { transcribeAndSave } from './transcribe.js';
 import { remoteAI, remoteVectorize } from './remote-cloudflare.js';
@@ -72,7 +74,6 @@ loadEnv();
 // ── Constants ──────────────────────────────────────────────────────────
 
 const DB_BATCH_SIZE = 50;
-const DELETE_BATCH_SIZE = 100;
 const RESEED_IF_OFF_MS = 60_000; // D1 and the disk file differ by more than this at the end…
 const RESEED_IF_OFF_SHARE = 0.2; // …or by this share of their lines: re-seed
 
@@ -427,6 +428,14 @@ function seedDB(episodeId, force, mp3Path, acceptShort) {
 
 // ── Step 5: Generate embeddings → Vectorize ────────────────────────────
 
+/**
+ * Embed the lines D1 has, with the length D1 has (what the site shows and
+ * plays: the local file can differ, or be missing), then delete every other
+ * vector of the episode. Those are the IDs a listing of the index finds under
+ * its ID, and any a replaced transcript left for deletion (a write still in
+ * Vectorize's queue is out of the listing's sight). Upserts go first, so search
+ * never goes without the episode, and a failed embed changes nothing.
+ */
 async function generateEmbeddings(episodeId) {
 	const timer = stepTimer('EMBEDDINGS');
 
@@ -437,24 +446,20 @@ async function generateEmbeddings(episodeId) {
 	// These calls go to Cloudflare's API directly, not through lib.js's test-run check
 	if (process.env.ROE_PERSIST_TO) throw new Error('ROE_PERSIST_TO is set (a test run): refusing to write embeddings to production');
 
-	const transcript = readTranscript(episodeId);
-	if (!transcript) throw new Error(`No transcript file for ${episodeId}`);
-	const segments = transcript.segments || [];
-	const durationMs = transcript.meta?.audio_ms ?? segments.at(-1)?.end_ms ?? 0;
+	const id = escapeSQL(episodeId);
+	const [episode] = queryJSON(`SELECT duration_ms FROM episodes WHERE id = '${id}'`, db);
+	if (!episode) throw new Error(`${episodeId} is not in D1, so there is nothing to embed (run the seed-db step first)`);
+	if (episode.duration_ms == null) throw new Error(`${episodeId} has no length in D1: its seed never finished (run the seed-db step again)`);
+	const lines = queryJSON(`SELECT start_ms, end_ms, text FROM transcript_segments WHERE episode_id = '${id}' ORDER BY start_ms, id`, db);
 
 	// The Worker's own embeddings code, through REST stand-ins for its bindings
 	const vectorize = remoteVectorize();
-	const count = await embedEpisode(remoteAI(), vectorize, episodeId, segments, durationMs);
-
-	// Vectors of the transcript this one replaced that it doesn't have any more
-	const current = new Set(chunkSegments(episodeId, segments, durationMs).map((c) => c.id));
-	const stale = staleVectors(episodeId).filter((vid) => !current.has(vid));
-	for (let i = 0; i < stale.length; i += DELETE_BATCH_SIZE) {
-		await vectorize.deleteByIds(stale.slice(i, i + DELETE_BATCH_SIZE));
-	}
+	console.log('  Listing the search index to find the episode\'s vectors (about half a minute)...');
+	const listed = (await vectorIdSnapshot(vectorize)).forEpisode(episodeId);
+	const { upserted, deleted } = await replaceEmbeddings(remoteAI(), vectorize, episodeId, lines, episode.duration_ms, [...listed, ...staleVectors(episodeId)]);
 	forgetStaleVectors(episodeId);
 
-	timer.done(`${count} vectors${stale.length ? `, ${stale.length} old ones deleted` : ''}`);
+	timer.done(`${upserted} vectors from D1's ${lines.length} lines${deleted ? `, ${deleted} old ones deleted` : ''}`);
 }
 
 // ── Step 6: Generate summary ───────────────────────────────────────────
@@ -689,8 +694,8 @@ async function main() {
 		process.exit(1);
 	}
 	const { skip, force, includeReviewed } = opts;
-	// A new transcript has to replace the one in D1 too, or the search vectors
-	// (always rebuilt from the local file) stop matching the site's lines
+	// A new transcript has to replace the one in D1 too, or the site (and the
+	// search vectors, which are made from D1's lines) keeps the old one
 	const reseed = force.has('transcribe') && !skip.has('seed-db') && !force.has('seed-db');
 	if (reseed) force.add('seed-db');
 
