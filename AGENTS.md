@@ -176,9 +176,11 @@ The worklist's `act` column: W/O redo whole, J join a split show then redo, T in
 `transcripts/.trial-2026-09-27/<id>.json`, L junk lines only (`clean-junk-lines.js`), M fix
 `duration_ms`, X leave alone. Transcripts are made in `transcripts/.repair/staging/` (whisper.cpp
 `large-v3-turbo` on the GPU by default; `--engine openai` is paid and capped by `--max-cost`, default
-$0), checked (coverage, no loops, 80% of the old words, the site's audio length; holes are only
-listed), then published one at a time: backup, install, `process-episode.js --force seed-db` (joins
-also `upload-audio`), and checks on D1 (lines, keyword search, length, reviewed fields unchanged). A
+$0), checked (the site's audio length first, then coverage, no loops, 80% of the old words, 70% of its
+distinctive words; holes are only listed), then published one at a time: backup, install,
+`process-episode.js --force seed-db` (joins: seed and upload, times moved, then embeddings), and
+checks on D1 (lines, keyword search, length, reviewed fields unchanged). `--local` needs
+`ROE_PERSIST_TO`; one run at a time (a lock file). A
 show that fails twice is set aside and the run goes on; a publishing failure stops it. It resumes
 from `transcripts/.repair/progress.json`. Joined shows' interview and quote times move by the parts
 added before the site's part. Each episode's backup (`transcripts/.backups/<date>-<id>/`) undoes it:
