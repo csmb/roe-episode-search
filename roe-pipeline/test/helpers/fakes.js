@@ -4,7 +4,8 @@
  *   128-keys-per-call limits.
  * - makeD1: the real schema on node:sqlite, foreign keys on, FTS triggers,
  *   batch() as one transaction, D1's 100-parameter limit.
- * - makeR2: an R2 bucket holding synthetic MP3s.
+ * - makeR2: an R2 bucket holding synthetic MP3s, with R2's multipart-upload
+ *   rules (every piece but the last the same size).
  * - whisperAudio(): low-bitrate MP3 frames that carry their own frame number,
  *   so a fake Whisper can tell which stretch of the show it was sent.
  */
@@ -138,25 +139,87 @@ export function makeD1() {
 export const FRAME_BYTES = 26;
 export const FRAME_SEC = 576 / 22050;
 
-export function whisperAudio(seconds, { preamble = 0 } = {}) {
+export function whisperAudio(seconds, { preamble = 0, firstFrame = 0 } = {}) {
   const frames = Math.round(seconds / FRAME_SEC);
   const bytes = new Uint8Array(preamble + frames * FRAME_BYTES);
   const view = new DataView(bytes.buffer);
   for (let i = 0; i < frames; i++) {
     const off = preamble + i * FRAME_BYTES;
     bytes.set([0xFF, 0xF3, 0x10, 0x00], off);
-    view.setUint32(off + 4, i);
+    view.setUint32(off + 4, firstFrame + i);
   }
   return bytes;
 }
 
+/** An ID3v2 tag of `size` bytes in all, as most recent recordings start with. */
+export function id3Tag(size = 109) {
+  const tag = new Uint8Array(size);
+  tag.set([0x49, 0x44, 0x33, 3, 0, 0]);
+  const body = size - 10;
+  tag.set([(body >> 21) & 0x7F, (body >> 14) & 0x7F, (body >> 7) & 0x7F, body & 0x7F], 6);
+  return tag;
+}
+
+/** Join byte arrays. */
+export function concat(...arrays) {
+  const out = new Uint8Array(arrays.reduce((n, a) => n + a.length, 0));
+  let at = 0;
+  for (const a of arrays) { out.set(a, at); at += a.length; }
+  return out;
+}
+
 /** An R2 bucket over in-memory files; records every ranged read. */
 export function makeR2(files = {}) {
-  const objects = new Map(Object.entries(files).map(([k, bytes]) => [k, { bytes, etag: 'etag-1' }]));
+  let etags = 0;
+  const objects = new Map(Object.entries(files).map(([k, bytes]) => [k, { bytes, etag: `etag-${++etags}` }]));
   const reads = [];
+  const uploads = [];
   return {
     objects,
     reads,
+    uploads,
+    put(key, bytes, etag = `etag-${++etags}`) {
+      objects.set(key, { bytes, etag });
+    },
+    async list({ prefix = '', cursor, limit = 2 } = {}) {
+      // A small page size, so callers must follow the cursor
+      const keys = [...objects.keys()].filter(k => k.startsWith(prefix)).sort();
+      const start = Number(cursor || 0);
+      const page = keys.slice(start, start + limit);
+      return {
+        objects: page.map(key => ({ key, size: objects.get(key).bytes.length, etag: objects.get(key).etag })),
+        truncated: start + limit < keys.length,
+        cursor: String(start + limit),
+      };
+    },
+    async createMultipartUpload(key, options = {}) {
+      const pieces = new Map();
+      const upload = {
+        key, options, pieces, state: 'open',
+        async uploadPart(n, body) {
+          if (upload.state !== 'open') throw new Error(`upload is ${upload.state}`);
+          pieces.set(n, new Uint8Array(body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength)));
+          return { partNumber: n, etag: `piece-${n}` };
+        },
+        async abort() { upload.state = 'aborted'; },
+        async complete(parts) {
+          if (upload.state !== 'open') throw new Error(`upload is ${upload.state}`);
+          parts.forEach((p, i) => { if (p.partNumber !== i + 1) throw new Error(`pieces out of order: ${parts.map(q => q.partNumber)}`); });
+          const sizes = parts.map(p => pieces.get(p.partNumber).length);
+          for (let i = 1; i < sizes.length - 1; i++) {
+            if (sizes[i] !== sizes[0]) throw new Error(`R2 needs every piece but the last the same size: ${sizes}`);
+          }
+          if (sizes.length > 1 && sizes[sizes.length - 1] > sizes[0]) throw new Error(`the last piece is bigger than the others: ${sizes}`);
+          const bytes = concat(...parts.map(p => pieces.get(p.partNumber)));
+          const etag = `etag-${++etags}`;
+          objects.set(key, { bytes, etag });
+          upload.state = 'completed';
+          return { key, size: bytes.length, etag };
+        },
+      };
+      uploads.push(upload);
+      return upload;
+    },
     async head(key) {
       const o = objects.get(key);
       return o ? { key, size: o.bytes.length, etag: o.etag } : null;

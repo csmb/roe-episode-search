@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EpisodePipeline, MAX_ATTEMPTS, RETRY_DELAYS_MS, STALE_MS } from '../src/pipeline.js';
-import { FakeStorage, makeD1, makeR2, makeAI, makeVectorize, whisperAudio, fakeFetch } from './helpers/fakes.js';
+import { SETTLE_MS } from '../src/parts.js';
+import { readXing } from '../src/mp3-frames.js';
+import { FakeStorage, makeD1, makeR2, makeAI, makeVectorize, whisperAudio, fakeFetch, id3Tag, concat, FRAME_SEC } from './helpers/fakes.js';
 
 const KEY = 'Roll Over Easy 2026-10-01.mp3';
 const ID = 'roll-over-easy_2026-10-01_07-30-00';
@@ -10,17 +12,18 @@ const CHUNK_FRAMES = Math.ceil(360 / (576 / 22050));
 const CHUNK_SEC = CHUNK_FRAMES * (576 / 22050);
 const CHUNK_BYTES = CHUNK_FRAMES * 26;
 const T0 = Date.UTC(2026, 9, 1, 17, 0);
+const T1 = T0 + SETTLE_MS; // when a run started by an upload at T0 gets going
 
 // Speech everywhere, naming the guest and a place so the summary and places steps keep them
 const speech = sec => (sec === 605 ? 'Heather Knight joins us this morning.'
   : sec === 1205 ? 'Then we walked over to Dolores Park.'
   : `Line at ${Math.round(sec)} seconds.`);
 
-function setup({ seconds = 50 * 60, fetch: fetchOpts = {}, env: envOver = {} } = {}) {
+function setup({ seconds = 50 * 60, files = null, fetch: fetchOpts = {}, env: envOver = {} } = {}) {
   const storage = new FakeStorage();
   const env = {
     DB: makeD1(),
-    AUDIO_BUCKET: makeR2({ [KEY]: whisperAudio(seconds) }),
+    AUDIO_BUCKET: makeR2(files ?? { [KEY]: whisperAudio(seconds) }),
     AI: makeAI(),
     VECTORIZE: makeVectorize(),
     OPENAI_API_KEY: 'sk-test',
@@ -36,6 +39,19 @@ function setup({ seconds = 50 * 60, fetch: fetchOpts = {}, env: envOver = {} } =
   };
   t.status = async () => (await t.pipeline.fetch(new Request('http://internal/status'))).json();
   t.whisperCalls = () => fetch.calls.filter(c => c.kind === 'whisper');
+  // The end of the ten-minute wait after the last upload
+  t.settle = async () => {
+    const due = t.storage.alarm;
+    t.storage.alarm = null;
+    if (due > Date.now()) vi.setSystemTime(due);
+    await t.pipeline.alarm();
+  };
+  // An upload, then the wait: the run is under way
+  t.start = async (opts = {}) => {
+    const res = await t.process(opts);
+    await t.settle();
+    return res;
+  };
   return t;
 }
 
@@ -68,7 +84,13 @@ afterEach(() => {
 describe('a whole run', () => {
   it('transcribes one chunk per alarm, then publishes the episode complete in one write', async () => {
     const t = setup({ fetch: { places: () => ['Dolores Park'] } });
-    expect((await t.process()).body).toEqual({ status: 'started', episodeId: ID });
+    expect((await t.process()).body).toEqual({ status: 'waiting', episodeId: ID, until: new Date(T1).toISOString() });
+    expect(t.storage.alarm).toBe(T1);
+    expect((await t.status()).waitingUntil).toBe(new Date(T1).toISOString());
+
+    // Ten minutes on, one file: it runs as it is
+    await t.settle();
+    expect(await t.status()).toMatchObject({ status: 'processing', step: 'transcribe', file: KEY, parts: [{ part: 1, key: KEY }] });
 
     // The first three alarms are the three chunks, one Whisper call each
     for (let i = 1; i <= 3; i++) {
@@ -99,7 +121,7 @@ describe('a whole run', () => {
     // Every outside request had a time limit
     expect(t.fetch.calls.filter(c => !c.hasTimeout)).toEqual([]);
     // All the transcription scratch space is gone; /status keeps its summary
-    expect([...t.storage.data.keys()].sort()).toEqual(['completedAt', 'episodeId', 'key', 'startedAt', 'status']);
+    expect([...t.storage.data.keys()].sort()).toEqual(['completedAt', 'episodeId', 'key', 'parts', 'startedAt', 'status']);
   });
 
   it('never shows the episode before its summary exists', async () => {
@@ -159,7 +181,7 @@ describe('when something goes wrong mid-transcription', () => {
     const t = setup({
       fetch: { whisper: call => (hang && call.startSec > CHUNK_SEC - 1 ? new Promise(() => {}) : null) },
     });
-    await t.process();
+    await t.start();
     t.storage.alarm = null;
     await t.pipeline.alarm();              // chunk 1
     t.storage.alarm = null;
@@ -183,7 +205,7 @@ describe('when something goes wrong mid-transcription', () => {
     const t = setup({
       fetch: { whisper: call => (call.startSec > CHUNK_SEC - 1 && failures-- > 0 ? new Response('busy', { status: 500 }) : null) },
     });
-    await t.process();
+    await t.start();
     t.storage.alarm = null;
     await t.pipeline.alarm();              // chunk 1
     t.storage.alarm = null;
@@ -199,11 +221,11 @@ describe('when something goes wrong mid-transcription', () => {
     const t = setup({
       fetch: { whisper: call => (broken && call.startSec > CHUNK_SEC - 1 ? new Response('busy', { status: 500 }) : null) },
     });
-    await t.process();
+    await t.start();
     await drain(t);
     expect(await t.status()).toMatchObject({ status: 'failed', step: 'transcribe', error: expect.stringContaining('Whisper API error 500') });
     expect(t.whisperCalls().filter(c => c.startSec > CHUNK_SEC - 1)).toHaveLength(MAX_ATTEMPTS);
-    expect(Date.now() - T0).toBe(RETRY_DELAYS_MS.reduce((a, b) => a + b, 0));
+    expect(Date.now() - T1).toBe(RETRY_DELAYS_MS.reduce((a, b) => a + b, 0));
 
     broken = false;
     expect((await t.process()).body).toEqual({ status: 'resumed', episodeId: ID, step: 'transcribe' });
@@ -222,7 +244,7 @@ describe('when something goes wrong mid-transcription', () => {
 
   it('stops after four alarms that each got killed', async () => {
     const t = setup();
-    await t.process();
+    await t.start();
     await t.storage.put({ attempt: MAX_ATTEMPTS, lastError: 'killed' });
     await t.pipeline.alarm();
     expect(await t.status()).toMatchObject({ status: 'failed', error: expect.stringContaining('Gave up after 4 attempts') });
@@ -231,7 +253,7 @@ describe('when something goes wrong mid-transcription', () => {
 
   it('starts the transcript over if the file is replaced mid-run', async () => {
     const t = setup();
-    await t.process();
+    await t.start();
     t.storage.alarm = null;
     await t.pipeline.alarm();              // chunk 1 of the old file
     t.env.AUDIO_BUCKET.replace(KEY, whisperAudio(40 * 60), 'etag-2');
@@ -278,14 +300,26 @@ describe('when something goes wrong mid-transcription', () => {
 describe('POST /process', () => {
   it('ignores a repeated upload while the run is alive', async () => {
     const t = setup();
-    await t.process();
+    await t.start();
     expect((await t.process()).body).toEqual({ status: 'already_processing', episodeId: ID });
     expect((await t.process({ restart: true })).body).toEqual({ status: 'already_processing', episodeId: ID });
+    expect((await t.status()).warnings).toBeUndefined();
+  });
+
+  it('waits ten minutes after the last upload, and decides at once with force', async () => {
+    const t = setup();
+    await t.process();
+    vi.setSystemTime(T0 + 4 * 60_000);
+    await t.process();   // R2 can send the same event twice
+    expect(t.storage.alarm).toBe(T0 + 4 * 60_000 + SETTLE_MS);
+    expect((await t.process({ force: true })).body).toMatchObject({ status: 'waiting', until: new Date(Date.now()).toISOString() });
+    await t.settle();
+    expect((await t.status()).status).toBe('processing');
   });
 
   it('wakes a live run with force, and resumes one silent for an hour', async () => {
     const t = setup();
-    await t.process();
+    await t.start();
     await t.storage.setAlarm(Date.now() + RETRY_DELAYS_MS[2]);
     expect((await t.process({ force: true })).body).toMatchObject({ status: 'resumed' });
     expect(t.storage.alarm).toBe(Date.now());
@@ -296,12 +330,12 @@ describe('POST /process', () => {
 
   it('starts over on a new file for a failed, unpublished run, and refuses once published', async () => {
     const t = setup({ fetch: { whisper: () => new Response('bad audio', { status: 400 }) } });
-    await t.process();
+    await t.start();
     await drain(t);
     expect((await t.status()).status).toBe('failed');
 
     t.env.AUDIO_BUCKET.replace(KEY, whisperAudio(30 * 60), 'etag-2');
-    expect((await t.process()).body).toEqual({ status: 'started', episodeId: ID });
+    expect((await t.process()).body).toMatchObject({ status: 'waiting', episodeId: ID });
 
     await t.storage.put('status', 'failed');
     t.env.DB.sqlite.prepare('INSERT INTO episodes (id, title) VALUES (?, ?)').run(ID, 'Published');
@@ -318,15 +352,15 @@ describe('POST /process', () => {
     expect((await t.process({ restart: true })).status).toBe(409);
 
     t.env.DB.sqlite.prepare('DELETE FROM episodes').run();
-    expect((await t.process({ restart: true })).body).toEqual({ status: 'started', episodeId: ID });
+    expect((await t.process({ restart: true })).body).toEqual({ status: 'waiting', episodeId: ID, until: new Date(T0).toISOString() });
   });
 
   it('re-runs a completed episode that was deleted from D1', async () => {
     const t = setup();
-    await t.process();
+    await t.start();
     await drain(t);
     t.env.DB.sqlite.exec('DELETE FROM episode_guests; DELETE FROM place_mentions; DELETE FROM transcript_segments; DELETE FROM episodes;');
-    expect((await t.process()).body).toEqual({ status: 'started', episodeId: ID });
+    expect((await t.process()).body).toMatchObject({ status: 'waiting', episodeId: ID });
   });
 
   it('answers 404 for a file that is not in R2 and 400 for a name it cannot read', async () => {
@@ -335,6 +369,121 @@ describe('POST /process', () => {
     expect((await t.process()).status).toBe(404);
     const res = await t.pipeline.fetch(new Request('http://internal/process', { method: 'POST', body: JSON.stringify({ key: 'mystery.mp3' }) }));
     expect(res.status).toBe(400);
+  });
+});
+
+describe('a show uploaded in parts', () => {
+  const P1 = 'Roll Over Easy 2026-10-01 1.mp3';
+  const P2 = 'Roll Over Easy 2026-10-01 2.mp3';
+  const P3 = 'Roll Over Easy 2026-10-01 3.mp3';
+  const JOINED = 'joined/Roll Over Easy 2026-10-01.mp3';
+  const frames = sec => Math.round(sec / FRAME_SEC);
+  // Recorded like the real ones: an ID3 tag first, and an ID3v1 tag at the end of the last
+  const audio = (fromSec, sec) => whisperAudio(sec, { firstFrame: frames(fromSec) });
+  const v1Tag = () => concat(new TextEncoder().encode('TAG'), new Uint8Array(125));
+
+  it('joins the parts into one show: one transcript, one audio file', async () => {
+    const t = setup({ files: { [P1]: concat(id3Tag(), audio(0, 30 * 60)), [P2]: concat(audio(30 * 60, 25 * 60), v1Tag()) } });
+    await t.process({ key: P1 });
+    vi.setSystemTime(T0 + 2 * 60_000);
+    expect((await t.process({ key: P2 })).body).toMatchObject({ status: 'waiting' });
+    expect(t.storage.alarm).toBe(T0 + 2 * 60_000 + SETTLE_MS);
+
+    await t.settle();
+    const planned = await t.status();
+    expect(planned).toMatchObject({ status: 'processing', step: 'join', file: JOINED, parts: [{ part: 1, key: P1 }, { part: 2, key: P2 }] });
+    // Estimated from size and bitrate, as these parts have no Xing header
+    expect(planned.parts.map(p => Math.round(p.sec / 60))).toEqual([30, 25]);
+    await drain(t);
+    expect(await t.status()).toMatchObject({ status: 'completed', file: JOINED });
+
+    // Every Whisper chunk came from the joined file, and the show runs on across the join
+    const joined = t.env.AUDIO_BUCKET.objects.get(JOINED).bytes;
+    expect(readXing(joined)).toMatchObject({ tag: 'Info', frames: frames(30 * 60) + frames(25 * 60), bytes: joined.length });
+    const starts = t.whisperCalls().map(c => Math.round(c.startSec));
+    expect(starts).toEqual([0, 360, 720, 1080, 1440, 1800, 2160, 2520, 2880, 3240]);
+
+    const [ep] = t.env.DB.rows('SELECT audio_file, duration_ms FROM episodes');
+    expect(ep.audio_file).toBe('https://audio.example/joined/Roll%20Over%20Easy%202026-10-01.mp3');
+    expect(Math.round(ep.duration_ms / 60_000)).toBe(55);
+    expect(t.env.DB.rows('SELECT COUNT(*) AS n FROM transcript_segments')[0].n).toBe(330);
+    expect(t.env.DB.rows("SELECT COUNT(*) AS n FROM transcript_segments WHERE text = 'Line at 3295 seconds.'")[0].n).toBe(1);
+    // The parts stay in R2
+    expect(t.env.AUDIO_BUCKET.objects.has(P1) && t.env.AUDIO_BUCKET.objects.has(P2)).toBe(true);
+  });
+
+  it('waits for a missing part without spending anything, and goes ahead without it when forced', async () => {
+    const t = setup({ files: { [P1]: audio(0, 10 * 60), [P3]: audio(10 * 60, 10 * 60) } });
+    await t.process({ key: P1 });
+    await t.process({ key: P3 });
+    await drain(t);
+    expect(await t.status()).toMatchObject({ status: 'waiting', missing: [2], problem: expect.stringContaining('Waiting for part 2') });
+    expect((await t.status()).waitingUntil).toBeUndefined();
+    expect(t.storage.alarm).toBeNull();
+    expect(t.fetch.calls).toEqual([]);
+    expect(t.env.DB.rows('SELECT id FROM episodes')).toEqual([]);
+
+    // Part 2 came late: a new upload decides again
+    t.env.AUDIO_BUCKET.put(P2, audio(10 * 60, 5 * 60));
+    // …but say it was never going to come: force goes ahead with parts 1 and 3
+    t.env.AUDIO_BUCKET.objects.delete(P2);
+    expect((await t.process({ key: P3, force: true })).body).toMatchObject({ status: 'waiting' });
+    await drain(t);
+    expect(await t.status()).toMatchObject({ status: 'completed', parts: [{ part: 1 }, { part: 3 }] });
+    expect(t.env.DB.rows('SELECT COUNT(*) AS n FROM transcript_segments')[0].n).toBe(120);
+  });
+
+  it('leaves out a part that is a copy of another, and runs the one file', async () => {
+    const bytes = audio(0, 20 * 60);
+    const t = setup({ files: { [KEY]: bytes, [P2]: bytes.slice() } });
+    await t.process({ key: KEY });
+    await t.process({ key: P2 });
+    await drain(t);
+    const status = await t.status();
+    expect(status).toMatchObject({ status: 'completed', file: KEY, ignored: [{ key: P2, reason: `the same file as ${KEY}` }] });
+    expect(t.env.AUDIO_BUCKET.uploads).toEqual([]);
+    expect(t.env.DB.rows('SELECT COUNT(*) AS n FROM transcript_segments')[0].n).toBe(120);
+  });
+
+  it('holds two different files for one part, and parts adding up to more than one show', async () => {
+    const t = setup({ files: { [KEY]: audio(0, 10 * 60), [P1]: audio(0, 12 * 60) } });
+    await t.process({ key: KEY });
+    await t.process({ key: P1 });
+    await drain(t);
+    expect((await t.status()).problem).toContain(`Two different files are part 1: "${P1}" and "${KEY}"`);
+    expect(t.fetch.calls).toEqual([]);
+
+    const long = setup({ files: { [P1]: audio(0, 2 * 3600), [P2]: audio(2 * 3600, 2 * 3600) } });
+    await long.process({ key: P1 });
+    await long.process({ key: P2 });
+    await drain(long);
+    expect((await long.status()).problem).toContain('The parts add up to 4.0 hours');
+    expect(long.fetch.calls).toEqual([]);
+    await long.process({ key: P2, force: true });
+    await long.settle();
+    expect(await long.status()).toMatchObject({ status: 'processing', step: 'join' });
+  });
+
+  it('notes a part that arrives after the run started, and leaves the run alone', async () => {
+    const t = setup({ seconds: 20 * 60 });
+    await t.start();
+    t.env.AUDIO_BUCKET.put(P2, audio(20 * 60, 5 * 60));
+    expect((await t.process({ key: P2 })).body).toEqual({ status: 'already_processing', episodeId: ID });
+    await drain(t);
+    const status = await t.status();
+    expect(status).toMatchObject({ status: 'completed', file: KEY });
+    expect(status.warnings).toEqual([expect.objectContaining({ step: 'upload', message: expect.stringContaining(`${P2} came after this run started`) })]);
+    expect(t.env.DB.rows('SELECT COUNT(*) AS n FROM transcript_segments')[0].n).toBe(120);
+  });
+
+  it('refuses a "(1)" copy and a joined file as uploads', async () => {
+    const t = setup();
+    const post = key => t.pipeline.fetch(new Request('http://internal/process', { method: 'POST', body: JSON.stringify({ key }) }));
+    const copy = await post('Roll Over Easy 2026-10-01 (1).mp3');
+    expect(copy.status).toBe(422);
+    expect(await copy.json()).toMatchObject({ status: 'refused', error: expect.stringContaining('copy') });
+    expect((await post(JOINED)).status).toBe(400);
+    expect(t.storage.alarm).toBeNull();
   });
 });
 

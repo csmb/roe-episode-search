@@ -1,13 +1,21 @@
 /**
  * roe-pipeline Worker
  *
- * Queue consumer: receives R2 event notifications and dispatches to
- * EpisodePipeline Durable Object for processing.
+ * Queue consumer: receives R2 event notifications and dispatches each upload
+ * to its episode's EpisodePipeline Durable Object, one per show date, so the
+ * parts of a show recorded in pieces all reach the same place.
  *
  * Also exposes a fetch handler for manual triggering and status checks.
  */
 
+import { parseUpload, JOINED_PREFIX } from './parts.js';
+
 export { EpisodePipeline } from './pipeline.js';
+
+/** The Durable Object for the episode `upload` belongs to. */
+function pipelineFor(env, upload) {
+  return env.EPISODE_PIPELINE.get(env.EPISODE_PIPELINE.idFromName(upload.episodeId));
+}
 
 export default {
   /**
@@ -25,9 +33,16 @@ export default {
         continue;
       }
 
-      // Only process MP3 files
-      if (!key.toLowerCase().endsWith('.mp3')) {
-        console.log(`Skipping non-MP3 file: ${key}`);
+      // The pipeline's own joined shows, other files, copies and names that
+      // aren't a show date
+      if (key.startsWith(JOINED_PREFIX)) {
+        console.log(`Skipping ${key}: a show the pipeline joined`);
+        message.ack();
+        continue;
+      }
+      const upload = parseUpload(key);
+      if (upload.error) {
+        console.log(`Skipping ${key}: ${upload.error}`);
         message.ack();
         continue;
       }
@@ -35,11 +50,7 @@ export default {
       console.log(`Processing R2 event: ${key} (${event.object?.size ?? 'unknown'} bytes)`);
 
       try {
-        // Dispatch to Durable Object keyed by filename (dedup by file)
-        const doId = env.EPISODE_PIPELINE.idFromName(key);
-        const stub = env.EPISODE_PIPELINE.get(doId);
-
-        const res = await stub.fetch('http://internal/process', {
+        const res = await pipelineFor(env, upload).fetch('http://internal/process', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ key }),
@@ -58,10 +69,12 @@ export default {
   /**
    * Fetch handler for manual triggering and status checks.
    *
-   * POST /process?key=filename.mp3 — start a run, or resume one that failed or
-   *      has been silent for an hour (&force=1 wakes a live one now; &restart=1
-   *      starts over from scratch, only before the episode is published)
-   * GET  /status?key=filename.mp3  — check pipeline status
+   * POST /process?key=filename.mp3 — note the file (a whole show, or one part
+   *      of one) and run the show ten minutes later, or resume a run that failed
+   *      or has been silent for an hour (&force=1 decides or wakes it now;
+   *      &restart=1 starts over from scratch, only before the episode is published)
+   * GET  /status?key=filename.mp3  — check the status of that file's show
+   *      (any of its parts, or the joined file, will do)
    * GET  /                         — health check
    *
    * /process and /status need `Authorization: Bearer <PIPELINE_TOKEN>` (a Worker
@@ -87,11 +100,16 @@ export default {
       const key = url.searchParams.get('key');
       if (!key) return Response.json({ error: 'Missing ?key= parameter' }, { status: 400 });
 
+      if (key.startsWith(JOINED_PREFIX)) {
+        return Response.json({ error: 'The pipeline made that file by joining a show\'s parts; send one of the parts instead' }, { status: 400 });
+      }
+      const upload = parseUpload(key);
+      if (upload.copy) return Response.json({ status: 'refused', error: upload.error }, { status: 422 });
+      if (upload.error) return Response.json({ error: upload.error }, { status: 400 });
+
       const force = url.searchParams.get('force') === '1';
       const restart = url.searchParams.get('restart') === '1';
-      const doId = env.EPISODE_PIPELINE.idFromName(key);
-      const stub = env.EPISODE_PIPELINE.get(doId);
-      const res = await stub.fetch('http://internal/process', {
+      const res = await pipelineFor(env, upload).fetch('http://internal/process', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ key, force, restart }),
@@ -103,10 +121,10 @@ export default {
       const key = url.searchParams.get('key');
       if (!key) return Response.json({ error: 'Missing ?key= parameter' }, { status: 400 });
 
-      const doId = env.EPISODE_PIPELINE.idFromName(key);
-      const stub = env.EPISODE_PIPELINE.get(doId);
-      const res = await stub.fetch('http://internal/status', { method: 'GET' });
-      return res;
+      const upload = parseUpload(key);
+      if (upload.copy) return Response.json({ status: 'refused', error: upload.error });
+      if (upload.error) return Response.json({ error: upload.error }, { status: 400 });
+      return pipelineFor(env, upload).fetch('http://internal/status', { method: 'GET' });
     }
 
     return Response.json({ service: 'roe-pipeline', status: 'ok' });

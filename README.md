@@ -36,8 +36,10 @@ New episodes arrive by drag and drop: an MP3 uploaded to the `roe-audio` R2 buck
 ```
 Upload "Roll Over Easy YYYY-MM-DD.mp3" to R2
     │
-    └──► R2 event notification ──► roe-pipeline-queue ──► EpisodePipeline DO (one per file name)
+    └──► R2 event notification ──► roe-pipeline-queue ──► EpisodePipeline DO (one per show date)
               │
+              ├── 0. wait ──► 10 minutes after the last upload for that date; a show that came
+              │               in parts is then joined into one MP3 (joined/Roll Over Easy YYYY-MM-DD.mp3)
               ├── 1. transcribe ──► OpenAI Whisper API, one six-minute chunk per alarm;
               │                     holes of 5+ min are re-sent as 3-minute clips
               ├── 2. summary ──► GPT-4o-mini (title, summary, guests found in the transcript)
@@ -217,9 +219,11 @@ cd ..
 
 ### Processing a new episode
 
-Drag the MP3 into the `roe-audio` R2 bucket in the Cloudflare dashboard, named `Roll Over Easy YYYY-MM-DD.mp3`. The pipeline starts by itself. (`npx wrangler r2 object put roe-audio/"Roll Over Easy 2026-04-02.mp3" --file=…` works too.)
+Drag the MP3 into the `roe-audio` R2 bucket in the Cloudflare dashboard, named `Roll Over Easy YYYY-MM-DD.mp3`. The pipeline starts by itself ten minutes later: it waits in case the show comes in parts. (`npx wrangler r2 object put roe-audio/"Roll Over Easy 2026-04-02.mp3" --file=…` works too.)
 
-Processing takes ~10–15 minutes for a 2-hour episode. Check status:
+A show recorded as several files: upload them all, named `Roll Over Easy YYYY-MM-DD 1.mp3`, `… 2.mp3` and so on (the first may have no number). Ten minutes after the last one arrives, the pipeline joins them in order into `joined/Roll Over Easy YYYY-MM-DD.mp3`, with a new header so players show the right length and seek to the right place, and runs that; the parts stay in R2. A file identical to another is a copy and is left out, as is a `… (1).mp3`. The pipeline waits for you instead, with the reason in `problem` on `/status`, when a part is missing, two different files are the same part, the parts are in different formats, or they add up to more than 3.5 hours (a copy of the whole show among the parts, as some archive dates have). Fix the files in R2, then POST `/process` for any part with `&force=1`, which also goes ahead without a missing part.
+
+Processing takes ~10–15 minutes for a 2-hour episode, after the ten-minute wait. Check status:
 
 ```bash
 # PIPELINE_TOKEN is in the project .env (the same value is a Worker secret)
@@ -227,7 +231,7 @@ curl -H "Authorization: Bearer $PIPELINE_TOKEN" \
   "https://roe-pipeline.christophersbunting.workers.dev/status?key=Roll%20Over%20Easy%202026-04-02.mp3"
 ```
 
-`status` is `processing`, `failed` or `completed`. While it runs you also see the `step`, its `attempt`, `progress` (chunks and bytes transcribed) and the `lastError` it's waiting to retry. `warnings` lists extras that were skipped, and `holes` any stretches of 5+ minutes still without transcript.
+`status` is `waiting` (with `waitingUntil`, or a `problem` to fix), `processing`, `failed` or `completed`. `parts` lists the files the show is made of, `ignored` any left out, and `file` the one transcribed. Any part's name, or the joined file's, works as the `key`. While it runs you also see the `step`, its `attempt`, `progress` (chunks and bytes transcribed) and the `lastError` it's waiting to retry. `warnings` lists extras that were skipped (and files that arrived after the run started, which aren't added to it), and `holes` any stretches of 5+ minutes still without transcript.
 
 If a run fails (OpenAI down for half an hour, say), fix the cause and ask it to carry on. It resumes at the failed step, without paying to transcribe again:
 

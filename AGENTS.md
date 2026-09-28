@@ -17,7 +17,9 @@ roe-episode-search/
 ├── roe-pipeline/              # Cloudflare Worker — serverless episode processing
 │   └── src/
 │       ├── index.js           # Queue consumer + /process and /status (bearer token)
-│       ├── pipeline.js        # EpisodePipeline DO: one step (or chunk) per alarm, retries, resume
+│       ├── pipeline.js        # EpisodePipeline DO, one per show date: one step (or chunk) per alarm, retries, resume
+│       ├── parts.js           # Which files make the show: parts, copies, what to wait for
+│       ├── mp3-join.js        # Join a split show's parts into one MP3 in R2, with a new Xing header
 │       ├── transcribe.js      # OpenAI Whisper API, six minutes of audio at a time
 │       ├── gap-retry.js       # Re-send 5+ minute holes as 3-minute clips
 │       ├── clean-segments.js  # Loop/hallucination/wrong-language cleaning
@@ -52,7 +54,7 @@ The MP3 archive (661 files) is outside the repo, in iCloud Drive at
 | Component | Entry Point | Purpose | Infra |
 |-----------|-------------|---------|-------|
 | **roe-search** | `roe-search/src/index.js` | Search frontend + API. Serves HTML pages, FTS5/semantic search, audio streaming, admin endpoints | D1, R2, Vectorize, Workers AI |
-| **roe-pipeline** | `roe-pipeline/src/index.js` | How new episodes arrive. R2 upload → queue → Durable Object runs transcribe → summary → seed → embed → guest-start → places → sentiment, with retries and resume | D1, R2, Vectorize, Workers AI, OpenAI |
+| **roe-pipeline** | `roe-pipeline/src/index.js` | How new episodes arrive. R2 upload → queue → one Durable Object per show date, which waits 10 minutes for more parts, joins a show that came in parts, then runs transcribe → summary → seed → embed → guest-start → places → sentiment, with retries and resume | D1, R2, Vectorize, Workers AI, OpenAI |
 | **scripts** | `scripts/process-episode.js` | Local processing used for the historical backfill (whisper-cpp + ffmpeg). Not the same as roe-pipeline: no places or sentiment, and its own prompts and cleaning | D1, R2, Vectorize, OpenAI |
 | **D1 database** | `schema.sql` | SQLite: episodes, transcript_segments, transcript_fts (FTS5), episode_guests, places, place_mentions | |
 | **R2 bucket** | `roe-audio` | Audio file storage. Public URL: `pub-e95bd2be3f9d4147b2955503d75e50c1.r2.dev` | |

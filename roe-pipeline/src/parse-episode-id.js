@@ -126,7 +126,7 @@ export function parseEpisodeId(key) {
   return null;
 }
 
-function decodeName(name) {
+export function decodeName(name) {
   try {
     return decodeURIComponent(name);
   } catch {

@@ -26,7 +26,7 @@ describe('parseFrameHeader', () => {
   it('parses MPEG-1 Layer III, 128 kbps, 44.1 kHz, no padding (frameSize=417)', () => {
     const h = buildHeader();
     const result = parseFrameHeader(h, 0);
-    expect(result).toEqual({ frameSize: 417, version: 3, layer: 1, sampleRate: 44100 });
+    expect(result).toMatchObject({ frameSize: 417, version: 3, layer: 1, sampleRate: 44100 });
   });
 
   it('adds 1 to frameSize when padding bit is set', () => {
@@ -39,7 +39,7 @@ describe('parseFrameHeader', () => {
     // floor(72 * 64000 / 22050) = 208
     const h = buildHeader({ version: 2, bitrateIdx: 8, sampleRateIdx: 0 });
     const result = parseFrameHeader(h, 0);
-    expect(result).toEqual({ frameSize: 208, version: 2, layer: 1, sampleRate: 22050 });
+    expect(result).toMatchObject({ frameSize: 208, version: 2, layer: 1, sampleRate: 22050 });
   });
 
   it('parses MPEG-1 Layer II, 128 kbps, 44.1 kHz (frameSize=417)', () => {
@@ -47,7 +47,7 @@ describe('parseFrameHeader', () => {
     // floor(144 * 128000 / 44100) = 417
     const h = buildHeader({ layer: 2, bitrateIdx: 8, sampleRateIdx: 0 });
     const result = parseFrameHeader(h, 0);
-    expect(result).toEqual({ frameSize: 417, version: 3, layer: 2, sampleRate: 44100 });
+    expect(result).toMatchObject({ frameSize: 417, version: 3, layer: 2, sampleRate: 44100 });
   });
 
   it('parses MPEG-1 Layer I, 128 kbps, 44.1 kHz (frameSize=136)', () => {
@@ -55,7 +55,7 @@ describe('parseFrameHeader', () => {
     // (floor(12 * 128000 / 44100) + 0) * 4 = 34 * 4 = 136
     const h = buildHeader({ layer: 3, bitrateIdx: 4, sampleRateIdx: 0 });
     const result = parseFrameHeader(h, 0);
-    expect(result).toEqual({ frameSize: 136, version: 3, layer: 3, sampleRate: 44100 });
+    expect(result).toMatchObject({ frameSize: 136, version: 3, layer: 3, sampleRate: 44100 });
   });
 
   it('returns null for reserved MPEG version (01)', () => {
