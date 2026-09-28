@@ -41,7 +41,13 @@ import { STEPS, whisperStartProblem } from './process-episode.js';
 import { queryJSON, projectRoot, transcriptsDir, probeDurationMs } from './lib.js';
 import { checkCoverage } from '../roe-pipeline/src/coverage.js';
 
-const progressPath = path.join(projectRoot, 'scripts', 'batch-progress.json');
+// A test run (ROE_PERSIST_TO, see lib.js) asks the scratch D1 which episodes are
+// done, runs phase 2 against it (--local) and keeps its checkpoint in the test
+// folder, so it can't reach production or change the real batch-progress.json
+const testRun = !!process.env.ROE_PERSIST_TO;
+const progressPath = testRun
+	? path.join(path.resolve(process.env.ROE_PERSIST_TO), 'batch-progress.json')
+	: path.join(projectRoot, 'scripts', 'batch-progress.json');
 const processEpisodeScript = path.join(projectRoot, 'scripts', 'process-episode.js');
 
 const MAX_RETRIES = 2;
@@ -131,7 +137,7 @@ function timestamp() {
 }
 
 /** The two process-episode.js runs for one file (node arguments). */
-export function episodeRuns(filePath, { force = [], includeReviewed = false, noGpu = false } = {}) {
+export function episodeRuns(filePath, { force = [], includeReviewed = false, noGpu = false, local = false } = {}) {
 	// Phase 1: transcribe only, so the quality gate can reject a bad
 	// transcript BEFORE anything goes live in D1/Vectorize/R2 (the
 	// interview time included).
@@ -146,6 +152,7 @@ export function episodeRuns(filePath, { force = [], includeReviewed = false, noG
 	if (force.includes('transcribe') && !forced.includes('seed-db')) forced.push('seed-db');
 	if (forced.length > 0) phase2.push('--force', forced.join(','));
 	if (includeReviewed) phase2.push('--include-reviewed');
+	if (local) phase2.push('--local');
 	return [phase1, phase2];
 }
 
@@ -253,7 +260,8 @@ function main() {
 	// search vectors with ones built from a different transcript. A run of ours
 	// that stopped partway leaves one of the three empty, so it is still resumed.
 	const onSite = queryJSON(
-		"SELECT id FROM episodes WHERE duration_ms IS NOT NULL AND summary IS NOT NULL AND summary != '' AND audio_file IS NOT NULL"
+		"SELECT id FROM episodes WHERE duration_ms IS NOT NULL AND summary IS NOT NULL AND summary != '' AND audio_file IS NOT NULL",
+		{ isLocal: testRun }
 	).map((r) => r.id);
 	const alreadyDone = new Set([
 		...Object.keys(progress.completed),
@@ -287,6 +295,7 @@ function main() {
 	const failedCount = Object.keys(progress.failed).length;
 
 	console.log('=== Roll Over Easy — Batch Processing ===');
+	if (testRun) console.log(`  ${timestamp()} Test run: the scratch D1 and checkpoint in ${path.resolve(process.env.ROE_PERSIST_TO)}`);
 	console.log(`  ${timestamp()} Total MP3 files: ${totalFiles}`);
 	console.log(`  ${timestamp()} Unique dates: ${uniqueDates}`);
 	console.log(`  ${timestamp()} Previously completed: ${completedCount}`);
@@ -361,7 +370,7 @@ function main() {
 		console.log(`  ${timestamp()} ETA for remaining: ${etaStr}`);
 		console.log(`${'='.repeat(70)}`);
 
-		const [phase1, phase2] = episodeRuns(episode.filePath, opts);
+		const [phase1, phase2] = episodeRuns(episode.filePath, { ...opts, local: testRun });
 		let lastError = runEpisodeStep(phase1);
 
 		// Phase 2 only if the transcript passes the gate

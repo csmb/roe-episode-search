@@ -103,6 +103,8 @@ export ROE_PERSIST_TO=/tmp/roe-test
 # …copy rows in (production SELECTs are fine), then e.g.:
 node scripts/delete-episode.js <id> --local --yes
 ```
+`process-all.js` has no `--local`: in a test run it asks the scratch D1 which episodes are done, runs
+phase 2 with `--local`, and keeps its `batch-progress.json` in `<dir>`.
 
 ### Process a single episode (local pipeline)
 ```
