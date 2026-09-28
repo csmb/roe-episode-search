@@ -38,7 +38,7 @@ roe-episode-search/
 │   ├── generate-summaries.js  # Regenerate AI summaries
 │   ├── cleanup-places.js      # Remove false positive places from D1
 │   ├── redo-places.js         # Redo one episode's places with roe-pipeline's code
-│   ├── delete-episode.js      # Remove an episode from D1, Vectorize, R2
+│   ├── delete-episode.js      # Back up, then remove an episode from D1 and Vectorize (--yes)
 │   ├── episode-backup.js      # Back up an episode (with restore SQL) before a delete or merge
 │   ├── archive/               # Retired one-off scripts, reference only (see its README)
 │   └── ...                    # ~15 more utility scripts

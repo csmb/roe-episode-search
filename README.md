@@ -153,7 +153,7 @@ All scripts are in `scripts/` and run locally with Node.js:
 | `process-all.js` | Batch runner with checkpoint/resume, cooldown, retries, and quality gates. |
 | `discover-episodes.js` | Scan an audio directory, parse filenames, deduplicate by date. |
 | `clean-hallucinations.js` | Remove hallucinated repeated-phrase segments from D1. |
-| `delete-episode.js` | Remove an episode from D1, Vectorize, R2 and its local transcript. |
+| `delete-episode.js` | Back up an episode, then remove it from D1 and Vectorize (a dry run without `--yes`; `--delete-audio` also removes its .m4a). |
 | `episode-backup.js` | Back up one episode (D1 rows, search vectors, local transcript) with restore SQL and a README, in `transcripts/.backups/`. |
 | `repair-missing-m4a.js` | Make and upload the .m4a for episodes that only have their MP3. |
 | `redo-places.js` | Redo one episode's places and their sentiment with the pipeline's own code (`--no-places` for every episode that has none). |
@@ -246,10 +246,11 @@ Uploading the same file again does the same thing. A run that has been silent fo
 To redo an episode that's already on the site, delete it first, then POST `/process` as above:
 
 ```bash
-node scripts/delete-episode.js roll-over-easy_YYYY-MM-DD_07-30-00
+node scripts/delete-episode.js roll-over-easy_YYYY-MM-DD_07-30-00          # dry run: shows what it would remove
+node scripts/delete-episode.js roll-over-easy_YYYY-MM-DD_07-30-00 --yes    # backs it up, then deletes it
 ```
 
-`delete-episode.js` finds an episode's search entries from its local transcript file, which drag-and-drop episodes don't have; their old entries stay in Vectorize for now. The site plays the MP3 until `node scripts/repair-missing-m4a.js --only <id>` makes the .m4a again.
+`delete-episode.js` first backs the episode up with `episode-backup.js` (its rows, search entries and local transcript, with a `restore.sql` and a README, in `transcripts/.backups/<date>-<id>/`); the local transcript is moved there. It finds the search entries from the transcript lines in D1, so drag-and-drop episodes are covered. The episode's .m4a stays in R2 unless you add `--delete-audio`: do that when the new upload has different audio (joined parts, say), or the site keeps playing the old recording. Without an .m4a the site plays the MP3 until `node scripts/repair-missing-m4a.js --only <id>` makes it again. Raw MP3 uploads are never deleted.
 
 ### Batch processing (historical backfill only)
 

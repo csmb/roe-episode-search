@@ -172,7 +172,7 @@ async function main() {
 	console.log('\n=== Step 6/6: Delete source duplicate ===');
 	execFileSync(
 		process.execPath,
-		[path.join(projectRoot, 'scripts', 'delete-episode.js'), source],
+		[path.join(projectRoot, 'scripts', 'delete-episode.js'), source, '--yes'],
 		{ cwd: projectRoot, stdio: 'inherit' }
 	);
 
