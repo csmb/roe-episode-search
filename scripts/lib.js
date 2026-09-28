@@ -56,7 +56,19 @@ export function applyWordCorrections(text) {
 
 // ── Wrangler / D1 helpers ─────────────────────────────────────────────
 
+// ROE_PERSIST_TO=<dir> is for tests. Every --local call (D1 and R2) uses the
+// local state in <dir> instead of roe-search/.wrangler, and nothing may reach
+// production: --remote calls and Vectorize writes are refused.
+const VECTORIZE_WRITES = new Set(['insert', 'upsert', 'delete-vectors']);
+
 export function wranglerExec(args, opts = {}) {
+	const persistTo = process.env.ROE_PERSIST_TO;
+	if (persistTo) {
+		if (args.includes('--remote') || (args[0] === 'vectorize' && VECTORIZE_WRITES.has(args[1]))) {
+			throw new Error(`ROE_PERSIST_TO is set (a test run): refusing "wrangler ${args.slice(0, 3).join(' ')}" on production`);
+		}
+		if (args.includes('--local')) args = [...args, '--persist-to', path.resolve(persistTo)];
+	}
 	const env = { ...process.env };
 	delete env.CLOUDFLARE_API_TOKEN;
 	return execFileSync(wranglerBin, args, {
