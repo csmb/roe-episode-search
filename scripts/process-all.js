@@ -432,4 +432,11 @@ function main() {
 	console.log(`\n  Progress file: ${progressPath}`);
 }
 
-if (import.meta.main) main();
+if (import.meta.main) {
+	try {
+		main();
+	} catch (err) {
+		console.error(`\nFATAL: ${err.message}`);
+		process.exit(1);
+	}
+}
