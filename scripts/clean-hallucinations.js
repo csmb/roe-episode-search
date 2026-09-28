@@ -1,53 +1,50 @@
 #!/usr/bin/env node
 
 /**
- * Delete hallucinated repeated-phrase segments from D1.
- *
- * Whisper hallucinates by repeating a phrase hundreds of times.
- * This script finds any phrase with length > 20 chars appearing > 20 times
- * within one episode and deletes all matching rows.
+ * Delete Whisper's repetition loops from episodes already in D1, with the
+ * pipelines' own loop check (findLoops in roe-pipeline/src/clean-segments.js):
+ * the repeats in a loop go, and each looping line keeps its first copy. New
+ * transcripts are cleaned before they're saved and seeded; this is for what
+ * was seeded before that.
  *
  * Usage:
  *   node scripts/clean-hallucinations.js                           # all episodes
  *   node scripts/clean-hallucinations.js 2014-03-06 2014-05-08    # specific dates
  *   node scripts/clean-hallucinations.js --local …                 # the local D1 copy
+ *
+ * The episode's search vectors are left as they were: re-embed it afterwards
+ * (generate-embeddings.js --only <id>), or transcribe it again, which its loop
+ * stretch usually needs.
  */
 
 import { escapeSQL, queryJSON, runSQL } from './lib.js';
+import { findLoops } from '../roe-pipeline/src/clean-segments.js';
+
+const DELETE_BATCH = 200;
 
 /** @param {{isLocal?: boolean}} [target] - `isLocal: true` cleans the local D1 copy. */
 export function purgeEpisode(episodeId, target = {}) {
-	// Find hallucinated phrases: length > 20 chars, repeated > 20 times
-	const hallucinations = queryJSON(
-		`SELECT text, COUNT(*) as cnt FROM transcript_segments
-		 WHERE episode_id = '${escapeSQL(episodeId)}'
-		 GROUP BY text
-		 HAVING cnt > 20 AND length(text) > 20`,
+	const lines = queryJSON(
+		`SELECT id, start_ms, end_ms, text FROM transcript_segments WHERE episode_id = '${escapeSQL(episodeId)}' ORDER BY start_ms, id`,
 		target
 	);
-
-	if (hallucinations.length === 0) {
+	const { segments: kept, loops } = findLoops(lines);
+	if (loops.length === 0) {
 		console.log(`  ${episodeId}: clean`);
 		return 0;
 	}
 
-	const phrases = hallucinations.map((r) => `'${escapeSQL(r.text)}'`).join(', ');
-	runSQL(
-		`DELETE FROM transcript_segments
-		 WHERE episode_id = '${escapeSQL(episodeId)}'
-		   AND text IN (${phrases})`,
-		target
-	);
-
-	const totalDeleted = hallucinations.reduce((sum, r) => sum + r.cnt, 0);
-	const uniqueCount = hallucinations.length;
-	console.log(
-		`  ${episodeId}: deleted ${totalDeleted} segments (${uniqueCount} unique phrase${uniqueCount === 1 ? '' : 's'})`
-	);
-	for (const { text, cnt } of hallucinations) {
-		console.log(`    × ${cnt}  "${text.slice(0, 80)}${text.length > 80 ? '...' : ''}"`);
+	const keep = new Set(kept.map((l) => l.id));
+	const drop = lines.filter((l) => !keep.has(l.id)).map((l) => l.id);
+	for (let i = 0; i < drop.length; i += DELETE_BATCH) {
+		runSQL(`DELETE FROM transcript_segments WHERE id IN (${drop.slice(i, i + DELETE_BATCH).join(', ')})`, target);
 	}
-	return totalDeleted;
+
+	console.log(`  ${episodeId}: deleted ${drop.length} looping lines in ${loops.length} stretch${loops.length === 1 ? '' : 'es'}`);
+	for (const l of loops) {
+		console.log(`    ${Math.round(l.startMs / 60000)}-${Math.round(l.endMs / 60000)} min: ×${l.removed}  "${l.top.slice(0, 80)}"`);
+	}
+	return drop.length;
 }
 
 async function main() {
