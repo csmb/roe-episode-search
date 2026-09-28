@@ -30,7 +30,9 @@
  *
  * The list (every quote, old -> new, how it was found, the line) is printed
  * per episode and saved as quotes.txt and quotes.json in transcripts/.backups/
- * <date>-place-quotes-plan/ (a dry run) or <date>-place-quotes/ (--yes).
+ * <date>-place-quotes-plan/ (a dry run) or <date>-place-quotes/ (--yes), and
+ * moves.txt has only the quotes that move, with the line each is in now: the
+ * one to check on a run over every episode (--all).
  *
  * --apply <quotes.json> --yes writes the rows a dry run saved, as they are
  * (edit it first: set a row's "new" to its "old" to leave it, or to the time
@@ -42,11 +44,12 @@
  * time are still the ones read; then the times are read back.
  *
  * Usage:
- *   node scripts/reanchor-place-quotes.js (--only <date|id>,… | --from-repair) [--except <dates>] [--progress <file>] [--yes] [--local]
+ *   node scripts/reanchor-place-quotes.js (--only <date|id>,… | --from-repair | --all) [--except <dates>] [--progress <file>] [--yes] [--local]
  *   node scripts/reanchor-place-quotes.js --apply <quotes.json> [--progress <file>] [--yes] [--local]
  *
  *   --only         these episodes (YYYY-MM-DD dates or episode IDs, comma-separated)
  *   --from-repair  the episodes transcripts/.repair/progress.json has published or done
+ *   --all          every episode in D1 (a quote's time can be off without a repair, see above)
  *   --except       leave these out
  *   --progress     the repair's state file, if not transcripts/.repair/progress.json
  *   --apply        write the rows a dry run saved (with --yes)
@@ -80,7 +83,7 @@ const CANDIDATES = 12; // places tried for a close match
 const PAGE = 20; // episodes per query
 
 const USAGE = [
-	'Usage: node scripts/reanchor-place-quotes.js (--only <date|id>,… | --from-repair) [--except <dates>] [--progress <file>] [--yes] [--local]',
+	'Usage: node scripts/reanchor-place-quotes.js (--only <date|id>,… | --from-repair | --all) [--except <dates>] [--progress <file>] [--yes] [--local]',
 	'       node scripts/reanchor-place-quotes.js --apply <quotes.json> [--progress <file>] [--yes] [--local]',
 ].join('\n');
 
@@ -311,6 +314,14 @@ export function episodeReport(id, rows, { detail = false } = {}) {
 	return out;
 }
 
+/** Only the quotes that move, for the owner to check: old -> new, the quote, and the line it is in now. */
+export function movesReport(rows) {
+	return rows.filter(moves).flatMap((r) => [
+		`${dateOf(r.episode_id)}  ${mmss(r.old).padStart(6)} -> ${mmss(r.new).padStart(6)}${r.old != null ? ` (${signed(r.new - r.old)})` : ''}  ${r.how}${r.how === 'close' ? ` ${Math.round(r.share * 100)}%` : ''}  ${r.name}: "${String(r.snippet ?? '').slice(0, 120)}"`,
+		`             line: "${String(r.line ?? '').slice(0, 140)}"`,
+	]);
+}
+
 /**
  * Before any change: the rows as they were read, restore.sql and applied.sql (what the change
  * runs), and a README with the undo command. Returns the SQL to run.
@@ -333,6 +344,7 @@ function readme(dir, { rows, isLocal }) {
 		`Place-quote times moved by reanchor-place-quotes.js --yes, ${new Date().toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })}, in the ${isLocal ? 'local D1 copy (--local)' : 'production D1 database'}.`,
 		'',
 		'  quotes.txt    every quote looked at, old -> new time, how it was found',
+		'  moves.txt     only the quotes that moved, with the line each is in now',
 		'  quotes.json   the same as data',
 		`  before.json   the ${rows} place_mentions row${rows === 1 ? '' : 's'} whose time changed, as they were read`,
 		'  applied.sql   exactly what was run (UPDATEs of snippet_start_ms only, each only where the',
@@ -349,10 +361,10 @@ function readme(dir, { rows, isLocal }) {
 async function main() {
 	loadEnv();
 	const { flags, rest } = parseFlags(process.argv.slice(2), {
-		'--only': 'value', '--from-repair': 'flag', '--except': 'value', '--progress': 'value', '--apply': 'value', '--yes': 'flag', '--local': 'flag',
+		'--only': 'value', '--from-repair': 'flag', '--all': 'flag', '--except': 'value', '--progress': 'value', '--apply': 'value', '--yes': 'flag', '--local': 'flag',
 	}, USAGE);
-	const picking = flags.only || flags['from-repair'] || flags.except;
-	if (rest.length > 0 || (flags.apply ? picking : !flags.only === !flags['from-repair'])) {
+	const named = [flags.only, flags['from-repair'], flags.all].filter(Boolean).length;
+	if (rest.length > 0 || (flags.apply ? named > 0 || flags.except : named !== 1)) {
 		console.error(USAGE);
 		process.exit(1);
 	}
@@ -396,7 +408,8 @@ async function main() {
 	const dir = newBackupDir(flags.yes ? 'place-quotes' : 'place-quotes-plan');
 	fs.writeFileSync(path.join(dir, 'quotes.json'), JSON.stringify({ at: new Date().toISOString(), database, ...(flags.apply ? { from: path.resolve(flags.apply) } : {}), rows }, null, 1));
 	fs.writeFileSync(path.join(dir, 'quotes.txt'), `${totals}, ${new Date().toISOString()}\n("stays": found, and its old time still leads into it, up to 30 s before its line; "kept": not found, in more than one place, or no quote)\n\n${report.join('\n')}\n`);
-	console.log(`\n${totals}\nEvery quote: ${path.join(dir, 'quotes.txt')}`);
+	fs.writeFileSync(path.join(dir, 'moves.txt'), `${todo.length} quote time${todo.length === 1 ? '' : 's'} to move, ${new Date().toISOString()}\n(old -> new, how the quote was found, the quote; then the line it is in now)\n\n${movesReport(rows).join('\n')}\n`);
+	console.log(`\n${totals}\nEvery quote: ${path.join(dir, 'quotes.txt')}\nOnly the moves: ${path.join(dir, 'moves.txt')}`);
 	if (unplaced.length > 0) {
 		console.log('\nNot found, or in more than one place (kept):');
 		for (const r of unplaced) console.log(`  ${dateOf(r.episode_id)} ${mmss(r.old).padStart(6)}  ${r.name}: "${String(r.snippet).slice(0, 100)}"${r.how === 'not found' ? '' : ' (more than one place)'}`);

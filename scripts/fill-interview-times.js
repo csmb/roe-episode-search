@@ -5,18 +5,22 @@
  * detector's time (guest-start.js), after the transcript repair. Only a time
  * that is empty or exactly 3,600,000 ms (60:00: what the old detector gave when
  * it found nothing) gets a proposal, or that 60:00 as a join moved it (the
- * repair's progress records the move). Every other time stays as it is,
- * reviewed or not (2026-09-24's 4,637,000 was set by hand). Reviewed episodes
- * are included: their guests were checked, not an empty or 60:00 time. A dry
- * run unless --yes.
+ * repair's progress records the move), or a time in the last 10 minutes of a
+ * show 100+ minutes long: the old detector's sign-off pick (it took the first
+ * mention after the last song), which the owner asked on 2026-09-28 to have on
+ * the list too. Every other time stays as it is, reviewed or not (2026-09-24's
+ * 4,637,000 was set by hand). Reviewed episodes are included: their guests
+ * were checked, not their interview time. A dry run unless --yes.
  *
  * Each episode's guests and lines are read from D1 as they are now. There is
  * no proposal when the episode has no guests, is shorter than 50 minutes or
  * has no lines after 50 minutes, when the detector finds nothing (it would say
- * 60:00 again), or when its time is past the episode's length. The list (old
- * -> proposed, and the line at the proposed time) is printed and saved as
- * proposals.txt and proposals.json in transcripts/.backups/<date>-interview-
- * times-plan/ (a dry run) or <date>-interview-times/ (--yes).
+ * 60:00 again), or when its time is past the episode's length; a sign-off time
+ * gets 60:00 then (the detector's own "found nothing"), as the goodbye is never
+ * the interview. The list (old -> proposed, and the line at the proposed time)
+ * is printed and saved as proposals.txt and proposals.json in
+ * transcripts/.backups/<date>-interview-times-plan/ (a dry run) or
+ * <date>-interview-times/ (--yes).
  *
  * --apply <proposals.json> --yes writes the list a dry run saved, as it is
  * (edit it first: set "proposed" to null to leave an episode out, or to the
@@ -28,11 +32,12 @@
  * only if its time is still the one read; then the times are read back.
  *
  * Usage:
- *   node scripts/fill-interview-times.js (--only <date|id>,… | --from-repair) [--except <dates>] [--progress <file>] [--yes] [--local]
+ *   node scripts/fill-interview-times.js (--only <date|id>,… | --from-repair | --all) [--except <dates>] [--progress <file>] [--yes] [--local]
  *   node scripts/fill-interview-times.js --apply <proposals.json> [--progress <file>] [--yes] [--local]
  *
  *   --only         these episodes (YYYY-MM-DD dates or episode IDs, comma-separated)
  *   --from-repair  the episodes transcripts/.repair/progress.json has published or done
+ *   --all          every episode in D1
  *   --except       leave these out
  *   --progress     the repair's state file, if not transcripts/.repair/progress.json
  *   --apply        write the proposals a dry run saved (with --yes)
@@ -50,13 +55,13 @@ import path from 'node:path';
 
 import { escapeSQL, loadEnv, parseFlags, queryJSON, runSQLFile } from './lib.js';
 import { newBackupDir } from './episode-backup.js';
-import { detectGuestStart, FALLBACK_MS, MIN_START_MS } from './guest-start.js';
+import { detectGuestStart, FALLBACK_MS, FULL_SHOW_MS, MIN_START_MS, SIGN_OFF_MS } from './guest-start.js';
 import { dateOf, episodeLines, leaveOutBusy, mmss, pickForRun, repairStateForRun } from './repaired-episodes.js';
 
 export const PLACEHOLDER_MS = FALLBACK_MS; // 60:00
 
 const USAGE = [
-	'Usage: node scripts/fill-interview-times.js (--only <date|id>,… | --from-repair) [--except <dates>] [--progress <file>] [--yes] [--local]',
+	'Usage: node scripts/fill-interview-times.js (--only <date|id>,… | --from-repair | --all) [--except <dates>] [--progress <file>] [--yes] [--local]',
 	'       node scripts/fill-interview-times.js --apply <proposals.json> [--progress <file>] [--yes] [--local]',
 ].join('\n');
 
@@ -66,8 +71,11 @@ export function movedPlaceholder(progress, episodeId) {
 	return Array.isArray(moved) && moved[0] === PLACEHOLDER_MS && Number.isInteger(moved[1]) ? moved[1] : null;
 }
 
-/** Whether an interview time may be filled: empty, the old detector's 60:00, or that 60:00 moved by a join. */
-export const fillable = (ms, moved = null) => ms == null || ms === PLACEHOLDER_MS || (moved != null && ms === moved);
+/** Whether a time is in the last 10 minutes of a show 100+ minutes long: the old detector's sign-off pick. */
+export const inSignOff = (ms, durationMs) => ms != null && durationMs != null && durationMs >= FULL_SHOW_MS && ms >= durationMs - SIGN_OFF_MS;
+
+/** Whether an interview time may be filled: empty, the old detector's 60:00, that 60:00 moved by a join, or a sign-off pick. */
+export const fillable = (ms, moved = null, durationMs = null) => ms == null || ms === PLACEHOLDER_MS || (moved != null && ms === moved) || inSignOff(ms, durationMs);
 
 /**
  * What to do with one episode's interview time.
@@ -75,17 +83,23 @@ export const fillable = (ms, moved = null) => ms == null || ms === PLACEHOLDER_M
  * @param {string[]} guests
  * @param {Array<{start_ms: number, end_ms: number, text: string}>} lines - D1's lines now
  * @param {{moved?: number|null}} [opts] - its 60:00 as a join moved it (movedPlaceholder)
- * @returns {{id, date, reviewed, guests, old, moved60, proposed: number|null, line: string|null, reason: string}}
+ * @returns {{id, date, reviewed, guests, old, moved60, duration_ms, signOff: boolean, proposed: number|null, line: string|null, reason: string}}
  */
 export function proposeTime(ep, guests, lines, { moved = null } = {}) {
-	const base = { id: ep.id, date: dateOf(ep.id), reviewed: ep.guests_reviewed === 1, guests, old: ep.guest_start_ms ?? null, moved60: moved, proposed: null, line: null };
-	if (!fillable(ep.guest_start_ms, moved)) return { ...base, reason: 'has a time: kept' };
+	const signOff = ep.guest_start_ms !== PLACEHOLDER_MS && ep.guest_start_ms !== moved && inSignOff(ep.guest_start_ms, ep.duration_ms);
+	const base = { id: ep.id, date: dateOf(ep.id), reviewed: ep.guests_reviewed === 1, guests, old: ep.guest_start_ms ?? null, moved60: moved, duration_ms: ep.duration_ms ?? null, signOff, proposed: null, line: null };
+	if (!fillable(ep.guest_start_ms, moved, ep.duration_ms)) return { ...base, reason: 'has a time: kept' };
 	if (guests.length === 0) return { ...base, reason: 'no guests' };
 	if (ep.duration_ms && ep.duration_ms < MIN_START_MS) return { ...base, reason: 'shorter than 50 minutes' };
 	const ms = detectGuestStart(lines, guests);
-	if (ms == null) return { ...base, reason: 'no lines after 50 minutes' };
-	if (ms === PLACEHOLDER_MS) return { ...base, reason: 'the detector finds nothing (it would say 60:00 again)' };
-	if (ep.duration_ms && ms > ep.duration_ms) return { ...base, reason: `the detected ${mmss(ms)} is past the end (${mmss(ep.duration_ms)})` };
+	let nothing = null;
+	if (ms == null) nothing = 'no lines after 50 minutes';
+	else if (ms === PLACEHOLDER_MS) nothing = 'the detector finds nothing (it would say 60:00 again)';
+	else if (ep.duration_ms && ms > ep.duration_ms) nothing = `the detected ${mmss(ms)} is past the end (${mmss(ep.duration_ms)})`;
+	else if (signOff && inSignOff(ms, ep.duration_ms)) nothing = `the detected ${mmss(ms)} is in the sign-off too`;
+	// The goodbye is never the interview: a sign-off time gets the detector's own "found nothing"
+	if (nothing && signOff) return { ...base, proposed: PLACEHOLDER_MS, reason: `proposed 60:00: ${nothing}` };
+	if (nothing) return { ...base, reason: nothing };
 	return { ...base, proposed: ms, line: lines.find((s) => s.start_ms === ms)?.text ?? null, reason: 'proposed' };
 }
 
@@ -102,9 +116,9 @@ const checkMs = (ms) => {
 	return ms;
 };
 
-/** The statement that sets one proposed time, only where the time is still the one read (empty or 60:00). */
+/** The statement that sets one proposed time, only where the time is still the one read (empty, 60:00 or a sign-off pick). */
 export function fillStatement(p) {
-	if (!fillable(p.old, p.moved60)) throw new Error(`${p.id}: its interview time ${p.old} is not empty or 60:00; refusing to change it`);
+	if (!fillable(p.old, p.moved60, p.duration_ms)) throw new Error(`${p.id}: its interview time ${p.old} is not empty, 60:00 or in the sign-off; refusing to change it`);
 	return `UPDATE episodes SET guest_start_ms = ${checkMs(p.proposed)} WHERE id = '${escapeSQL(p.id)}' AND ${whereTime(p.old == null ? null : checkMs(p.old))};`;
 }
 
@@ -113,14 +127,14 @@ export function restoreStatement(p) {
 	return `UPDATE episodes SET guest_start_ms = ${p.old == null ? 'NULL' : checkMs(p.old)} WHERE id = '${escapeSQL(p.id)}' AND guest_start_ms = ${checkMs(p.proposed)};`;
 }
 
-const oldTime = (p) => `${mmss(p.old).padStart(6)}${p.old != null && p.old === p.moved60 ? ' (60:00 moved by the join)' : ''}`;
+const oldTime = (p) => `${mmss(p.old).padStart(6)}${p.old != null && p.old === p.moved60 ? ' (60:00 moved by the join)' : p.signOff ? ` (sign-off, of ${mmss(p.duration_ms)})` : ''}`;
 
 /** The list for the owner, as printed and saved. */
 export function reportLines(proposals) {
 	const out = [];
 	for (const p of proposals.filter((p) => p.proposed != null)) {
 		out.push(`  ${p.date}  ${oldTime(p)} -> ${mmss(p.proposed).padStart(6)}  ${p.reviewed ? 'reviewed' : 'not reviewed'}  ${p.guests.join(', ')}`);
-		out.push(`              "${(p.line ?? '(no line starts there)').slice(0, 160)}"`);
+		out.push(p.reason === 'proposed' ? `              "${(p.line ?? '(no line starts there)').slice(0, 160)}"` : `              (${p.reason})`);
 	}
 	const kept = proposals.filter((p) => p.proposed == null);
 	if (kept.length > 0) {
@@ -167,10 +181,10 @@ function readme(dir, { count, isLocal }) {
 async function main() {
 	loadEnv();
 	const { flags, rest } = parseFlags(process.argv.slice(2), {
-		'--only': 'value', '--from-repair': 'flag', '--except': 'value', '--progress': 'value', '--apply': 'value', '--yes': 'flag', '--local': 'flag',
+		'--only': 'value', '--from-repair': 'flag', '--all': 'flag', '--except': 'value', '--progress': 'value', '--apply': 'value', '--yes': 'flag', '--local': 'flag',
 	}, USAGE);
-	const picking = flags.only || flags['from-repair'] || flags.except;
-	if (rest.length > 0 || (flags.apply ? picking : !flags.only === !flags['from-repair'])) {
+	const named = [flags.only, flags['from-repair'], flags.all].filter(Boolean).length;
+	if (rest.length > 0 || (flags.apply ? named > 0 || flags.except : named !== 1)) {
 		console.error(USAGE);
 		process.exit(1);
 	}
@@ -195,7 +209,7 @@ async function main() {
 		}
 		// Lines only where a time could be proposed
 		const moved = new Map(episodes.map((e) => [e.id, movedPlaceholder(progress, e.id)]));
-		const lines = episodeLines(episodes.filter((e) => fillable(e.guest_start_ms, moved.get(e.id)) && guests.get(e.id).length > 0).map((e) => e.id), target);
+		const lines = episodeLines(episodes.filter((e) => fillable(e.guest_start_ms, moved.get(e.id), e.duration_ms) && guests.get(e.id).length > 0).map((e) => e.id), target);
 		proposals = episodes.map((e) => proposeTime(e, guests.get(e.id), lines.get(e.id) ?? [], { moved: moved.get(e.id) }));
 	}
 	const todo = proposals.filter((p) => p.proposed != null);

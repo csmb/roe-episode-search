@@ -51,9 +51,9 @@ roe-episode-search/
 │   ├── scan-transcripts.js    # Read-only scan of D1's transcripts (loops, holes, early stops, junk, durations)
 │   ├── clean-junk-lines.js    # Delete junk lines in D1 by rule, then redo the embeddings (dry run unless --yes)
 │   ├── transcript-checks.js   # The checks those three share (and the old prompt's terms)
-│   ├── fill-interview-times.js  # After a repair: empty or 60:00 interview times from the detector (dry run unless --yes)
+│   ├── fill-interview-times.js  # After a repair: empty, 60:00 or sign-off interview times from the detector (dry run unless --yes)
 │   ├── reanchor-place-quotes.js # After a repair: place-quote times moved to where the quotes are now (dry run unless --yes)
-│   ├── repaired-episodes.js   # What those two share: --only / --from-repair, D1 lines a page at a time
+│   ├── repaired-episodes.js   # What those two share: --only / --from-repair / --all, D1 lines a page at a time
 │   ├── test/                  # node:test files for the scripts' own logic
 │   ├── archive/               # Retired one-off scripts, reference only (see its README)
 │   └── ...                    # ~15 more utility scripts
@@ -196,20 +196,23 @@ old .m4a (its README.txt has the commands). Details: README,
 
 After a repair (both read D1's lines as they are now; a dry run lists everything unless `--yes`):
 ```
-node scripts/fill-interview-times.js --from-repair          # or --only <dates>; --except <dates>
+node scripts/fill-interview-times.js --from-repair          # or --only <dates>, or --all; --except <dates>
 node scripts/reanchor-place-quotes.js --from-repair
 node scripts/fill-interview-times.js --apply transcripts/.backups/<date>-interview-times-plan/proposals.json --yes   # write what you read
 ```
 `fill-interview-times.js` proposes the detector's time only where `guest_start_ms` is empty or
-exactly 3,600,000 (60:00, the old detector's "found nothing") or that 60:00 moved by a join,
-reviewed episodes included; any other time stays. `reanchor-place-quotes.js` finds each place
+exactly 3,600,000 (60:00, the old detector's "found nothing"), that 60:00 moved by a join, or in
+the last 10 minutes of a show 100+ minutes long (the old detector's sign-off pick; 60:00 when the
+detector finds nothing there), reviewed episodes included; any other time stays.
+`reanchor-place-quotes.js` finds each place
 quote in the new lines (word for word, or 75% of its words in order; near a line naming the place
 or its old time; in more than one place and none near the old time: kept) and moves only
 `snippet_start_ms`, only where the old time no longer leads into the quote; it never adds or
 deletes a row. `--from-repair` is every episode `transcripts/.repair/progress.json` (or
-`--progress <file>`) has published or done; an episode the repair is working on is left out even
-with `--only`. A dry run saves its list in `transcripts/.backups/<date>-interview-times-plan/` or
-`<date>-place-quotes-plan/`, and `--apply <that list> --yes` writes it as it is (edit it first to
+`--progress <file>`) has published or done, `--all` every episode in D1; an episode the repair is
+working on is left out even with `--only`. A dry run saves its list in
+`transcripts/.backups/<date>-interview-times-plan/` or `<date>-place-quotes-plan/` (there, moves.txt
+is only the quotes that move), and `--apply <that list> --yes` writes it as it is (edit it first to
 leave some out). Writing backs up first (`<date>-interview-times/` or `<date>-place-quotes/`:
 before.json, applied.sql, restore.sql, README.txt), writes in one D1 import where the value (and
 for a quote, its text) is still the one read, then reads it back. Details: README, "After a

@@ -1,7 +1,7 @@
 /**
  * What the follow-ups to the transcript repair share (fill-interview-times.js,
- * reanchor-place-quotes.js): which episodes to work on (--only, or
- * --from-repair: the ones the repair's progress marks published or done, less
+ * reanchor-place-quotes.js): which episodes to work on (--only; --from-repair:
+ * the ones the repair's progress marks published or done; or --all; less
  * --except), never one the repair is still working on; their lines from D1 a
  * page at a time; and m:ss times. The repair's state is
  * transcripts/.repair/progress.json unless --progress names another, and only
@@ -51,18 +51,20 @@ export function loadRepairState({ file = repairProgressPath(), isLocal = false, 
 }
 
 /**
- * The episodes to work on, in ID order: those `only` names (dates or IDs), or with `fromRepair`
- * the ones the repair's progress has finished; less those `except` names, and less any the repair
- * is working on. A name that matches no episode stops the run (pickEpisodes).
+ * The episodes to work on, in ID order: those `only` names (dates or IDs), with `fromRepair` the
+ * ones the repair's progress has finished, or with `all` every one; less those `except` names, and
+ * less any the repair is working on. A name that matches no episode stops the run (pickEpisodes).
  * @param {Array<{id: string}>} episodes - every episode in D1
  * @returns {{chosen: Array, busy: Array<{id: string, state: string}>, notInD1: string[]}} busy: left
  *   out because the repair is working on them; notInD1: finished by the repair but gone from D1
  */
-export function chooseEpisodes(episodes, { only, fromRepair = false, except, progress = null } = {}) {
-	if (!only === !fromRepair) throw new Error('Name the episodes: --only <dates> or --from-repair');
+export function chooseEpisodes(episodes, { only, fromRepair = false, all = false, except, progress = null } = {}) {
+	if ([only, fromRepair, all].filter(Boolean).length !== 1) throw new Error('Name the episodes: --only <dates>, --from-repair or --all');
 	let chosen;
 	let notInD1 = [];
-	if (only) {
+	if (all) {
+		chosen = [...episodes];
+	} else if (only) {
 		chosen = pickEpisodes(episodes, only);
 	} else {
 		const done = repairedIds(progress);
@@ -109,12 +111,12 @@ export function repairStateForRun(flags, { isLocal = false } = {}) {
 }
 
 /**
- * The common start of both tools: the episodes (`all` is every episode row in D1), and the repair's
- * state; what was left out, and why, is printed.
+ * The common start of both tools: the episodes (`rows` is every episode row in D1), and the
+ * repair's state; what was left out, and why, is printed.
  */
-export function pickForRun(all, flags, { isLocal = false } = {}) {
+export function pickForRun(rows, flags, { isLocal = false } = {}) {
 	const progress = repairStateForRun(flags, { isLocal });
-	const { chosen, busy, notInD1 } = chooseEpisodes(all, { only: flags.only, fromRepair: !!flags['from-repair'], except: flags.except, progress });
+	const { chosen, busy, notInD1 } = chooseEpisodes(rows, { only: flags.only, fromRepair: !!flags['from-repair'], all: !!flags.all, except: flags.except, progress });
 	if (notInD1.length > 0) console.log(`Not in D1, left out: ${notInD1.map(dateOf).join(', ')}`);
 	if (busy.length > 0) console.log(`The repair is working on these, left out: ${busy.map((b) => `${dateOf(b.id)} (${b.state})`).join(', ')}`);
 	return { episodes: chosen, progress };

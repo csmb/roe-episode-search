@@ -4,4 +4,4 @@
  * time; this file keeps the scripts' import path.
  */
 
-export { detectGuestStart, MIN_START_MS, SONG_DURATION_MS, GAP_THRESHOLD_MS, FALLBACK_MS } from '../roe-pipeline/src/guest-start.js';
+export { detectGuestStart, MIN_START_MS, SONG_DURATION_MS, GAP_THRESHOLD_MS, FALLBACK_MS, FULL_SHOW_MS, SIGN_OFF_MS } from '../roe-pipeline/src/guest-start.js';

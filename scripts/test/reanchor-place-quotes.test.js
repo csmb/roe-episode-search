@@ -12,7 +12,7 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'roe-test-'));
 after(() => fs.rmSync(tmp, { recursive: true, force: true }));
 process.env.ROE_PERSIST_TO ??= tmp; // a test run: no keys from .env
 const {
-	wordsOf, wordStream, findQuote, placeTimes, placeQuotes, moves, moveStatement, restoreStatement, writeBackup, episodeReport, savedRows,
+	wordsOf, wordStream, findQuote, placeTimes, placeQuotes, moves, moveStatement, restoreStatement, writeBackup, episodeReport, movesReport, savedRows,
 } = await import('../reanchor-place-quotes.js');
 
 const SCHEMA = fs.readFileSync(new URL('../../schema.sql', import.meta.url), 'utf8');
@@ -198,4 +198,20 @@ test('--apply takes the saved rows as they are, on the database they were read f
 	assert.equal(savedRows(saved, { database: 'local' }).filter(moves).length, 1);
 	assert.throws(() => savedRows(saved, { database: 'production' }), /made on the local database, not the production one/);
 	assert.throws(() => savedRows({ proposals: [] }, { database: 'production' }), /Not a quotes.json/);
+});
+
+test('moves.txt: only the quotes that move, each with the line it is in now', () => {
+	const rows = placeQuotes([
+		{ place_id: 1, name: 'Ritual', episode_id: EP, snippet: "I'm digging this. Yeah, from Ritual. Good stuff.", snippet_start_ms: min(125, 12) },
+		{ place_id: 3, name: '17th Street', episode_id: EP, snippet: "It's really cool.", snippet_start_ms: min(22, 56) },
+		{ place_id: 5, name: 'Castro Theatre', episode_id: EP, snippet: 'the prettiness of a venue like the Paramount in Oakland, Castro Theatre, great', snippet_start_ms: null },
+		{ place_id: 6, name: 'Whole Foods', episode_id: EP, snippet: 'You go to Whole Foods, right?', snippet_start_ms: min(12, 26) },
+	], LINES);
+	assert.deepEqual(movesReport(rows), [
+		`2014-03-06  125:12 ->  13:17 (-111:55)  word for word  Ritual: "I'm digging this. Yeah, from Ritual. Good stuff."`,
+		`             line: "i'm digging this yeah from ritual good stuff"`,
+		`2014-03-06   empty ->  49:29  close 92%  Castro Theatre: "the prettiness of a venue like the Paramount in Oakland, Castro Theatre, great"`,
+		`             line: "the prettiness of a venue like the paramount in oakland castro theater great"`,
+	]);
+	assert.deepEqual(movesReport(rows.filter((r) => !moves(r))), []);
 });

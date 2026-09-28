@@ -12,7 +12,7 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'roe-test-'));
 after(() => fs.rmSync(tmp, { recursive: true, force: true }));
 process.env.ROE_PERSIST_TO ??= tmp; // a test run: no keys from .env
 const {
-	fillable, proposeTime, fillStatement, restoreStatement, writeBackup, reportLines, movedPlaceholder, savedProposals, PLACEHOLDER_MS,
+	fillable, inSignOff, proposeTime, fillStatement, restoreStatement, writeBackup, reportLines, movedPlaceholder, savedProposals, PLACEHOLDER_MS,
 } = await import('../fill-interview-times.js');
 
 const SCHEMA = fs.readFileSync(new URL('../../schema.sql', import.meta.url), 'utf8');
@@ -41,6 +41,19 @@ test('only an empty time or the old 60:00 placeholder may be filled', () => {
 	assert.equal(fillable(0), false);
 });
 
+test('a time in the last 10 minutes of a show 100+ minutes long is the old sign-off pick, and may be filled too', () => {
+	assert.equal(inSignOff(7_198_000, 7_199_000), true); // 2026-05-28: 119:58 of 119:59
+	assert.equal(inSignOff(min(110), min(120)), true);
+	assert.equal(inSignOff(min(109, 59), min(120)), false);
+	assert.equal(inSignOff(min(99, 27), min(103, 27)), true); // 2025-12-18
+	assert.equal(inSignOff(min(95), min(99, 59)), false); // under 100 minutes: no sign-off to tell
+	assert.equal(inSignOff(min(119), null), false); // no length: no telling
+	assert.equal(inSignOff(null, min(120)), false);
+	assert.equal(fillable(7_198_000, null, 7_199_000), true);
+	assert.equal(fillable(4_637_000, null, min(120)), false); // 2026-09-24's hand-set 77:17 stays
+	assert.equal(fillable(7_198_000), false); // without the show's length, never
+});
+
 test('a proposal is the detector on the lines D1 has, with the line it points to', () => {
 	const empty = proposeTime(episode('2020-07-16', null), ['Casey Smith'], SHOW);
 	assert.equal(empty.proposed, min(61));
@@ -57,7 +70,7 @@ test('no proposal: a time already set (reviewed or not), no guests, a short show
 		return p.reason;
 	};
 	assert.equal(reason(episode('2026-09-24', 4_637_000, 1)), 'has a time: kept');
-	assert.equal(reason(episode('2026-05-28', 7_198_000, 0)), 'has a time: kept'); // even the old sign-off pick: not a placeholder
+	assert.equal(reason(episode('2026-05-28', min(105), 0)), 'has a time: kept'); // late, but before the sign-off
 	assert.equal(reason(episode('2014-01-16', null), []), 'no guests');
 	assert.equal(reason(episode('2016-01-07', null, 1, min(45))), 'shorter than 50 minutes');
 	assert.equal(reason(episode('2014-05-08', null), ['Casey Smith'], talk(0, 38)), 'no lines after 50 minutes');
@@ -71,7 +84,9 @@ test('the statements set guest_start_ms only, and only where the time is still t
 	assert.equal(fillStatement({ ...p, old: PLACEHOLDER_MS }), `UPDATE episodes SET guest_start_ms = 4824000 WHERE id = '${id('2020-07-16')}' AND guest_start_ms = 3600000;`);
 	assert.equal(restoreStatement(p), `UPDATE episodes SET guest_start_ms = NULL WHERE id = '${id('2020-07-16')}' AND guest_start_ms = 4824000;`);
 	assert.equal(restoreStatement({ ...p, old: PLACEHOLDER_MS }), `UPDATE episodes SET guest_start_ms = 3600000 WHERE id = '${id('2020-07-16')}' AND guest_start_ms = 4824000;`);
-	assert.throws(() => fillStatement({ ...p, old: 4_637_000 }), /is not empty or 60:00; refusing to change it/);
+	assert.throws(() => fillStatement({ ...p, old: 4_637_000 }), /is not empty, 60:00 or in the sign-off; refusing to change it/);
+	assert.throws(() => fillStatement({ ...p, old: 4_637_000, duration_ms: min(120) }), /refusing to change it/);
+	assert.equal(fillStatement({ ...p, old: 7_198_000, duration_ms: 7_199_000 }), `UPDATE episodes SET guest_start_ms = 4824000 WHERE id = '${id('2020-07-16')}' AND guest_start_ms = 7198000;`);
 	assert.throws(() => fillStatement({ ...p, proposed: 48.5 }), /Not a time in ms/);
 	assert.match(fillStatement({ ...p, id: "it's" }), /WHERE id = 'it''s'/);
 });
@@ -158,4 +173,37 @@ test('the list for the owner: old -> proposed with the line, then what was left 
 	]).join('\n');
 	assert.match(out, /2020-07-16\s+empty ->\s+61:00\s+reviewed\s+Casey Smith\n\s+"We're back, and we're here with Casey Smith\. Good morning, Casey\."/);
 	assert.match(out, /Left as they are \(1\):\n\s+2026-09-24\s+77:17\s+has a time: kept/);
+});
+
+test('a sign-off time gets the detector\'s time, or 60:00 when it finds nothing; the list says which', () => {
+	// 2026-05-28: 119:58, the old detector's pick of the thank-you after the closing song
+	const found = proposeTime(episode('2026-05-28', 7_198_000, 0, 7_199_000), ['Casey Smith'], SHOW);
+	assert.deepEqual([found.signOff, found.proposed, found.reason], [true, min(61), 'proposed']);
+	assert.equal(found.line, "We're back, and we're here with Casey Smith. Good morning, Casey.");
+	assert.equal(fillStatement(found), `UPDATE episodes SET guest_start_ms = ${min(61)} WHERE id = '${id('2026-05-28')}' AND guest_start_ms = 7198000;`);
+	// The guest is never named: the goodbye is still not the interview
+	const nothing = proposeTime(episode('2016-12-29', min(119, 53), 1, min(119, 59)), ['Andrew Chapello'], SHOW);
+	assert.deepEqual([nothing.signOff, nothing.proposed, nothing.line], [true, PLACEHOLDER_MS, null]);
+	assert.equal(nothing.reason, 'proposed 60:00: the detector finds nothing (it would say 60:00 again)');
+	const short = proposeTime(episode('2016-12-29', min(119, 53), 1, min(119, 59)), ['Casey Smith'], talk(0, 40));
+	assert.deepEqual([short.proposed, short.reason], [PLACEHOLDER_MS, 'proposed 60:00: no lines after 50 minutes']);
+	// An empty or 60:00 time is not a sign-off, and still gets no 60:00
+	assert.equal(proposeTime(episode('2014-09-04', PLACEHOLDER_MS, 1, min(120)), ['Amanda Wallace'], SHOW).proposed, null);
+	const out = reportLines([found, nothing]).join('\n');
+	assert.match(out, /2026-05-28\s+119:58 \(sign-off, of 119:59\) ->\s+61:00\s+not reviewed\s+Casey Smith\n\s+"We're back, and we're here with Casey Smith\. Good morning, Casey\."/);
+	assert.match(out, /2016-12-29\s+119:53 \(sign-off, of 119:59\) ->\s+60:00\s+reviewed\s+Andrew Chapello\n\s+\(proposed 60:00: the detector finds nothing \(it would say 60:00 again\)\)/);
+});
+
+test('on the real schema: a sign-off time changes, a hand-set one next to it does not', () => {
+	const db = new DatabaseSync(':memory:');
+	db.exec(SCHEMA);
+	for (const [date, ms] of [['2026-05-28', 7_198_000], ['2026-09-24', 4_637_000]]) {
+		db.prepare('INSERT INTO episodes (id, title, duration_ms, guest_start_ms, guests_reviewed) VALUES (?, ?, ?, ?, 1)').run(id(date), `Show ${date}`, 7_199_000, ms);
+	}
+	const p = proposeTime(episode('2026-05-28', 7_198_000, 1, 7_199_000), ['Casey Smith'], SHOW);
+	const kept = proposeTime(episode('2026-09-24', 4_637_000, 1, 7_199_000), ['Casey Smith'], SHOW);
+	assert.equal(kept.proposed, null);
+	db.exec(writeBackup(fs.mkdtempSync(path.join(tmp, 'backup-')), [p]));
+	const times = Object.fromEntries(db.prepare('SELECT id, guest_start_ms FROM episodes ORDER BY id').all().map((r) => [r.id.slice(15, 25), r.guest_start_ms]));
+	assert.deepEqual(times, { '2026-05-28': min(61), '2026-09-24': 4_637_000 });
 });

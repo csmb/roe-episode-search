@@ -62,9 +62,19 @@ test('a saved list (--apply) loses the rows of an episode the repair has started
 	assert.equal(leaveOutBusy(quotes, PROGRESS, (r) => r.episode_id).length, 1);
 });
 
-test('one of --only and --from-repair; a name that matches no episode stops the run', () => {
-	assert.throws(() => chooseEpisodes(EPISODES, {}), /--only <dates> or --from-repair/);
-	assert.throws(() => chooseEpisodes(EPISODES, { only: '2014-01-16', fromRepair: true, progress: PROGRESS }), /--only <dates> or --from-repair/);
+test('--all: every episode, less --except and any the repair is working on', () => {
+	const { chosen, busy, notInD1 } = chooseEpisodes(EPISODES, { all: true, except: '2026-09-24', progress: PROGRESS });
+	assert.deepEqual(dates(chosen), ['2014-01-16', '2014-09-04', '2026-04-30']);
+	assert.deepEqual(busy.map((b) => dateOf(b.id)), ['2014-01-23', '2020-07-16']);
+	assert.deepEqual(notInD1, []);
+	assert.equal(chooseEpisodes(EPISODES, { all: true, progress: null }).chosen.length, EPISODES.length); // no repair state: all of them
+});
+
+test('one of --only, --from-repair and --all; a name that matches no episode stops the run', () => {
+	assert.throws(() => chooseEpisodes(EPISODES, {}), /--only <dates>, --from-repair or --all/);
+	assert.throws(() => chooseEpisodes(EPISODES, { only: '2014-01-16', fromRepair: true, progress: PROGRESS }), /--only <dates>, --from-repair or --all/);
+	assert.throws(() => chooseEpisodes(EPISODES, { only: '2014-01-16', all: true }), /--only <dates>, --from-repair or --all/);
+	assert.throws(() => chooseEpisodes(EPISODES, { fromRepair: true, all: true, progress: PROGRESS }), /--only <dates>, --from-repair or --all/);
 	assert.throws(() => chooseEpisodes(EPISODES, { only: '2014-01-17' }), /Not in the database: 2014-01-17/);
 	assert.throws(() => chooseEpisodes(EPISODES, { fromRepair: true, progress: PROGRESS, except: '2031-01-01' }), /Not in the database: 2031-01-01/);
 });
