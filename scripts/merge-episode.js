@@ -4,7 +4,8 @@
  * Merge a duplicate episode (the source) into the canonical episode of the
  * same date. The canonical keeps its ID and place links; it gets the source's
  * transcript, new search vectors, and the --mp3 file as its audio. The source
- * is then deleted. Both episodes are backed up first (episode-backup.js).
+ * is then deleted. Both episodes are backed up first (episode-backup.js), the
+ * canonical with its old .m4a.
  *
  * Reviewed guests are kept: if the canonical was reviewed, its title, summary,
  * guests and interview time stay; if only the source was, those are copied
@@ -167,8 +168,11 @@ async function merge({ canonical, source, mp3, m4aPath, audioMs, sourceData, can
 
 	// ── Step 1: Back up both episodes (nothing changes if this fails) ────
 	console.log('\n=== Step 1/7: Back up both episodes ===');
-	const canonicalBackup = backupEpisode(canonical, { isLocal: local, reason: `before merge-episode.js merged ${source} into it` });
-	const sourceBackup = backupEpisode(source, { isLocal: local, reason: `before merge-episode.js merged it into ${canonical} and deleted it` });
+	// With the audio: the canonical's .m4a is replaced below, and the source's deleted with --delete-audio
+	const canonicalBackup = backupEpisode(canonical, { isLocal: local, withAudio: true, reason: `before merge-episode.js merged ${source} into it` });
+	const sourceBackup = backupEpisode(source, {
+		isLocal: local, withAudio: deleteAudio, reason: `before merge-episode.js merged it into ${canonical} and deleted it`,
+	});
 
 	// ── Step 2: Delete the canonical's old vectors ───────────────────────
 	// Vector IDs are `${episode_id}:${chunkStartMs}` on the OLD timeline, so

@@ -2,17 +2,18 @@
 
 /**
  * Back up one episode before it is deleted or merged: its D1 rows (the
- * episode, transcript lines, guests and place links), its search vectors, and
- * the local transcript file if there is one. Writes restore SQL and a README
- * that says how to put everything back. delete-episode.js and
- * merge-episode.js call it first; it can also be run on its own.
+ * episode, transcript lines, guests and place links), its search vectors, the
+ * local transcript file if there is one, and with --with-audio its .m4a from
+ * R2. Writes restore SQL and a README that says how to put everything back.
+ * delete-episode.js and merge-episode.js call it first (with the audio when
+ * they delete or replace it); it can also be run on its own.
  *
  * The vector IDs are worked out from the transcript lines in D1 (and from the
  * local file, when there is one), so an episode that came in by drag and drop,
  * with no local files, is covered too.
  *
  * Usage:
- *   node scripts/episode-backup.js <episode-id> [--local]
+ *   node scripts/episode-backup.js <episode-id> [--with-audio] [--local]
  *
  * Backups go to transcripts/.backups/<date>-<episode-id>/ (git ignores transcripts/).
  */
@@ -25,6 +26,7 @@ import { inlineParams } from './remote-d1.js';
 import { chunkEpisode } from './generate-embeddings.js';
 
 const INDEX_NAME = 'roe-transcripts';
+const R2_BUCKET = 'roe-audio';
 const GET_BATCH_SIZE = 20; // wrangler vectorize get-vectors takes at most 20 IDs
 const backupsDir = path.join(transcriptsDir, '.backups');
 
@@ -47,6 +49,18 @@ function getVectors(ids) {
 		if (start !== -1) found.push(...JSON.parse(out.slice(start)));
 	}
 	return found.map(({ id, values, metadata }) => ({ id, values, metadata }));
+}
+
+/** Download the episode's .m4a from R2 into the backup folder (null if R2 has none). */
+function backupAudio(episodeId, dir, isLocal) {
+	const file = path.join(dir, `${episodeId}.m4a`);
+	try {
+		wranglerExec(['r2', 'object', 'get', `${R2_BUCKET}/${episodeId}.m4a`, isLocal ? '--local' : '--remote', `--file=${file}`]);
+		return file;
+	} catch (err) {
+		if (/The specified key does not exist/.test(err.message)) return null;
+		throw err;
+	}
 }
 
 /** An INSERT (or `INSERT OR IGNORE`) that puts back one row exactly, every column as it was. */
@@ -97,7 +111,7 @@ export function newBackupDir(label) {
 	}
 }
 
-function readme({ episodeId, dir, rows, vectors, candidates, hasTranscript, isLocal, reason }) {
+function readme({ episodeId, dir, rows, vectors, candidates, hasTranscript, audioFile, isLocal, reason }) {
 	const where = isLocal ? '--local' : '--remote';
 	const audio = rows.episodes[0].audio_file ?? '(none)';
 	return [
@@ -112,6 +126,7 @@ function readme({ episodeId, dir, rows, vectors, candidates, hasTranscript, isLo
 			? `  vectors.ndjson  its ${vectors.length} search vectors (of ${candidates} possible IDs from the transcript)`
 			: `  (no search vectors found for the ${candidates} possible IDs from the transcript)`,
 		hasTranscript ? `  ${episodeId}.json  the local transcript file` : '  (there was no local transcript file)',
+		...(audioFile ? [`  ${episodeId}.m4a  its audio from R2, as it was`] : []),
 		'',
 		'To put it back:',
 		'  cd roe-search',
@@ -120,23 +135,29 @@ function readme({ episodeId, dir, rows, vectors, candidates, hasTranscript, isLo
 			? [`  env -u CLOUDFLARE_API_TOKEN npx wrangler vectorize upsert ${INDEX_NAME} --file "${path.join(dir, 'vectors.ndjson')}"`]
 			: []),
 		...(hasTranscript ? [`  cp "${path.join(dir, `${episodeId}.json`)}" ../transcripts/`] : []),
+		...(audioFile
+			? [`  env -u CLOUDFLARE_API_TOKEN npx wrangler r2 object put ${R2_BUCKET}/${episodeId}.m4a ${where} --file "${audioFile}" --content-type audio/mp4`]
+			: []),
 		...(isLocal && vectors.length > 0 ? ['(The vectors are production\'s: a --local run never changes Vectorize.)'] : []),
 		'',
-		`The audio is not in the backup: ${audio}`,
-		`Raw MP3 uploads are never deleted. If ${episodeId}.m4a was, remake it with`,
-		`  node scripts/repair-missing-m4a.js --only ${episodeId}`,
-		'',
+		...(audioFile ? [] : [
+			`The audio is not in the backup: ${audio}`,
+			`Raw MP3 uploads are never deleted. If ${episodeId}.m4a was, remake it with`,
+			`  node scripts/repair-missing-m4a.js --only ${episodeId}`,
+			'',
+		]),
 	].join('\n');
 }
 
 /**
  * Back up an episode. Throws (writing nothing) if it isn't in the database or a read fails.
  * @param {string} episodeId
- * @param {{isLocal?: boolean, reason?: string}} [opts] - reason completes "taken <time> …" in the README
- * @returns {{dir: string, rows: object, vectorIds: string[], transcriptFile: string|null}}
+ * @param {{isLocal?: boolean, reason?: string, withAudio?: boolean}} [opts] - reason completes
+ *   "taken <time> …" in the README; withAudio also saves the .m4a (for a delete or merge that replaces it)
+ * @returns {{dir: string, rows: object, vectorIds: string[], transcriptFile: string|null, audioFile: string|null}}
  *   vectorIds are the vectors that exist (what a delete should remove).
  */
-export function backupEpisode(episodeId, { isLocal = false, reason = 'by hand' } = {}) {
+export function backupEpisode(episodeId, { isLocal = false, reason = 'by hand', withAudio = false } = {}) {
 	const target = { isLocal };
 	const id = escapeSQL(episodeId);
 	const episodes = queryJSON(`SELECT * FROM episodes WHERE id = '${id}'`, target);
@@ -159,6 +180,13 @@ export function backupEpisode(episodeId, { isLocal = false, reason = 'by hand' }
 	const vectors = getVectors(candidates);
 
 	const dir = newBackupDir(episodeId);
+	let audioFile = null;
+	try {
+		if (withAudio) audioFile = backupAudio(episodeId, dir, isLocal);
+	} catch (err) {
+		fs.rmSync(dir, { recursive: true, force: true });
+		throw err;
+	}
 	fs.writeFileSync(path.join(dir, 'd1-rows.json'), JSON.stringify(rows, null, 1));
 	fs.writeFileSync(path.join(dir, 'restore.sql'), restoreSQL(episodeId, rows));
 	if (vectors.length > 0) {
@@ -167,14 +195,15 @@ export function backupEpisode(episodeId, { isLocal = false, reason = 'by hand' }
 	const transcriptFile = localTranscript ? path.join(dir, `${episodeId}.json`) : null;
 	if (transcriptFile) fs.copyFileSync(transcriptPath, transcriptFile);
 	fs.writeFileSync(path.join(dir, 'README.txt'), readme({
-		episodeId, dir, rows, vectors, candidates: candidates.length, hasTranscript: !!transcriptFile, isLocal, reason,
+		episodeId, dir, rows, vectors, candidates: candidates.length, hasTranscript: !!transcriptFile, audioFile, isLocal, reason,
 	}));
 
 	console.log(`  Backed up ${episodeId} to ${dir}`);
 	console.log(`    ${rows.transcript_segments.length} transcript lines, ${rows.episode_guests.length} guests, ` +
 		`${rows.place_mentions.length} place links, ${vectors.length} vectors, ` +
-		`${transcriptFile ? 'the local transcript' : 'no local transcript'}`);
-	return { dir, rows, vectorIds: vectors.map((v) => v.id), transcriptFile };
+		`${transcriptFile ? 'the local transcript' : 'no local transcript'}` +
+		(withAudio ? `, ${audioFile ? 'the .m4a' : 'no .m4a in R2'}` : ''));
+	return { dir, rows, vectorIds: vectors.map((v) => v.id), transcriptFile, audioFile };
 }
 
 // ── CLI ────────────────────────────────────────────────────────────────
@@ -182,14 +211,16 @@ export function backupEpisode(episodeId, { isLocal = false, reason = 'by hand' }
 if (import.meta.main) {
 	const args = process.argv.slice(2);
 	const ids = args.filter((a) => !a.startsWith('-'));
-	const unknown = args.filter((a) => a.startsWith('-') && a !== '--local');
+	const unknown = args.filter((a) => a.startsWith('-') && a !== '--local' && a !== '--with-audio');
 	if (ids.length !== 1 || unknown.length > 0) {
 		if (unknown.length > 0) console.error(`Unknown option: ${unknown.join(' ')}\n`);
-		console.error('Usage: node scripts/episode-backup.js <episode-id> [--local]');
+		console.error('Usage: node scripts/episode-backup.js <episode-id> [--with-audio] [--local]');
 		process.exit(1);
 	}
 	try {
-		backupEpisode(ids[0], { isLocal: args.includes('--local'), reason: 'by hand (episode-backup.js)' });
+		backupEpisode(ids[0], {
+			isLocal: args.includes('--local'), withAudio: args.includes('--with-audio'), reason: 'by hand (episode-backup.js)',
+		});
 	} catch (err) {
 		console.error(`Error: ${err.message}`);
 		process.exit(1);

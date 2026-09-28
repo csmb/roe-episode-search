@@ -6,7 +6,8 @@
  * it would remove.
  *
  * The local transcript file is moved into the backup. The episode's .m4a in R2
- * is kept unless --delete-audio is given; raw MP3 uploads are never touched.
+ * is kept unless --delete-audio is given (then it is backed up first); raw MP3
+ * uploads are never touched.
  *
  * Usage:
  *   node scripts/delete-episode.js <episode_id>                          # dry run
@@ -64,7 +65,8 @@ export function deleteEpisode(episodeId, { isLocal = false, deleteAudio = false,
 	// ── Step 1: Back up (nothing is deleted if this fails) ───────────────
 	console.log('\n=== Step 1/5: Back up ===');
 	if (backup) console.log(`  Already backed up: ${backup.dir}`);
-	backup ??= backupEpisode(episodeId, { isLocal, reason: reason ?? 'before delete-episode.js deleted it' });
+	// The .m4a goes into the backup too when it is about to be deleted
+	backup ??= backupEpisode(episodeId, { isLocal, withAudio: deleteAudio, reason: reason ?? 'before delete-episode.js deleted it' });
 
 	// ── Step 2: Delete from Vectorize ────────────────────────────────────
 	// The IDs are the vectors the backup found, from the D1 transcript lines
