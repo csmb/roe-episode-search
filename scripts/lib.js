@@ -130,22 +130,42 @@ export function wranglerExec(args, opts = {}) {
 	}
 	const env = { ...process.env };
 	delete env.CLOUDFLARE_API_TOKEN;
-	try {
-		return execFileSync(wranglerBin, args, {
-			cwd: workerDir,
-			encoding: 'utf-8',
-			stdio: opts.stdio || 'pipe',
-			env,
-			maxBuffer: 64 * 1024 * 1024, // a whole transcript as JSON can pass the 1 MB default
-			...opts,
-		});
-	} catch (err) {
-		// Say why it failed: Node's message already has wrangler's stderr, but with
-		// --json wrangler prints its error (as JSON) on stdout
-		const out = `${err.stdout ?? ''}`.trim();
-		if (out && !err.message.includes(out)) err.message += `\n${out.slice(0, 2000)}`;
-		throw err;
+	for (let attempt = 1; ; attempt++) {
+		try {
+			return execFileSync(wranglerBin, args, {
+				cwd: workerDir,
+				encoding: 'utf-8',
+				stdio: opts.stdio || 'pipe',
+				env,
+				maxBuffer: 64 * 1024 * 1024, // a whole transcript as JSON can pass the 1 MB default
+				...opts,
+			});
+		} catch (err) {
+			// Say why it failed: Node's message already has wrangler's stderr, but with
+			// --json wrangler prints its error (as JSON) on stdout
+			const out = `${err.stdout ?? ''}`.trim();
+			if (out && !err.message.includes(out)) err.message += `\n${out.slice(0, 2000)}`;
+			if (attempt === 1 && refusedBeforeRunning(err.message)) {
+				console.warn(`  Cloudflare turned the call away (code 7403) before running it; trying again in ${REFUSED_RETRY_WAIT_MS / 1000} s`);
+				Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, REFUSED_RETRY_WAIT_MS);
+				continue;
+			}
+			throw err;
+		}
 	}
+}
+
+const REFUSED_RETRY_WAIT_MS = 5_000;
+
+/**
+ * Whether Cloudflare turned a wrangler call away before running it: "The given
+ * account is not valid or is not authorized to access this service" (code
+ * 7403). It came once on 2026-09-28, on the first call after hours of quiet,
+ * while the same login worked a moment later. Nothing ran, so the call (a write
+ * included) is safe to send again, once.
+ */
+export function refusedBeforeRunning(output) {
+	return /\b7403\b/.test(output) && /not valid or is not authorized/i.test(output);
 }
 
 export function queryJSON(sql, { isLocal = false } = {}) {
