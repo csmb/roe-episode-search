@@ -5,7 +5,8 @@
  *   1. Transcribe: locally with whisper.cpp, or with OpenAI Whisper (--engine
  *      openai, the Cloudflare pipeline's own code, about $0.72 a show)
  *   2. Seed D1 database (only a transcript that covers the recording)
- *   3. Generate embeddings → Vectorize
+ *   3. Generate embeddings → Vectorize, from the lines in D1 (the episode's
+ *      other vectors, found by listing the index, are deleted)
  *   4. Generate AI summary
  *   5. Detect guest-interview start (guest_start_ms)
  *   6. Upload audio → R2
@@ -38,10 +39,8 @@
  * fixes and loop removal before saving, a meta block, the re-transcribe list).
  * The seed step refuses a transcript that ends past its recording or before 90%
  * of it, re-seeds when D1 holds a different version of the transcript, and
- * gives the episode the recording's real length. The embeddings step embeds
- * the lines and length D1 has (what the site shows), not the local file, then
- * deletes every other vector of the episode: it lists the index for the IDs
- * that start with the episode's (about half a minute).
+ * gives the episode the recording's real length. The embeddings step deletes
+ * the vectors a replaced transcript had and the new one doesn't.
  */
 
 import { execFileSync } from 'node:child_process';
