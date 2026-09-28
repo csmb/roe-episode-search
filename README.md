@@ -150,8 +150,8 @@ All scripts are in `scripts/` and run locally with Node.js:
 | Script | Purpose |
 |---|---|
 | `process-episode.js` | The local whisper.cpp path used for the historical backfill: transcribe, seed D1, embeddings, title + summary, "Skip to interview", .m4a upload. No places or sentiment; new episodes use the drag-and-drop pipeline. |
-| `process-all.js` | Batch runner with checkpoint/resume, cooldown, retries, and quality gates. |
-| `discover-episodes.js` | Scan an audio directory, parse filenames, deduplicate by date. |
+| `process-all.js` | Batch runner with checkpoint/resume, cooldown, retries, and quality gates. Leaves episodes already complete on the site alone. |
+| `discover-episodes.js` | Scan an audio directory, parse filenames, deduplicate by date. A date recorded as several different files is skipped and listed as `MULTI-PART` (join the parts first). |
 | `clean-hallucinations.js` | Remove hallucinated repeated-phrase segments from D1. |
 | `delete-episode.js` | Back up an episode, then remove it from D1 and Vectorize (a dry run without `--yes`; `--delete-audio` also removes its .m4a). |
 | `merge-episode.js` | Merge a same-date duplicate into the canonical episode: backs up both, gives the canonical the duplicate's transcript and `--mp3` as its audio (refused if the transcript runs past the MP3's end), keeps reviewed titles, summaries, guests and interview times, then deletes the duplicate. |
