@@ -11,6 +11,9 @@
  *   - Configurable cooldown between episodes for thermal management
  *   - Retry up to 2 times on failure
  *   - Quality gates: rejects bad transcriptions, warns on hallucination indicators
+ *   - A rejected recording falls back to the date's next one (discover-episodes.js
+ *     alternates). A date whose every recording was rejected is skipped until a new
+ *     or changed file for it appears; rejected transcripts go to transcripts/.rejected/
  *   - Progress logging with ETA
  *
  * Usage:
@@ -38,6 +41,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { discoverEpisodes } from './discover-episodes.js';
 import { STEPS, whisperStartProblem } from './process-episode.js';
+import { chunkEpisode } from './generate-embeddings.js';
+import { rememberStaleVectors } from './transcript-file.js';
 import { queryJSON, projectRoot, transcriptsDir, probeDurationMs } from './lib.js';
 import { checkCoverage } from '../roe-pipeline/src/coverage.js';
 
@@ -65,15 +70,54 @@ function loadProgress() {
 	}
 	return {
 		started: new Date().toISOString(),
-		completed: {},    // episodeId → { date, duration_sec, file }
+		completed: {},    // episodeId → { date, duration_sec, file, rejected? }
 		failed: {},       // episodeId → { date, error, attempts, file }
-		skipped: {},      // episodeId → { date, reason, file }
+		skipped: {},      // episodeId → { date, reason, file, rejected: [{ file, size, reason, timestamp }] }
 		timings: [],      // duration in seconds for completed episodes (for ETA)
 	};
 }
 
 function saveProgress(progress) {
 	fs.writeFileSync(progressPath, JSON.stringify(progress, null, 2));
+}
+
+/** The recordings a skipped entry says the quality gate rejected (older entries name only one). */
+function rejections(entry) {
+	return entry.rejected ?? [{ file: entry.file, reason: entry.reason, timestamp: entry.timestamp }];
+}
+
+/** Every recording of a date the quality gate rejected, in any run and under any episode ID. */
+function rejectedRecordings(progress, date) {
+	return Object.values(progress.skipped).filter((s) => s.date === date).flatMap(rejections);
+}
+
+/**
+ * A date's recordings still worth a try: its preferred file, then its
+ * alternates (discover-episodes.js), less the ones the quality gate rejected in
+ * any run. A file with the same name and size is the one rejected; an older
+ * entry has no size, so there the name decides.
+ */
+export function recordingsToTry(episode, progress) {
+	const rejected = rejectedRecordings(progress, episode.date);
+	const wasRejected = (f) => rejected.some((r) => r.file === path.basename(f.filePath) && (r.size == null || r.size === f.fileSize));
+	return [episode, ...(episode.alternates ?? [])]
+		.filter((f) => !wasRejected(f))
+		.map(({ episodeId, filePath, fileSize }) => ({ episodeId, filePath, fileSize }));
+}
+
+/**
+ * Move a transcript the gate rejected to transcripts/.rejected/ (no script reads
+ * it there), so the date's next recording is transcribed afresh instead of this
+ * one being reused. Any search vectors it had go when the next one is embedded.
+ */
+function setAside(episodeId, filePath) {
+	const from = path.join(transcriptsDir, `${episodeId}.json`);
+	if (!fs.existsSync(from)) return;
+	const vectorIds = chunkEpisode(JSON.parse(fs.readFileSync(from, 'utf-8'))).map((c) => c.id);
+	if (vectorIds.length > 0) rememberStaleVectors(episodeId, vectorIds);
+	const dir = path.join(transcriptsDir, '.rejected');
+	fs.mkdirSync(dir, { recursive: true });
+	fs.renameSync(from, path.join(dir, `${episodeId} (${path.parse(filePath).name}).json`));
 }
 
 // ── Quality gates ──────────────────────────────────────────────────────
@@ -136,18 +180,28 @@ function timestamp() {
 	return new Date().toLocaleTimeString('en-US', { hour12: false });
 }
 
-/** The two process-episode.js runs for one file (node arguments). */
-export function episodeRuns(filePath, { force = [], includeReviewed = false, noGpu = false, local = false } = {}) {
+function megabytes(bytes) {
+	return (bytes / (1024 * 1024)).toFixed(1);
+}
+
+/**
+ * The two process-episode.js runs for one file (node arguments). `episodeId`
+ * puts a file whose name gives another ID in as that episode (a date's
+ * alternate recording).
+ */
+export function episodeRuns(filePath, { force = [], includeReviewed = false, noGpu = false, local = false, episodeId = null } = {}) {
+	const id = episodeId ? ['--episode-id', episodeId] : [];
+
 	// Phase 1: transcribe only, so the quality gate can reject a bad
 	// transcript BEFORE anything goes live in D1/Vectorize/R2 (the
 	// interview time included).
-	const phase1 = [processEpisodeScript, filePath, '--skip', 'seed-db,embeddings,summary,guest-start,upload-audio'];
+	const phase1 = [processEpisodeScript, filePath, ...id, '--skip', 'seed-db,embeddings,summary,guest-start,upload-audio'];
 	if (force.includes('transcribe')) phase1.push('--force', 'transcribe');
 	if (noGpu) phase1.push('--no-gpu');
 
 	// Phase 2: the remaining steps. Transcription is skipped explicitly so
 	// --force can't redo it; a new transcript is seeded again.
-	const phase2 = [processEpisodeScript, filePath, '--skip', 'transcribe'];
+	const phase2 = [processEpisodeScript, filePath, ...id, '--skip', 'transcribe'];
 	const forced = force.filter((s) => s !== 'transcribe');
 	if (force.includes('transcribe') && !forced.includes('seed-db')) forced.push('seed-db');
 	if (forced.length > 0) phase2.push('--force', forced.join(','));
@@ -247,11 +301,12 @@ function main() {
 
 	if (!opts.audioDir) usage();
 
-	// Load checkpoint. Only episodes recorded as completed or quality-skipped
-	// count as done — a transcript on disk alone does NOT, because the
-	// pipeline may have failed after transcription (seed/embed/summary/
-	// upload). Such episodes are re-run; process-episode.js skips the
-	// transcription step (and any other step already done) itself.
+	// Load checkpoint. Only episodes recorded as completed count as done — a
+	// transcript on disk alone does NOT, because the pipeline may have failed
+	// after transcription (seed/embed/summary/upload). Such episodes are re-run;
+	// process-episode.js skips the transcription step (and any other step
+	// already done) itself. A quality-skipped date is left out further down,
+	// unless it has a recording the gate hasn't rejected yet.
 	const progress = loadProgress();
 
 	// Episodes already complete on the site (a duration, a summary and audio)
@@ -265,7 +320,6 @@ function main() {
 	).map((r) => r.id);
 	const alreadyDone = new Set([
 		...Object.keys(progress.completed),
-		...Object.keys(progress.skipped),
 		...onSite,
 	]);
 
@@ -285,6 +339,15 @@ function main() {
 		splitDates = splitDates.filter((m) => m.date >= opts.startFrom);
 	}
 
+	// A date the quality gate rejected before is only tried again with a recording
+	// it hasn't rejected: a new file for the date, or one that changed
+	let retired = 0;
+	toProcess = toProcess.flatMap((e) => {
+		const files = recordingsToTry(e, progress);
+		if (files.length === 0) retired++;
+		return files.length > 0 ? [{ ...e, files }] : [];
+	});
+
 	// Apply --max limit
 	if (toProcess.length > opts.max) {
 		toProcess = toProcess.slice(0, opts.max);
@@ -300,6 +363,7 @@ function main() {
 	console.log(`  ${timestamp()} Unique dates: ${uniqueDates}`);
 	console.log(`  ${timestamp()} Previously completed: ${completedCount}`);
 	console.log(`  ${timestamp()} Previously failed: ${failedCount}`);
+	console.log(`  ${timestamp()} Quality-skipped, no new recording to try: ${retired}`);
 	console.log(`  ${timestamp()} Complete on the site: ${onSite.length}`);
 	console.log(`  ${timestamp()} Transcripts on disk: ${transcriptsOnDisk}`);
 	console.log(`  ${timestamp()} To process this run: ${toProcess.length}`);
@@ -315,8 +379,11 @@ function main() {
 		console.log('=== DRY RUN — would process: ===');
 		for (let i = 0; i < toProcess.length; i++) {
 			const e = toProcess[i];
-			const sizeMB = (e.fileSize / (1024 * 1024)).toFixed(1);
-			console.log(`  ${String(i + 1).padStart(3)}. ${e.date}  ${e.episodeId}  (${sizeMB} MB)`);
+			const [first, ...next] = e.files;
+			const before = rejectedRecordings(progress, e.date);
+			console.log(`  ${String(i + 1).padStart(3)}. ${e.date}  ${e.episodeId}  (${megabytes(first.fileSize)} MB)  ${path.basename(first.filePath)}`);
+			for (const f of next) console.log(`         if rejected: ${path.basename(f.filePath)} (${megabytes(f.fileSize)} MB)`);
+			if (before.length > 0) console.log(`         rejected before: ${before.map((r) => r.file).join(', ')}`);
 		}
 		return;
 	}
@@ -363,23 +430,53 @@ function main() {
 		const remaining = toProcess.length - i;
 		const etaStr = formatDuration(remaining * avgSec);
 
+		const [first, ...next] = episode.files;
+		const before = rejectedRecordings(progress, episode.date);
 		console.log(`\n${'='.repeat(70)}`);
 		console.log(`[${i + 1}/${toProcess.length}] ${episode.episodeId}`);
-		console.log(`  ${timestamp()} File: ${path.basename(episode.filePath)}`);
-		console.log(`  ${timestamp()} Size: ${(episode.fileSize / (1024 * 1024)).toFixed(1)} MB`);
+		console.log(`  ${timestamp()} File: ${path.basename(first.filePath)}`);
+		console.log(`  ${timestamp()} Size: ${megabytes(first.fileSize)} MB`);
+		if (next.length > 0) console.log(`  ${timestamp()} If the quality gate rejects it: ${next.map((f) => path.basename(f.filePath)).join(', ')}`);
+		if (before.length > 0) console.log(`  ${timestamp()} Rejected before: ${before.map((r) => r.file).join(', ')}`);
 		console.log(`  ${timestamp()} ETA for remaining: ${etaStr}`);
 		console.log(`${'='.repeat(70)}`);
 
-		const [phase1, phase2] = episodeRuns(episode.filePath, { ...opts, local: testRun });
-		let lastError = runEpisodeStep(phase1);
-
-		// Phase 2 only if the transcript passes the gate
+		// The date's recordings in turn, until one passes the quality gate
+		let lastError = null;
 		let quality = null;
-		if (!lastError) {
-			quality = checkQuality(episode.episodeId, episode.filePath);
+		let file = null;
+		for (const f of episode.files) {
+			if (file) {
+				console.log(`\n  ${timestamp()} Trying the date's next recording: ${path.basename(f.filePath)} (${megabytes(f.fileSize)} MB)`);
+			}
+			file = f;
+			// Every recording of a date goes in as the date's one episode
+			const episodeId = f.episodeId === episode.episodeId ? null : episode.episodeId;
+			const [phase1, phase2] = episodeRuns(f.filePath, { ...opts, local: testRun, episodeId });
+			lastError = runEpisodeStep(phase1);
+			if (lastError) break;
+
+			// Phase 2 only if the transcript passes the gate
+			quality = checkQuality(episode.episodeId, f.filePath);
 			if (quality.pass) {
 				lastError = runEpisodeStep(phase2);
+				break;
 			}
+			console.error(`  ${timestamp()} QUALITY GATE FAILED for ${path.basename(f.filePath)} (nothing seeded/uploaded):`);
+			quality.errors.forEach((e) => console.error(`    - ${e}`));
+			setAside(episode.episodeId, f.filePath);
+
+			// Every rejected recording is kept (at once), so a later run only tries the others
+			const rejection = { file: path.basename(f.filePath), size: f.fileSize, reason: quality.errors.join('; '), timestamp: new Date().toISOString() };
+			const earlier = progress.skipped[episode.episodeId];
+			progress.skipped[episode.episodeId] = {
+				date: episode.date,
+				reason: rejection.reason,
+				file: rejection.file,
+				timestamp: rejection.timestamp,
+				rejected: [...(earlier ? rejections(earlier) : []), rejection],
+			};
+			saveProgress(progress);
 		}
 
 		const durationSec = (Date.now() - episodeStart) / 1000;
@@ -390,19 +487,12 @@ function main() {
 				date: episode.date,
 				error: lastError.slice(0, 500),
 				attempts: MAX_RETRIES + 1,
-				file: path.basename(episode.filePath),
+				file: path.basename(file.filePath),
 				timestamp: new Date().toISOString(),
 			};
 			failed++;
 		} else if (!quality.pass) {
-			console.error(`  ${timestamp()} QUALITY GATE FAILED (nothing seeded/uploaded):`);
-			quality.errors.forEach((e) => console.error(`    - ${e}`));
-			progress.skipped[episode.episodeId] = {
-				date: episode.date,
-				reason: quality.errors.join('; '),
-				file: path.basename(episode.filePath),
-				timestamp: new Date().toISOString(),
-			};
+			console.error(`  ${timestamp()} Every recording of ${episode.date} was rejected: skipped until a new or changed file for it appears`);
 		} else {
 			if (quality.warnings && quality.warnings.length > 0) {
 				quality.warnings.forEach((w) => console.warn(`  ${timestamp()} WARNING: ${w}`));
@@ -411,9 +501,15 @@ function main() {
 			progress.completed[episode.episodeId] = {
 				date: episode.date,
 				duration_sec: Math.round(durationSec),
-				file: path.basename(episode.filePath),
+				file: path.basename(file.filePath),
 				timestamp: new Date().toISOString(),
 			};
+			// The recordings rejected on the way stay on record with it
+			const skipped = progress.skipped[episode.episodeId];
+			if (skipped) {
+				progress.completed[episode.episodeId].rejected = rejections(skipped);
+				delete progress.skipped[episode.episodeId];
+			}
 			progress.timings.push(durationSec);
 			succeeded++;
 		}
@@ -471,7 +567,7 @@ function main() {
 	if (totalSkipped > 0) {
 		console.log(`\n  Quality-skipped episodes:`);
 		for (const [id, info] of Object.entries(progress.skipped)) {
-			console.log(`    - ${id}: ${info.reason}`);
+			console.log(`    - ${id}: ${rejections(info).map((r) => `${r.file}: ${r.reason}`).join('; ')}`);
 		}
 	}
 

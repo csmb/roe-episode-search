@@ -7,6 +7,10 @@
  * "… 2.mp3") is skipped and reported as MULTI-PART: no one file is the whole show,
  * so join the parts into one file first.
  *
+ * Any other date gets its preferred file, plus its other recordings in the same
+ * order (`alternates`), which process-all falls back on when the quality gate
+ * rejects a transcript. A file the size of one before it is a copy and is left out.
+ *
  * Usage (standalone preview):
  *   node scripts/discover-episodes.js "/path/to/All episodes/"
  *
@@ -82,7 +86,8 @@ function filePreferenceScore(filename) {
  * @param {string} audioDir - Path to directory containing MP3 files
  * @param {Object} [opts] - Options
  * @param {Set<string>} [opts.alreadyProcessed] - Set of episode IDs to exclude
- * @returns {{ episodes: { episodeId: string, date: string, filePath: string, fileSize: number }[],
+ * @returns {{ episodes: { episodeId: string, date: string, filePath: string, fileSize: number,
+ *     alternates: { episodeId: string, filePath: string, fileSize: number }[] }[],
  *   multiPart: { date: string, files: string[] }[], unparseable: string[], totalFiles: number, uniqueDates: number }}
  *   multiPart lists the dates skipped because they are split into parts (only dates not already processed).
  */
@@ -159,11 +164,21 @@ export function discoverEpisodes(audioDir, opts = {}) {
 		// Skip if already processed
 		if (alreadyProcessed.has(best.episodeId)) continue;
 
+		// The date's other recordings, for when the quality gate rejects the first.
+		// A file the size of one before it is a copy (most numbered files are): its
+		// transcript would only be rejected again.
+		const alternates = [];
+		for (const f of viable.slice(1)) {
+			if (f.fileSize === best.fileSize || alternates.some((a) => a.fileSize === f.fileSize)) continue;
+			alternates.push({ episodeId: f.episodeId, filePath: f.filePath, fileSize: f.fileSize });
+		}
+
 		episodes.push({
 			episodeId: best.episodeId,
 			date: best.date,
 			filePath: best.filePath,
 			fileSize: best.fileSize,
+			alternates,
 		});
 	}
 
@@ -217,5 +232,8 @@ if (import.meta.main) {
 		const e = episodes[i];
 		const sizeMB = (e.fileSize / (1024 * 1024)).toFixed(1);
 		console.log(`  ${String(i + 1).padStart(3)}. ${e.date}  ${e.episodeId}  (${sizeMB} MB)  ${path.basename(e.filePath)}`);
+		for (const a of e.alternates) {
+			console.log(`         if rejected: ${path.basename(a.filePath)} (${(a.fileSize / (1024 * 1024)).toFixed(1)} MB)`);
+		}
 	}
 }

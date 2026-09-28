@@ -36,13 +36,14 @@ roe-episode-search/
 │   ├── transcribe.js          # OpenAI Whisper with roe-pipeline's code, resumable chunk by chunk
 │   ├── transcript-file.js     # Writes transcripts/<id>.json the same way for both engines (meta, loops, re-transcribe list)
 │   ├── remote-cloudflare.js   # Workers AI + Vectorize stand-ins over the REST API, for roe-pipeline's embeddings code
-│   ├── process-all.js         # Batch runner with checkpoint/resume
-│   ├── discover-episodes.js   # Scan directory, parse filenames
+│   ├── process-all.js         # Batch runner with checkpoint/resume; falls back to a date's next recording
+│   ├── discover-episodes.js   # Scan directory, parse filenames, a date's file and its alternates
 │   ├── generate-summaries.js  # Regenerate AI summaries
 │   ├── cleanup-places.js      # Remove false positive places from D1
 │   ├── redo-places.js         # Redo one episode's places with roe-pipeline's code
 │   ├── delete-episode.js      # Back up, then remove an episode from D1 and Vectorize (--yes)
 │   ├── episode-backup.js      # Back up an episode (with restore SQL) before a delete or merge
+│   ├── test/                  # node:test files for the scripts' own logic
 │   ├── archive/               # Retired one-off scripts, reference only (see its README)
 │   └── ...                    # ~15 more utility scripts
 ├── schema.sql                 # D1 schema (episodes, segments, FTS5, guests, places)
@@ -90,6 +91,11 @@ cd roe-pipeline && npm run deploy
 ### Run roe-pipeline tests
 ```
 cd roe-pipeline && npm test
+```
+
+### Run the scripts' tests
+```
+node --test scripts/test/*.test.js    # discover-episodes' alternates, process-all's fallback choice
 ```
 
 ### Test the scripts on a scratch D1
@@ -141,7 +147,11 @@ transcript. A mistyped option or step name stops the script.
 node scripts/process-all.js "/path/to/All episodes/" --cooldown 120 --dry-run
 ```
 Dates recorded as several different files are skipped and listed as `MULTI-PART`: join the parts
-into one file first. Episodes already complete on the site are left alone.
+into one file first. Episodes already complete on the site are left alone. When the quality gate
+rejects a transcript, the date's next recording (discover-episodes' `alternates`: other files of
+that date, not copies of the same size) is tried in the same run, under the date's episode ID. Every
+rejected file is recorded (name and size) in `batch-progress.json`, and its transcript goes to
+`transcripts/.rejected/`; a later run skips the date until a file it hasn't rejected appears.
 
 ### Apply schema to D1
 ```
