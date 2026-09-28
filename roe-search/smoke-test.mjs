@@ -3,8 +3,8 @@
  * Smoke test for the live site: requests every route the pages rely on and
  * checks the fields they read, so a deploy that silently drops a route (as
  * 34357ed did in April) fails loudly. A few checks also pin behaviour: search
- * ranking, the On This Day fallback and /latest skipping unfinished episodes.
- * Read-only; about 20 requests.
+ * ranking, the On This Day fallback, /latest skipping unfinished episodes, the
+ * header photo the pages use and the map's cache header. Read-only; 21 requests.
  *
  *   npm run smoke                 # https://rollovereasy.org
  *   node smoke-test.mjs http://roe.localhost:8791
@@ -18,7 +18,9 @@ async function check(name, path, test, init) {
 	try {
 		const res = await fetch(BASE + path, init);
 		const type = res.headers.get('content-type') || '';
-		const body = type.includes('json') ? await res.json() : await res.text();
+		const body = type.includes('json') ? await res.json()
+			: type.startsWith('image/') ? await res.arrayBuffer()
+			: await res.text();
 		const problem = test(res, body);
 		if (problem) failures.push(`${name}: ${problem}`);
 		else passed++;
@@ -31,8 +33,18 @@ async function check(name, path, test, init) {
 const status = code => res => res.status === code ? null : `status ${res.status}, expected ${code}`;
 
 // Pages
+const pages = {};
 for (const [name, path] of [['homepage', '/'], ['episodes page', '/episodes'], ['map page', '/map'], ['admin page', '/admin']]) {
-	await check(name, path, (res, body) => res.status !== 200 ? `status ${res.status}` : !String(body).includes('<html') ? 'not HTML' : null);
+	pages[path] = await check(name, path, (res, body) => res.status !== 200 ? `status ${res.status}` : !String(body).includes('<html') ? 'not HTML' : null);
+}
+// The header photo the homepage points at: served by the Worker as a small WebP.
+const hero = String(pages['/'] || '').match(/class="hero-image" src="([^"]+)"/)?.[1];
+if (!hero?.startsWith('/')) failures.push(`header image: the homepage points at ${hero ?? 'nothing'}, not the Worker`);
+else {
+	await check('header image', hero, (res, body) =>
+		res.status !== 200 ? `status ${res.status}`
+			: res.headers.get('content-type') !== 'image/webp' ? `content-type ${res.headers.get('content-type')}`
+			: !(body?.byteLength > 0 && body.byteLength < 300 * 1024) ? `${body?.byteLength} bytes, expected under 300 KB` : null);
 }
 await check('robots.txt', '/robots.txt', (res, body) =>
 	res.status !== 200 ? `status ${res.status}` : !/Disallow: \//.test(body) ? 'does not block crawlers' : null);
@@ -78,8 +90,11 @@ await check('/api/search', '/api/search?q=stairway', (res, body) => {
 });
 await check('/api/guests', '/api/guests', (res, body) =>
 	res.status !== 200 ? `status ${res.status}` : !Array.isArray(body?.guests) || body.guests.length === 0 ? 'no guests' : null);
+// About 1 MB, so browsers should keep a copy.
 const map = await check('/api/map-places', '/api/map-places', (res, body) =>
-	res.status !== 200 ? `status ${res.status}` : !Array.isArray(body?.places) || body.places.length === 0 ? 'no places' : null);
+	res.status !== 200 ? `status ${res.status}`
+		: !Array.isArray(body?.places) || body.places.length === 0 ? 'no places'
+		: !/max-age=[1-9]/.test(res.headers.get('cache-control') || '') ? `Cache-Control is ${JSON.stringify(res.headers.get('cache-control'))}, expected a max-age` : null);
 const placeName = map?.places?.[0]?.name;
 if (placeName) {
 	await check('/api/place-detail', `/api/place-detail?name=${encodeURIComponent(placeName)}`, status(200));
