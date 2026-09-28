@@ -263,12 +263,14 @@ function transcribeWithWhisperCpp(mp3Path, episodeId, noGpu) {
  * (roe-pipeline/src/clean-segments.js). Returns the transcript without saving
  * it: repair-archive.js checks a new transcript before it replaces the old one.
  * `modelPath` is a ggml model file (WHISPER_MODELS); the transcript's meta names it.
+ * `timeFactor` sets the time limit, as a multiple of the recording's length (a faster
+ * model can have a tighter one).
  */
-export function whisperCppTranscript(mp3Path, episodeId, noGpu = false, { modelPath = WHISPER_MODEL_PATH } = {}) {
+export function whisperCppTranscript(mp3Path, episodeId, noGpu = false, { modelPath = WHISPER_MODEL_PATH, timeFactor = WHISPER_TIME_FACTOR[noGpu ? 'cpu' : 'gpu'] } = {}) {
 	const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'roe-whisper-'));
 	const audioMs = probeDurationMs(mp3Path);
 	const { gpuArgs, env } = whisperOptions(noGpu);
-	const limitMs = WHISPER_LOAD_ALLOWANCE_MS + WHISPER_TIME_FACTOR[noGpu ? 'cpu' : 'gpu'] * audioMs;
+	const limitMs = WHISPER_LOAD_ALLOWANCE_MS + timeFactor * audioMs;
 
 	try {
 		// Convert MP3 → WAV (16kHz mono)
