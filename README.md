@@ -149,15 +149,21 @@ All scripts are in `scripts/` and run locally with Node.js:
 
 | Script | Purpose |
 |---|---|
-| `process-episode.js` | The local whisper.cpp path used for the historical backfill: transcribe, seed D1, embeddings, title + summary, "Skip to interview", .m4a upload. No places or sentiment; new episodes use the drag-and-drop pipeline. |
+| `process-episode.js` | One episode through the local pipeline: transcribe (whisper.cpp, or `--engine openai` for the Cloudflare pipeline's own Whisper code), seed D1, embeddings, title + summary, "Skip to interview", .m4a upload. It uses the Worker's code for cleaning, loops, summaries, embeddings and interview times, so both pipelines agree. The seed step refuses a transcript that ends past its recording or stops before 90% of it (`--accept-short` to seed one anyway), re-seeds when D1 holds a different transcript, and gives the episode the recording's real length. No places or sentiment; new episodes use the drag-and-drop pipeline. |
+| `transcribe.js` | Transcribe one MP3 with OpenAI Whisper using the pipeline's code (six-minute chunks, gap retries, cleaning): `node scripts/transcribe.js <file.mp3> <episode-id>`. A failed chunk is retried, and progress is saved after every chunk, so a crash resumes without paying twice. About $0.72 for a two-hour show. |
+| `transcribe-all.js` | The same for every show in an archive folder that has no transcript yet (split shows are skipped and listed). |
+| `generate-embeddings.js` | Embed transcripts into Vectorize with the pipeline's code: `--only <id>[,<id>…]` or `--all`; episodes not in D1 are skipped. |
+| `generate-summaries.js` | Titles, summaries and guests with the pipeline's prompt and checks, for episodes missing a summary (`--force`, `--include-reviewed`, `--dry-run`). |
 | `process-all.js` | Batch runner with checkpoint/resume, cooldown, retries, and quality gates. Leaves episodes already complete on the site alone. |
 | `discover-episodes.js` | Scan an audio directory, parse filenames, deduplicate by date. A date recorded as several different files is skipped and listed as `MULTI-PART` (join the parts first). |
-| `clean-hallucinations.js` | Remove hallucinated repeated-phrase segments from D1. |
+| `clean-hallucinations.js` | Delete Whisper's repetition loops from episodes already in D1, with the pipelines' loop check (each looping line keeps its first copy). |
 | `delete-episode.js` | Back up an episode, then remove it from D1 and Vectorize (a dry run without `--yes`; `--delete-audio` also removes its .m4a). |
 | `merge-episode.js` | Merge a same-date duplicate into the canonical episode: backs up both, gives the canonical the duplicate's transcript and `--mp3` as its audio (refused if the transcript runs past the MP3's end), keeps reviewed titles, summaries, guests and interview times, then deletes the duplicate. |
 | `episode-backup.js` | Back up one episode (D1 rows, search vectors, local transcript, with `--with-audio` its .m4a) with restore SQL and a README, in `transcripts/.backups/`. |
 | `repair-missing-m4a.js` | Make and upload the .m4a for episodes that only have their MP3. |
 | `redo-places.js` | Redo one episode's places and their sentiment with the pipeline's own code (`--no-places` for every episode that has none). |
+
+Transcript files (`transcripts/<episode-id>.json`, git-ignored) are written the same way by both engines (`scripts/transcript-file.js`): spelling fixes ("soldier" → "Suldrew") and loop removal happen before saving, and a `meta` block records the engine, model, settings, the recording's real length, what was removed, holes of 5+ minutes, and whether it covers the recording. An episode that lost 50+ lines to a loop, has a 5-minute hole or stops early goes on the re-transcribe list, `transcripts/.retranscribe/episodes.json`. The archive folder the scripts read is `ARCHIVE_DIR` in `scripts/lib.js` (the BFF.fm archive in iCloud; set `ROE_ARCHIVE_DIR` to use another).
 
 Retired one-off scripts (the April map build, old archive tools) are kept in `scripts/archive/` for reference only; its README says which must not be run again.
 ### Batch processing
@@ -258,7 +264,7 @@ node scripts/delete-episode.js roll-over-easy_YYYY-MM-DD_07-30-00 --yes    # bac
 For processing large numbers of older episodes locally:
 
 ```bash
-# Process a single episode locally
+# Process a single episode locally (whisper.cpp; add --engine openai to use OpenAI's Whisper)
 node scripts/process-episode.js /path/to/episode.mp3
 
 # Process all episodes in batch with checkpoint/resume

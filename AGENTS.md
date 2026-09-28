@@ -32,7 +32,10 @@ roe-episode-search/
 │       ├── hosts.js           # The hosts' names (never guests); the site imports it too
 │       └── parse-episode-id.js # Filename → episode ID
 ├── scripts/                   # Local tools (Node.js 24.2+)
-│   ├── process-episode.js     # Historical backfill path (whisper.cpp): transcribe → seed → embed → summary → upload
+│   ├── process-episode.js     # Local pipeline: transcribe (whisper.cpp or --engine openai) → seed → embed → summary → upload
+│   ├── transcribe.js          # OpenAI Whisper with roe-pipeline's code, resumable chunk by chunk
+│   ├── transcript-file.js     # Writes transcripts/<id>.json the same way for both engines (meta, loops, re-transcribe list)
+│   ├── remote-cloudflare.js   # Workers AI + Vectorize stand-ins over the REST API, for roe-pipeline's embeddings code
 │   ├── process-all.js         # Batch runner with checkpoint/resume
 │   ├── discover-episodes.js   # Scan directory, parse filenames
 │   ├── generate-summaries.js  # Regenerate AI summaries
@@ -56,7 +59,7 @@ The MP3 archive (661 files) is outside the repo, in iCloud Drive at
 |-----------|-------------|---------|-------|
 | **roe-search** | `roe-search/src/index.js` | Search frontend + API. Serves HTML pages, FTS5/semantic search, audio streaming, admin endpoints | D1, R2, Vectorize, Workers AI |
 | **roe-pipeline** | `roe-pipeline/src/index.js` | How new episodes arrive. R2 upload → queue → one Durable Object per show date, which waits 10 minutes for more parts, joins a show that came in parts, then runs transcribe → summary → seed → embed → guest-start → places → sentiment, with retries and resume | D1, R2, Vectorize, Workers AI, OpenAI |
-| **scripts** | `scripts/process-episode.js` | Local processing used for the historical backfill (whisper-cpp + ffmpeg). Not the same as roe-pipeline: no places or sentiment, and its own prompts and cleaning | D1, R2, Vectorize, OpenAI |
+| **scripts** | `scripts/process-episode.js` | Local processing (whisper.cpp or OpenAI + ffmpeg). It imports roe-pipeline's code for transcription (OpenAI), cleaning and loops, file names, summaries, embeddings and interview times, so both pipelines give the same results; no places or sentiment (redo-places.js does those) | D1, R2, Vectorize, OpenAI |
 | **D1 database** | `schema.sql` | SQLite: episodes, transcript_segments, transcript_fts (FTS5), episode_guests, places, place_mentions | |
 | **R2 bucket** | `roe-audio` | Audio file storage. Public URL: `pub-e95bd2be3f9d4147b2955503d75e50c1.r2.dev` | |
 | **Vectorize** | `roe-transcripts` | 768-dim embeddings (cosine). Model: `@cf/baai/bge-base-en-v1.5` | |
@@ -105,8 +108,18 @@ node scripts/delete-episode.js <id> --local --yes
 ```
 node scripts/process-episode.js "/path/to/Roll Over Easy 2026-03-27.mp3"
 # Options: --episode-id ID, --force summary,guest-start (steps to redo), --skip transcribe,seed-db,
-#          --include-reviewed, --local (the local D1 copy)
+#          --include-reviewed, --local (the local D1 copy), --engine whisper.cpp|openai,
+#          --accept-short (seed a transcript that stops early)
 ```
+The transcript file is written by `transcript-file.js` for both engines: spelling fixes and
+`findLoops` before saving, and a `meta` block (engine, settings, the recording's real length, loops,
+holes, coverage). The seed step refuses a transcript that ends past its recording or stops before
+90% of it unless `--accept-short`, re-seeds when D1 holds a different transcript (lines off by 20%+
+or the end by 60 s+, and only from a complete file), sets `duration_ms` to the recording's real
+length, and cleans an old file without `meta` the new way first (the original goes to
+`transcripts/.backups/`). The embeddings step deletes the vectors a replaced transcript had and the
+new one doesn't. Episodes needing another pass are listed in `transcripts/.retranscribe/episodes.json`.
+
 An episode whose guests were reviewed (`guests_reviewed = 1`) keeps its title, summary, guests and
 interview time, even with `--force`, unless `--include-reviewed` is given (new AI guests then go
 back to the admin page's review queue); the same goes for `generate-summaries.js`,
