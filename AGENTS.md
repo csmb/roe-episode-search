@@ -109,8 +109,15 @@ node scripts/delete-episode.js <id> --local --yes
 node scripts/process-episode.js "/path/to/Roll Over Easy 2026-03-27.mp3"
 # Options: --episode-id ID, --force summary,guest-start (steps to redo), --skip transcribe,seed-db,
 #          --include-reviewed, --local (the local D1 copy), --engine whisper.cpp|openai,
-#          --accept-short (seed a transcript that stops early)
+#          --no-gpu (whisper.cpp on the CPU), --accept-short (seed a transcript that stops early)
 ```
+whisper.cpp can hang for good while it starts the GPU (Metal) on this Mac, with no message. So
+before any work it gets a one-second test run (60 s limit), and the real run is stopped at 4x the
+recording's length (8x with `--no-gpu`) plus 5 minutes. `--no-gpu` passes `-ng` and sets
+`GGML_METAL_DEVICES=0`, since even `whisper-cli -ng` starts the Metal device otherwise. On the CPU it
+takes about 2.5x the recording's length; on the GPU about a quarter. `process-all.js` and
+`ingest-server.js` take `--no-gpu` too.
+
 The transcript file is written by `transcript-file.js` for both engines: spelling fixes and
 `findLoops` before saving, and a `meta` block (engine, settings, the recording's real length, loops,
 holes, coverage). The seed step refuses a transcript that ends past its recording or stops before

@@ -25,17 +25,19 @@
  *   --time-limit <hours>    Stop after this many hours (finishes current episode first)
  *   --force step1,step2     Redo these process-episode.js steps even if already done
  *   --include-reviewed      Also redo reviewed episodes' titles, summaries, guests and interview times
+ *   --no-gpu                Run whisper.cpp on the CPU (slower; for when its GPU start-up hangs)
  *
  * --force and --include-reviewed apply to the episodes this run processes: new
  * ones and ones a run left unfinished. An episode complete on the site is never
- * re-run; use process-episode.js for that.
+ * re-run; use process-episode.js for that. Before the first episode, whisper.cpp
+ * gets a one-second test run, so a whisper.cpp that hangs stops the batch at once.
  */
 
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { discoverEpisodes } from './discover-episodes.js';
-import { STEPS } from './process-episode.js';
+import { STEPS, whisperStartProblem } from './process-episode.js';
 import { queryJSON, projectRoot, transcriptsDir, probeDurationMs } from './lib.js';
 import { checkCoverage } from '../roe-pipeline/src/coverage.js';
 
@@ -129,12 +131,13 @@ function timestamp() {
 }
 
 /** The two process-episode.js runs for one file (node arguments). */
-export function episodeRuns(filePath, { force = [], includeReviewed = false } = {}) {
+export function episodeRuns(filePath, { force = [], includeReviewed = false, noGpu = false } = {}) {
 	// Phase 1: transcribe only, so the quality gate can reject a bad
 	// transcript BEFORE anything goes live in D1/Vectorize/R2 (the
 	// interview time included).
 	const phase1 = [processEpisodeScript, filePath, '--skip', 'seed-db,embeddings,summary,guest-start,upload-audio'];
 	if (force.includes('transcribe')) phase1.push('--force', 'transcribe');
+	if (noGpu) phase1.push('--no-gpu');
 
 	// Phase 2: the remaining steps. Transcription is skipped explicitly so
 	// --force can't redo it; a new transcript is seeded again.
@@ -184,6 +187,7 @@ function usage(problem) {
 	console.error('  --time-limit <hours>    Stop after this many hours');
 	console.error('  --force step1,step2     Redo these steps even if already done');
 	console.error('  --include-reviewed      Also redo reviewed episodes\' titles, summaries, guests and interview times');
+	console.error('  --no-gpu                Run whisper.cpp on the CPU (slower), for when its GPU start-up hangs');
 	console.error('');
 	console.error(`Steps: ${STEPS.join(', ')}`);
 	process.exit(1);
@@ -192,7 +196,7 @@ function usage(problem) {
 // Mistyped options stop the run instead of being ignored
 function parseArgs() {
 	const args = process.argv.slice(2);
-	const opts = { audioDir: null, cooldown: 120, startFrom: null, dryRun: false, max: Infinity, timeLimitMs: null, force: [], includeReviewed: false };
+	const opts = { audioDir: null, cooldown: 120, startFrom: null, dryRun: false, max: Infinity, timeLimitMs: null, force: [], includeReviewed: false, noGpu: false };
 	const value = (i, check) => {
 		if (args[i + 1] === undefined || !check(args[i + 1])) usage(`${args[i]} needs a valid value`);
 		return args[i + 1];
@@ -217,6 +221,8 @@ function parseArgs() {
 			if (unknown.length > 0) usage(`--force: no step called ${unknown.join(', ')}`);
 		} else if (args[i] === '--include-reviewed') {
 			opts.includeReviewed = true;
+		} else if (args[i] === '--no-gpu') {
+			opts.noGpu = true;
 		} else if (args[i].startsWith('-')) {
 			usage(`Unknown option: ${args[i]}`);
 		} else if (opts.audioDir) {
@@ -309,6 +315,26 @@ function main() {
 	if (toProcess.length === 0) {
 		console.log('Nothing to process!');
 		return;
+	}
+
+	// A whisper.cpp that hangs at start-up would fail every episode in turn: test it
+	// once first (unless every episode already has its transcript)
+	const needsWhisper = opts.force.includes('transcribe') || toProcess.some((e) => !fs.existsSync(path.join(transcriptsDir, `${e.episodeId}.json`)));
+	if (needsWhisper) {
+		console.log(`  ${timestamp()} Testing whisper.cpp${opts.noGpu ? ' on the CPU' : ''} (one second of silence)...`);
+		const problem = whisperStartProblem(opts.noGpu);
+		if (problem) {
+			console.error(`\n${problem}.`);
+			if (opts.noGpu) {
+				console.error('Transcribe with OpenAI instead (about $0.72 a show): node scripts/transcribe-all.js <audio-directory>;');
+				console.error('this batch then uses those transcripts.');
+			} else {
+				console.error('whisper.cpp can hang while it starts the GPU on this Mac. Check that no whisper-cli is left running');
+				console.error('(pgrep -fl whisper-cli), then run the batch again with --no-gpu (on the CPU, slower).');
+			}
+			process.exit(1);
+		}
+		console.log(`  ${timestamp()} whisper.cpp starts`);
 	}
 
 	// Process each episode

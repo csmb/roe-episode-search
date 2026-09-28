@@ -7,6 +7,7 @@
  * Usage:
  *   node scripts/ingest-server.js        # port 3001
  *   node scripts/ingest-server.js 3002   # custom port
+ *   node scripts/ingest-server.js --no-gpu   # whisper.cpp on the CPU (its GPU start-up can hang)
  */
 
 import http from 'node:http';
@@ -15,8 +16,11 @@ import path from 'node:path';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
 import { execSync } from 'node:child_process';
+import { parseFlags } from './lib.js';
 
-const PORT = parseInt(process.argv[2] || '3001', 10);
+const { flags, rest } = parseFlags(process.argv.slice(2), { '--no-gpu': 'flag' }, 'Usage: node scripts/ingest-server.js [port] [--no-gpu]');
+const PORT = parseInt(rest[0] || '3001', 10);
+const EPISODE_OPTIONS = flags['no-gpu'] ? ['--no-gpu'] : []; // passed on to process-episode.js
 const projectRoot = path.resolve(path.dirname(decodeURIComponent(new URL(import.meta.url).pathname)), '..');
 
 // Only this machine's own page may use the server. It sends no CORS headers, so
@@ -64,7 +68,7 @@ function broadcast(job, event, data) {
 function runJob(job) {
 	return new Promise((resolve) => {
 		const scriptPath = path.join(projectRoot, 'scripts', 'process-episode.js');
-		const child = spawn('node', [scriptPath, job.tmpPath], {
+		const child = spawn('node', [scriptPath, job.tmpPath, ...EPISODE_OPTIONS], {
 			cwd: projectRoot,
 			env: process.env,
 		});
@@ -453,6 +457,7 @@ server.listen(PORT, '127.0.0.1', () => {
 	const url = `http://localhost:${PORT}`;
 	console.log(`Roll Over Easy — Ingest Server`);
 	console.log(`Listening on ${url}`);
+	if (EPISODE_OPTIONS.length) console.log('whisper.cpp runs on the CPU (--no-gpu)');
 	console.log('');
 	console.log('Drag MP3 files onto the drop zone to process them.');
 	console.log('Press Ctrl+C to stop.');

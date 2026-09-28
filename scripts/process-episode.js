@@ -20,7 +20,12 @@
  *   --include-reviewed       Also redo a reviewed episode's title, summary, guests and interview time
  *   --local                  Use the local D1 copy and R2 instead of production (no embeddings)
  *   --engine whisper.cpp|openai  How to transcribe (default whisper.cpp)
+ *   --no-gpu                 Run whisper.cpp on the CPU (slower; for when the GPU start-up hangs)
  *   --accept-short           Seed a transcript that stops early (e.g. a recording that was lost)
+ *
+ * whisper.cpp can hang for good while it starts the GPU on this Mac, so it
+ * first gets a one-second test run (a hang stops the run with a message), and
+ * the real run is stopped if it takes much longer than the recording should.
  *
  * An episode whose guests were reviewed by hand (guests_reviewed = 1) keeps its
  * title, summary, guests and interview time, even with --force, unless
@@ -84,6 +89,52 @@ const VAD_MODEL_PATH = path.join(os.homedir(), '.cache', 'whisper-cpp', 'ggml-si
 
 // The spelling-hint prompt is the Worker's (roe-pipeline/src/whisper-prompt.js):
 // the local one had grown past the ~224 tokens Whisper reads and lost the hosts' names.
+
+// whisper-cli can hang for good while it starts the GPU (Metal) on this Mac: 0% CPU,
+// no message (2026-09-26: a test run hung for an hour, and a new `whisper-cli
+// --version` then stopped at "ggml_metal_device_init"). Every whisper-cli run
+// starts the Metal device before it reads its options, even with -ng, so --no-gpu
+// also sets GGML_METAL_DEVICES=0, which leaves Metal out altogether.
+const WHISPER_TEST_LIMIT_MS = 60_000; // the one-second test run takes about 5 s (15 s on the CPU)
+// The real run's limit. The GPU does a show in about a quarter of its length on
+// this Mac, so 4x only stops a stuck run. On the CPU three 90-second stretches of
+// talk took 2.3-2.6x their length, and a fanless Mac slows down over hours, so 4x
+// would be too tight there: 8x. Plus a few minutes to load the model.
+const WHISPER_TIME_FACTOR = { gpu: 4, cpu: 8 };
+const WHISPER_LOAD_ALLOWANCE_MS = 5 * 60_000;
+
+function whisperOptions(noGpu) {
+	return {
+		gpuArgs: noGpu ? ['-ng'] : [],
+		env: noGpu ? { ...process.env, GGML_METAL_DEVICES: '0' } : process.env,
+	};
+}
+
+/**
+ * Run whisper-cli on one second of silence with the model (the GPU start-up, the
+ * model and one pass of it), under a hard time limit, before any real work.
+ * Returns what went wrong, or null.
+ */
+export function whisperStartProblem(noGpu = false) {
+	const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'roe-whisper-test-'));
+	const { gpuArgs, env } = whisperOptions(noGpu);
+	try {
+		const wavPath = path.join(tmpDir, 'silence.wav');
+		execFileSync('ffmpeg', ['-nostdin', '-y', '-f', 'lavfi', '-i', 'anullsrc=r=16000:cl=mono', '-t', '1', wavPath], { stdio: 'pipe' });
+		execFileSync('whisper-cli', [...gpuArgs, '-m', WHISPER_MODEL_PATH, '--language', 'en', '-nt', wavPath], {
+			encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], env, timeout: WHISPER_TEST_LIMIT_MS, killSignal: 'SIGKILL',
+		});
+		return null;
+	} catch (err) {
+		const last = `${err.stderr ?? ''}`.trim().split('\n').at(-1)?.trim();
+		if (err.code === 'ETIMEDOUT') {
+			return `whisper-cli did not finish a one-second test run in ${WHISPER_TEST_LIMIT_MS / 1000} s and was stopped${last ? ` (its last message: "${last}")` : ''}`;
+		}
+		return `whisper-cli failed a one-second test run: ${last || err.message}`;
+	} finally {
+		fs.rmSync(tmpDir, { recursive: true, force: true });
+	}
+}
 
 // ── Step 1: Prerequisite checks ────────────────────────────────────────
 
@@ -164,7 +215,7 @@ export function parseEpisodeId(filePath) {
 
 // ── Step 3: Transcribe ─────────────────────────────────────────────────
 
-async function transcribe(mp3Path, episodeId, force, engine) {
+async function transcribe(mp3Path, episodeId, force, engine, noGpu) {
 	const timer = stepTimer(`TRANSCRIBE (${engine})`);
 
 	if (!force && fs.existsSync(transcriptPath(episodeId))) {
@@ -177,7 +228,7 @@ async function transcribe(mp3Path, episodeId, force, engine) {
 	if (engine === 'openai') {
 		({ transcript, reasons } = await transcribeAndSave(mp3Path, episodeId));
 	} else {
-		({ transcript, reasons } = transcribeWithWhisperCpp(mp3Path, episodeId));
+		({ transcript, reasons } = transcribeWithWhisperCpp(mp3Path, episodeId, noGpu));
 	}
 
 	const m = transcript.meta;
@@ -187,8 +238,11 @@ async function transcribe(mp3Path, episodeId, force, engine) {
 }
 
 /** whisper.cpp on this machine, then the Worker's cleaning (roe-pipeline/src/clean-segments.js). */
-function transcribeWithWhisperCpp(mp3Path, episodeId) {
+function transcribeWithWhisperCpp(mp3Path, episodeId, noGpu) {
 	const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'roe-whisper-'));
+	const audioMs = probeDurationMs(mp3Path);
+	const { gpuArgs, env } = whisperOptions(noGpu);
+	const limitMs = WHISPER_LOAD_ALLOWANCE_MS + WHISPER_TIME_FACTOR[noGpu ? 'cpu' : 'gpu'] * audioMs;
 
 	try {
 		// Convert MP3 → WAV (16kHz mono)
@@ -200,24 +254,30 @@ function transcribeWithWhisperCpp(mp3Path, episodeId) {
 
 		// Run whisper.cpp
 		const whisperOutput = path.join(tmpDir, 'output');
-		console.log('  Running whisper.cpp (this will take a while)...');
-		execFileSync('whisper-cli', [
-			'-m', WHISPER_MODEL_PATH,
-			'--language', 'en',
-			'--output-json-full',
-			'--output-file', whisperOutput,
-			'--prompt', SF_VOCAB_PROMPT,
-			// Don't feed Whisper its own recent text: that's what makes it go quiet after
-			// a song or repeat a line (added 3/14, lost in the April refactor; of 78
-			// transcripts that stop early, 76 were made without it). Carrying the prompt
-			// into every window keeps the spelling hints working without that context.
-			'--max-context', '0',
-			'--carry-initial-prompt',
-			'--vad',
-			'--vad-model', VAD_MODEL_PATH,
-			'--suppress-nst',
-			wavPath,
-		], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'inherit'], timeout: 0, maxBuffer: 50 * 1024 * 1024 });
+		console.log(`  Running whisper.cpp${noGpu ? ' on the CPU' : ''} (this will take a while; stopped if still running after ${Math.round(limitMs / 60000)} min)...`);
+		try {
+			execFileSync('whisper-cli', [
+				...gpuArgs,
+				'-m', WHISPER_MODEL_PATH,
+				'--language', 'en',
+				'--output-json-full',
+				'--output-file', whisperOutput,
+				'--prompt', SF_VOCAB_PROMPT,
+				// Don't feed Whisper its own recent text: that's what makes it go quiet after
+				// a song or repeat a line (added 3/14, lost in the April refactor; of 78
+				// transcripts that stop early, 76 were made without it). Carrying the prompt
+				// into every window keeps the spelling hints working without that context.
+				'--max-context', '0',
+				'--carry-initial-prompt',
+				'--vad',
+				'--vad-model', VAD_MODEL_PATH,
+				'--suppress-nst',
+				wavPath,
+			], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'inherit'], env, timeout: limitMs, killSignal: 'SIGKILL', maxBuffer: 50 * 1024 * 1024 });
+		} catch (err) {
+			if (err.code !== 'ETIMEDOUT') throw err;
+			throw new Error(`whisper.cpp was still running after ${Math.round(limitMs / 60000)} min on a ${Math.round(audioMs / 60000)}-min recording, so it was stopped. It may be stuck: try again with ${noGpu ? '' : '--no-gpu or '}--engine openai.`);
+		}
 
 		// Parse whisper.cpp JSON
 		const whisperJsonPath = `${whisperOutput}.json`;
@@ -235,11 +295,11 @@ function transcribeWithWhisperCpp(mp3Path, episodeId) {
 		const transcript = buildTranscript({
 			episodeId,
 			segments,
-			audioMs: probeDurationMs(mp3Path),
+			audioMs,
 			audioFile: mp3Path,
 			engine: 'whisper.cpp',
 			model: path.basename(WHISPER_MODEL_PATH, '.bin'),
-			settings: { language: 'en', prompt_sha1: PROMPT_SHA1, max_context: 0, carry_initial_prompt: true, vad: true, suppress_nst: true },
+			settings: { language: 'en', prompt_sha1: PROMPT_SHA1, max_context: 0, carry_initial_prompt: true, vad: true, suppress_nst: true, gpu: !noGpu },
 			removedByCleaning: parsed.length - segments.length,
 		});
 		const reasons = writeTranscript(transcript, { oldVectorIds: old ? chunkEpisode(old).map((c) => c.id) : [] });
@@ -559,6 +619,8 @@ function usage(problem) {
 	console.error('  --local                  Use the local D1 copy and R2 (embeddings are skipped)');
 	console.error('  --engine whisper.cpp|openai  How to transcribe (default whisper.cpp; openai is the');
 	console.error('                           Cloudflare pipeline\'s code, about $0.72 for a two-hour show)');
+	console.error('  --no-gpu                 Run whisper.cpp on the CPU (about 2.5x the recording\'s length),');
+	console.error('                           for when its GPU start-up hangs');
 	console.error('  --accept-short           Seed a transcript that stops early or has holes at the end');
 	console.error('');
 	console.error(`Steps, in order: ${STEPS.join(', ')}`);
@@ -575,7 +637,7 @@ function parseSteps(flag, value) {
 }
 
 function parseArgs(args) {
-	const opts = { force: new Set(), skip: new Set(), episodeId: null, mp3Path: null, includeReviewed: false, local: false, engine: 'whisper.cpp', acceptShort: false };
+	const opts = { force: new Set(), skip: new Set(), episodeId: null, mp3Path: null, includeReviewed: false, local: false, engine: 'whisper.cpp', noGpu: false, acceptShort: false };
 
 	for (let i = 0; i < args.length; i++) {
 		const arg = args[i];
@@ -591,6 +653,8 @@ function parseArgs(args) {
 		} else if (arg === '--engine') {
 			opts.engine = args[++i];
 			if (!ENGINES.includes(opts.engine)) usage(`--engine is one of: ${ENGINES.join(', ')}`);
+		} else if (arg === '--no-gpu') {
+			opts.noGpu = true;
 		} else if (arg === '--accept-short') {
 			opts.acceptShort = true;
 		} else if (arg.startsWith('-')) {
@@ -637,16 +701,36 @@ async function main() {
 	if (skip.size > 0) console.log(`  Skipping:   ${[...skip].join(', ')}`);
 	if (includeReviewed) console.log('  Reviewed:   redo their title, summary, guests and interview time too');
 	if (opts.local) console.log('  Database:   local D1 copy');
-	if (!skip.has('transcribe')) console.log(`  Engine:     ${opts.engine}`);
+	if (!skip.has('transcribe')) console.log(`  Engine:     ${opts.engine}${opts.engine === 'whisper.cpp' && opts.noGpu ? ' (on the CPU: --no-gpu)' : ''}`);
 
 	const totalStart = Date.now();
 
 	// Step 1: Prerequisites (only for the tools the un-skipped steps need)
 	checkPrerequisites(skip, opts.engine);
 
+	// A whisper.cpp that hangs at start-up stops the run here, with a message
+	// (not needed when an existing transcript is kept)
+	const whisperRuns = !skip.has('transcribe') && opts.engine === 'whisper.cpp'
+		&& (force.has('transcribe') || !fs.existsSync(transcriptPath(episodeId)));
+	if (whisperRuns) {
+		const timer = stepTimer(`WHISPER TEST${opts.noGpu ? ' (CPU)' : ''}`);
+		const problem = whisperStartProblem(opts.noGpu);
+		if (problem) {
+			console.error(`\n${problem}.`);
+			if (opts.noGpu) {
+				console.error('Run this again with --engine openai (about $0.72 a show), or fix whisper.cpp first.');
+			} else {
+				console.error('whisper.cpp can hang while it starts the GPU on this Mac. Check that no whisper-cli is left running');
+				console.error('(pgrep -fl whisper-cli), then run this again with --no-gpu (on the CPU, slower) or --engine openai (about $0.72 a show).');
+			}
+			process.exit(1);
+		}
+		timer.done('whisper.cpp starts');
+	}
+
 	// Step 2: Transcribe
 	if (!skip.has('transcribe')) {
-		await transcribe(mp3Path, episodeId, force.has('transcribe'), opts.engine);
+		await transcribe(mp3Path, episodeId, force.has('transcribe'), opts.engine, opts.noGpu);
 	} else {
 		console.log('\n[TRANSCRIBE] Skipped');
 	}
