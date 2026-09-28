@@ -14,10 +14,11 @@ after(() => fs.rmSync(tmp, { recursive: true, force: true }));
 process.env.ROE_PERSIST_TO ??= tmp; // a test run: no keys from .env; backups go to <tmp>/transcripts/.backups
 const {
 	repairFinished, repairBusy, fromRepair, loadEpisodes, planEpisode, rewriteEpisode, summaryChanges, summaryUpdateSQL, restoreSQL,
-	writeSummaries, reviewedSummaries, reviewMarkdown, sideBySide,
+	writeSummaries, reviewedSummaries, reviewMarkdown, sideBySide, whisperOnGpu, transcriptPrint,
 } = await import('../rewrite-summaries.js');
 const { retry, OLLAMA_REPLY_TOKENS } = await import('../summary-engines.js');
 retry.ollamaWaitsMs = [0];
+retry.openaiWaitsMs = [0, 0, 0];
 
 const SCHEMA = fs.readFileSync(new URL('../../schema.sql', import.meta.url), 'utf-8');
 const A = 'roll-over-easy_2014-03-20_07-30-00'; // reviewed; its transcript redone (T published)
@@ -150,17 +151,27 @@ test('the summary-only write changes the summary column and nothing else, review
 	assert.equal(db.query(`SELECT summary FROM episodes WHERE id = '${A}'`)[0].summary, 'Written by hand.');
 });
 
-test('which summaries get written: only where D1 still has the old one, and the new one differs', () => {
-	const now = loadEpisodes(seeded(), [A, B, C]);
-	const { changes, leftAlone } = summaryChanges([
-		{ id: A, old_summary: OLD_A, new_summary: NEW_A },
+test('which summaries get written: only where D1 still has the old summary and the same transcript', () => {
+	const db = seeded();
+	const now = loadEpisodes(db, [A, B, C, D]);
+	const printOf = (id) => transcriptPrint(db.query(`SELECT start_ms, end_ms, text FROM transcript_segments WHERE episode_id = '${id}' ORDER BY start_ms, id`));
+	assert.deepEqual(printOf(A), { lines: 300, chars: now.get(A).chars, last_end_ms: 299 * 20_000 + 19_000 });
+	const { changes, leftAlone, already } = summaryChanges([
+		{ id: A, old_summary: OLD_A, new_summary: NEW_A, transcript: printOf(A) },
 		{ id: B, old_summary: 'What it said last week', new_summary: NEW_B },
 		{ id: C, old_summary: null, new_summary: 'A quiet one.' },
+		{ id: D, old_summary: 'A wet one.', new_summary: 'A wet one, redone.', transcript: { ...printOf(D), lines: 9 } }, // made from an older transcript
 		{ id: G, old_summary: 'x', new_summary: 'y' },
 	], now);
 	assert.deepEqual(changes, [{ id: A, old_summary: OLD_A, new_summary: NEW_A }, { id: C, old_summary: null, new_summary: 'A quiet one.' }]);
-	assert.deepEqual(leftAlone, [{ id: B, why: 'its summary changed after the new one was made' }, { id: G, why: 'not in the database' }]);
-	assert.deepEqual(summaryChanges([{ id: A, old_summary: OLD_A, new_summary: OLD_A }], now), { changes: [], leftAlone: [] });
+	assert.deepEqual(leftAlone, [
+		{ id: B, why: 'its summary changed after the new one was made' },
+		{ id: D, why: 'its transcript changed after the new summary was made from it' },
+		{ id: G, why: 'not in the database' },
+	]);
+	assert.deepEqual(already, []);
+	// Written before (an --apply run twice): already there, not "changed"
+	assert.deepEqual(summaryChanges([{ id: A, old_summary: 'what it was', new_summary: OLD_A }], now), { changes: [], leftAlone: [], already: [A] });
 });
 
 test('writing: the old summaries backed up first, one import, checked; restore.sql puts them back exactly', () => {
@@ -192,18 +203,36 @@ test('writing: the old summaries backed up first, one import, checked; restore.s
 		{ id: B, old_summary: OLD_B, new_summary: NEW_B },
 		{ id: C, old_summary: null, new_summary: 'A quiet one.' },
 	]));
-	assert.ok(restore.includes(`UPDATE episodes SET summary = NULL WHERE id = '${C}';`));
-	assert.ok(restore.includes(`UPDATE episodes SET summary = 'It''s a rainy morning; Cole from SketchFest -- joined.' WHERE id = '${B}';`));
+	assert.ok(restore.includes(`UPDATE episodes SET summary = NULL WHERE id = '${C}' AND summary IS 'A quiet one.';`));
+	assert.ok(restore.includes(`UPDATE episodes SET summary = 'It''s a rainy morning; Cole from SketchFest -- joined.' WHERE id = '${B}' AND summary IS 'A rainy morning.\nCole from SketchFest joined the show.';`));
 	// Written: only the summaries differ
 	const written = everything(db);
 	assert.deepEqual(withoutSummary(written.episodes), withoutSummary(before.episodes));
 	assert.deepEqual(written.guests, before.guests);
-	// And put back
+	// Written twice: the second time finds them there and backs nothing up
+	const again = writeSummaries(db, [{ id: A, old_summary: OLD_A, new_summary: NEW_A }]);
+	assert.deepEqual(again, { dir: null, written: [], leftAlone: [], already: [A], problems: [] });
+	// Put back, except a summary changed since (it stays)
+	db.sqlite.exec(`UPDATE episodes SET summary = 'Fixed by hand.' WHERE id = '${B}'`);
 	db.importSQL(restore);
-	assert.deepEqual(everything(db), before);
-	// Written twice: the second time finds nothing to do and backs nothing up
-	const again = writeSummaries(db, [{ id: A, old_summary: OLD_A, new_summary: OLD_A }]);
-	assert.deepEqual(again, { dir: null, written: [], leftAlone: [], problems: [] });
+	const restored = everything(db);
+	assert.deepEqual(restored.episodes.map((e) => e.summary), [D, A, B, C].sort().map((id) => ({ [A]: OLD_A, [B]: 'Fixed by hand.', [C]: null, [D]: 'A wet one.' })[id]));
+	assert.deepEqual(withoutSummary(restored.episodes), withoutSummary(before.episodes));
+	assert.deepEqual(restored.guests, before.guests);
+});
+
+test('an import that reports an error is checked all the same: D1 may have taken it', () => {
+	const db = seeded();
+	const flaky = { ...db, importSQL(sql) { db.importSQL(sql); throw new Error('fetch failed (the reply was lost)\nmore'); } };
+	const result = writeSummaries(flaky, [{ id: A, old_summary: OLD_A, new_summary: NEW_A }]);
+	assert.deepEqual(result.written, [A]);
+	assert.deepEqual(result.problems, ['the import reported an error (fetch failed (the reply was lost)); what D1 holds now is checked below']);
+	const lost = { ...db, importSQL() { throw new Error('D1 is down'); } };
+	const none = writeSummaries(lost, [{ id: B, old_summary: OLD_B, new_summary: NEW_B }]);
+	assert.deepEqual(none.written, []);
+	assert.equal(none.problems.length, 2);
+	assert.match(none.problems[1], /summary isn't the new one/);
+	assert.ok(fs.existsSync(path.join(none.dir, 'restore.sql'))); // the backup came first
 });
 
 test('the plan: too thin to summarize, too long for a local model\'s context, and what OpenAI would cost', () => {
@@ -253,24 +282,40 @@ test('one episode: a thin transcript keeps its summary; Ollama gets the transcri
 	assert.deepEqual(kept, [...kept].sort((x, y) => Number(x.match(/\d+/)[0]) - Number(y.match(/\d+/)[0])));
 	assert.deepEqual({ ...record, notes: undefined, old_notes: undefined }, {
 		id: A, date: '2014-03-20', title: 'Spring has Sprung with Brett Walker!', reviewed: true, guests: ['Anna Lee', 'Brett Walker'],
-		repair: 'T published', line_count: 300, old_summary: OLD_A, status: 'rewritten', new_summary: NEW_A, notes: undefined, old_notes: undefined,
-		left_out_lines: record.left_out_lines, prompt_tokens: 2500, reply_tokens: 60, seconds: 42, usd: 0,
+		repair: 'T published', line_count: 300, transcript: transcriptPrint(lines(A)), old_summary: OLD_A, status: 'rewritten', new_summary: NEW_A,
+		notes: undefined, old_notes: undefined, left_out_lines: record.left_out_lines, prompt_tokens: 2500, reply_tokens: 60, seconds: 42, usd: 0,
 	});
 	assert.deepEqual(record.notes, []);
 	assert.deepEqual(record.old_notes, ['weather the transcript doesn\'t mention: "sunny"', 'a temperature the transcript doesn\'t give: 65 degrees']);
 
-	// Ollama not running: the episode fails, and says the run should stop
+	// Ollama not running, or no answer in the time limit (asked twice): the episode fails, and the run should stop
 	const down = async () => { throw Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:11434'), { code: 'ECONNREFUSED' }); };
 	const failed = await rewriteEpisode(eps.get(A), lines(A), { engine: 'ollama', request: down, fetchImpl: sunrise });
 	assert.deepEqual([failed.status, failed.stopRun], ['failed', true]);
 	assert.match(failed.error, /Ollama isn't answering/);
+	const hang = (url, init) => new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(new Error('aborted'))));
+	const slow = await rewriteEpisode(eps.get(A), lines(A), { engine: 'ollama', request: hang, fetchImpl: sunrise, timeoutMs: 20, log: () => {} });
+	assert.deepEqual([slow.status, slow.stopRun], ['failed', true]);
+	assert.match(slow.error, /gave no answer within 20 ms/);
+
+	// OpenAI: every answer counts toward the cost, one refused (cut off) included
+	const answers = [{ content: '{"summary": "A fo', finish: 'length' }, { content: JSON.stringify({ summary: NEW_A }), finish: 'stop' }];
+	const openai = async (url, init) => {
+		if (url.includes('sunrise-sunset')) return sunrise();
+		const a = answers.shift();
+		return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: a.content }, finish_reason: a.finish }], usage: { prompt_tokens: 10_000, completion_tokens: 100 } }) };
+	};
+	const paid = await rewriteEpisode(eps.get(A), lines(A), { engine: 'openai', apiKey: 'test-key', fetchImpl: openai, log: () => {} });
+	assert.equal(paid.status, 'rewritten');
+	assert.equal(paid.usd.toFixed(6), (2 * (10_000 * 0.15e-6 + 100 * 0.6e-6)).toFixed(6));
+	assert.equal(paid.left_out_lines, 0); // GPT-4o-mini gets the whole transcript
 });
 
 test('--apply: the file\'s new summaries (trimmed), not those failed, kept, emptied or the repair is working on', () => {
 	const review = {
 		engine: 'ollama', model: 'qwen3:30b', database: 'production',
 		episodes: [
-			{ id: A, status: 'rewritten', old_summary: OLD_A, new_summary: `  ${NEW_A}\n` },
+			{ id: A, status: 'rewritten', old_summary: OLD_A, new_summary: `  ${NEW_A}\n`, transcript: { lines: 300, chars: 22_000, last_end_ms: 5_999_000 } },
 			{ id: B, status: 'rewritten', old_summary: OLD_B, new_summary: '' },
 			{ id: C, status: 'kept', old_summary: null },
 			{ id: D, status: 'failed', old_summary: 'A wet one.', error: 'timeout' },
@@ -278,11 +323,25 @@ test('--apply: the file\'s new summaries (trimmed), not those failed, kept, empt
 		],
 	};
 	const { wanted, skipped } = reviewedSummaries(review, repairBusy(PROGRESS));
-	assert.deepEqual(wanted, [{ id: A, old_summary: OLD_A, new_summary: NEW_A }]);
+	assert.deepEqual(wanted, [{ id: A, old_summary: OLD_A, new_summary: NEW_A, transcript: { lines: 300, chars: 22_000, last_end_ms: 5_999_000 } }]);
 	assert.deepEqual(skipped, [
 		{ id: B, why: 'no new summary in the file' },
 		{ id: 'roll-over-easy_2016-03-03_07-30-00', why: 'the repair is working on it (publishing)' },
 	]);
+});
+
+test('a local model waits for whisper.cpp on the GPU (the repair\'s), not for one on the CPU', () => {
+	const ps = [
+		'  101 /sbin/launchd',
+		'27735 whisper-cli -m /Users/x/.cache/whisper-cpp/ggml-large-v3-turbo.bin --language en --output-json-full -f /tmp/a.wav',
+		'27800 /opt/homebrew/bin/whisper-cli -ng -m /Users/x/.cache/whisper-cpp/ggml-large-v3.bin -f /tmp/b.wav',
+		'27900 /opt/homebrew/bin/whisper-cli -m /Users/x/.cache/whisper-cpp/ggml-large-v3.bin -f /tmp/c.wav',
+		'24485 /bin/zsh -c pgrep -fl whisper-cli',
+		'24500 node scripts/repair-archive.js --worklist repair-worklist.csv',
+		'',
+	].join('\n');
+	assert.deepEqual(whisperOnGpu(ps), [27735, 27900]);
+	assert.deepEqual(whisperOnGpu(''), []);
 });
 
 test('the review: each summary before and after, what to check, and how to write them', () => {
@@ -299,6 +358,10 @@ test('the review: each summary before and after, what to check, and how to write
 	assert.match(md, /node scripts\/rewrite-summaries\.js --apply ".*x\.json" --yes/);
 	assert.match(md, /## 2014-03-20: Spring has Sprung with Brett Walker!\n\n`roll-over-easy_2014-03-20_07-30-00` · reviewed · guests: Brett Walker · repair: T published · 300 lines · 25,000 tokens in · 3\.1 min\n\n\*\*Before\*\*\n\nIt was a sunny 65 degree morning\. Brett Walker joined the show\.\n\n- Check: a temperature the transcript doesn't give: 65 degrees\n\n\*\*After\*\*\n\nA foggy morning/);
 	assert.match(md, /\*\*Kept as it is:\*\* the transcript is too thin to summarize \(10 lines\)\.\n\nA wet one\.\n$/);
+	// Once written, it says when and where the old ones went, and no longer how to write them
+	const writtenMd = reviewMarkdown({ ...review, writes: [{ at: '2026-09-28T21:00:00.000Z', backup: '/backups/2026-09-28-summaries', ids: [A] }] }, 'x.json');
+	assert.match(writtenMd, /Written .*: 1 summary\. The old ones: \/backups\/2026-09-28-summaries \(its restore\.sql puts them back\)\./);
+	assert.doesNotMatch(writtenMd, /Nothing has been written|--apply/);
 	// Two 24-character columns in 40, the divider all the way down
 	assert.deepEqual(sideBySide('one two three four five six', 'uno dos', 40), [`${'one two three four five'.padEnd(24)} | uno dos`, `${'six'.padEnd(24)} |`]);
 });

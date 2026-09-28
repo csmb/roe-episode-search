@@ -218,13 +218,15 @@ episode's guests given for their spelling; both engines get the same one. `--eng
 only within `--max-cost` (default $0: it stops after the plan); a dry run spends it too.
 `--engine ollama` (default model `qwen3:30b`, free) needs the Ollama app or `ollama serve`; its
 context is 32,768 tokens (`--num-ctx`), and a transcript too long for it leaves out its shortest
-lines; thinking is off unless `--think`. Ollama is called over `node:http`: `fetch` gives up after
+lines; thinking is off unless `--think`; it won't start while a whisper-cli without `-ng` is running
+(the repair's, on the GPU). Ollama is called over `node:http`: `fetch` gives up after
 300 s without response headers, and Ollama sends none until its whole answer is ready. The dry run
 saves `transcripts/.summaries/<time>-<engine>-<model>.json` and `.md` with notes on what to check
 (weather, temperatures or names the transcript lacks, a host called a guest). Writing backs up to
 `transcripts/.backups/<date>-summaries/` (`restore.sql`), then one import that changes a summary
-only where it is still the one the new one was made against, then checks. Details: README, "New
-summaries for repaired episodes".
+only where it is still the one the new one was made against and the transcript (its lines,
+characters and end) the one it was made from, then checks. Details: README, "New summaries for
+repaired episodes".
 
 ### Rebuild or check the search index (Vectorize)
 ```

@@ -14,7 +14,8 @@
  *                     within --max-cost (default $0: it shows the plan and stops)
  *   --engine ollama   a local model through Ollama, free (--model, default
  *                     qwen3:30b); a transcript too long for its context leaves
- *                     out its shortest lines
+ *                     out its shortest lines. It won't start while whisper.cpp
+ *                     is transcribing on the GPU (the repair's runs).
  * A transcript too thin to summarize (the Worker's rule) keeps its summary.
  *
  * Without --yes nothing is written: each episode's old and new summary are
@@ -27,7 +28,8 @@
  * Writing: a backup of the summaries there now in transcripts/.backups/<date>-
  * summaries/ (summaries.json, restore.sql, README.txt); one D1 import that sets
  * only `summary`, and only where it is still the one the new one was made
- * against (a summary changed meanwhile is left alone); then a check that the
+ * against and the transcript still the one it was made from (an episode whose
+ * summary or transcript changed meanwhile is left alone); then a check that the
  * new summaries are in and nothing else about the episodes changed.
  *
  * An episode the repair is still working on (transcripts/.repair/progress.json)
@@ -39,6 +41,7 @@
  *   node scripts/rewrite-summaries.js --apply <file.json> [--yes] [--local]
  */
 
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -160,6 +163,20 @@ export function loadEpisodes(db, ids) {
 
 const linesSQL = (id) => `SELECT start_ms, end_ms, text FROM transcript_segments WHERE episode_id = ${sqlText(id)} ORDER BY start_ms, id`;
 
+/**
+ * What tells a transcript from another: its lines, characters (code points, as SQLite's
+ * LENGTH counts them) and last end, the figures loadEpisodes has for what D1 holds now.
+ */
+export function transcriptPrint(lines) {
+	return {
+		lines: lines.length,
+		chars: lines.reduce((n, l) => n + [...l.text].length, 0),
+		last_end_ms: lines.reduce((max, l) => Math.max(max, l.end_ms), 0),
+	};
+}
+
+const sameTranscript = (ep, print) => ep.line_count === print.lines && ep.chars === print.chars && ep.last_end_ms === print.last_end_ms;
+
 // ── The plan ──────────────────────────────────────────────────────────
 
 /**
@@ -218,24 +235,27 @@ function reviewRecord(ep) {
 
 /**
  * Ask the engine for one episode's new summary. An episode's own failure comes back
- * as status 'failed' (with stopRun when no other episode could get past it either:
- * Ollama not running, a bad key, no such model).
+ * as status 'failed' (with stopRun when the next episode would fail the same way:
+ * Ollama not running or not answering in time, a bad key, no such model). `usd` is
+ * what every OpenAI answer cost, those refused included.
  * @param {object} ep - from loadEpisodes (with .repair when known)
  * @param {Array<{start_ms: number, end_ms: number, text: string}>} lines - the transcript in D1
  * @param {{engine: 'openai'|'ollama', apiKey?, model?, numCtx?, think?, ollamaUrl?, fetchImpl?, request?, timeoutMs?, log?}} opts
  */
 export async function rewriteEpisode(ep, lines, { engine, apiKey, model, numCtx, think = false, ollamaUrl, fetchImpl = fetch, request = httpRequest, timeoutMs, log = console.warn }) {
-	const record = { ...reviewRecord(ep), line_count: lines.length };
+	// The transcript the summary is made from: a later write checks D1 still has it
+	const record = { ...reviewRecord(ep), line_count: lines.length, transcript: transcriptPrint(lines) };
 	if (isThinTranscript(lines, ep.duration_ms)) {
 		return { ...record, status: 'kept', reason: `the transcript is too thin to summarize (${plural(lines.length, 'line')})` };
 	}
+	const meter = { usd: 0 };
 	try {
 		const sun = await sunTimes(parseEpisodeDate(ep.id), { fetchImpl });
 		const full = lines.map((l) => l.text).join('\n');
 		const fit = engine === 'ollama' ? fitTranscript(lines, transcriptBudget(ep, sun, { numCtx, think })) : { text: full, leftOut: 0 };
 		const messages = summaryMessages(ep, fit.text, sun);
 		const ask = engine === 'openai'
-			? () => askOpenAI(messages, { apiKey, fetchImpl, ...(timeoutMs ? { timeoutMs } : {}) })
+			? () => askOpenAI(messages, { apiKey, fetchImpl, meter, ...(timeoutMs ? { timeoutMs } : {}) })
 			: () => askOllama(messages, { url: ollamaUrl, model, numCtx, think, request, ...(timeoutMs ? { timeoutMs } : {}) });
 		const answer = await withRetries(ask, engine === 'openai' ? retry.openaiWaitsMs : retry.ollamaWaitsMs, log);
 		const context = messages[0].content;
@@ -250,10 +270,12 @@ export async function rewriteEpisode(ep, lines, { engine, apiKey, model, numCtx,
 			reply_tokens: answer.replyTokens,
 			...(answer.thinkingChars ? { thinking_chars: answer.thinkingChars } : {}),
 			...(answer.seconds != null ? { seconds: answer.seconds } : {}),
-			usd: answer.usd,
+			usd: meter.usd,
 		};
 	} catch (err) {
-		return { ...record, status: 'failed', error: err.message.split('\n')[0], ...(err.stopRun ? { stopRun: true } : {}) };
+		// A local model that gave no answer in the time limit (asked twice) won't for the next show either
+		const stopRun = err.stopRun || (engine === 'ollama' && err.name === 'TimeoutError');
+		return { ...record, status: 'failed', error: err.message.split('\n')[0], usd: meter.usd, ...(stopRun ? { stopRun: true } : {}) };
 	}
 }
 
@@ -327,9 +349,10 @@ export function reviewMarkdown(review, jsonFile) {
 		`Made ${when(review.made_at)} from the transcripts in ${review.database === 'local' ? 'the local D1 copy' : 'production D1'} (${review.picked}). ${plural(review.episodes.length, 'episode')}: ${n('rewritten')} rewritten, ${n('kept')} kept as they are, ${n('failed')} failed${review.engine === 'openai' ? `; OpenAI ${dollars(usd)}` : ''}.`,
 		'',
 	];
-	if (review.written) {
-		out.push(`Written ${when(review.written.at)}: ${plural(review.written.ids.length, 'summary', 'summaries')}. The old ones: ${rel(review.written.backup)}.`);
-	} else {
+	for (const w of review.writes ?? []) {
+		out.push(`Written ${when(w.at)}: ${plural(w.ids.length, 'summary', 'summaries')}. The old ones: ${rel(w.backup)} (its restore.sql puts them back).`);
+	}
+	if (!review.writes?.length) {
 		out.push(`Nothing has been written. To write the new summaries as they are in ${path.basename(jsonFile)} (edit them there first if you like):`, '', '```',
 			`node scripts/rewrite-summaries.js --apply "${rel(jsonFile)}"${review.database === 'local' ? ' --local' : ''} --yes`, '```');
 	}
@@ -354,36 +377,45 @@ function saveReview(review, jsonFile) {
 
 /**
  * Which new summaries to write, against the rows D1 has now: only where the summary is
- * still the one the new one was made against (`old_summary`), and differs from it.
- * @param {Array<{id: string, old_summary: string|null, new_summary: string}>} wanted
+ * still the one the new one was made against (`old_summary`), and the transcript still
+ * the one it was made from (`transcript`, when known: the repair may have redone it).
+ * @param {Array<{id: string, old_summary: string|null, new_summary: string, transcript?: object}>} wanted
  * @param {Map<string, object>} now - loadEpisodes
+ * @returns {{changes: object[], leftAlone: {id: string, why: string}[], already: string[]}} already: D1 has the new summary
  */
 export function summaryChanges(wanted, now) {
 	const changes = [];
 	const leftAlone = [];
+	const already = [];
 	for (const w of wanted) {
 		const ep = now.get(w.id);
 		if (!ep) leftAlone.push({ id: w.id, why: 'not in the database' });
+		else if (ep.summary === w.new_summary) already.push(w.id);
 		else if ((ep.summary ?? null) !== (w.old_summary ?? null)) leftAlone.push({ id: w.id, why: 'its summary changed after the new one was made' });
-		else if (ep.summary !== w.new_summary) changes.push({ id: w.id, old_summary: ep.summary ?? null, new_summary: w.new_summary });
+		else if (w.transcript && !sameTranscript(ep, w.transcript)) leftAlone.push({ id: w.id, why: 'its transcript changed after the new summary was made from it' });
+		else changes.push({ id: w.id, old_summary: ep.summary ?? null, new_summary: w.new_summary });
 	}
-	return { changes, leftAlone };
+	return { changes, leftAlone, already };
 }
 
 /**
  * The one D1 import that writes new summaries: the summary column only, and each one
- * only where the summary is still the old one (so a summary changed meanwhile, in the
- * admin page or by another run, is left alone).
+ * only where the summary is still the old one (so a summary changed meanwhile, by hand
+ * or by another run, is left alone).
  */
 export function summaryUpdateSQL(changes) {
 	return changes.map((c) => `UPDATE episodes SET summary = ${sqlText(c.new_summary)} WHERE id = ${sqlText(c.id)} AND summary IS ${sqlText(c.old_summary)};`).join('\n') + '\n';
 }
 
-/** SQL that puts the old summaries back (the summary column only). */
+/**
+ * SQL that puts the old summaries back (the summary column only), each where the summary
+ * is still the one written: one changed since, or never written, is left as it is.
+ */
 export function restoreSQL(changes) {
 	return [
-		'-- Puts back the summaries rewrite-summaries.js replaced. It changed nothing but the summary column.',
-		...changes.map((c) => `UPDATE episodes SET summary = ${sqlText(c.old_summary)} WHERE id = ${sqlText(c.id)};`),
+		'-- Puts back the summaries rewrite-summaries.js replaced (it changed nothing but the summary column),',
+		'-- each only where the summary is still the one it wrote.',
+		...changes.map((c) => `UPDATE episodes SET summary = ${sqlText(c.old_summary)} WHERE id = ${sqlText(c.id)} AND summary IS ${sqlText(c.new_summary)};`),
 	].join('\n') + '\n';
 }
 
@@ -404,7 +436,8 @@ export function backupSummaries(changes, { database = 'production', source = '' 
 		...(source ? [`The new ones came from ${source}.`] : []),
 		'',
 		`  summaries.json  each episode's summary before (summary) and the one written (new_summary): ${changes.length}`,
-		'  restore.sql     puts the old summaries back (the summary column only; nothing else was changed)',
+		'  restore.sql     puts the old summaries back (the summary column only; nothing else was changed),',
+		'                  each where the summary is still the one written (one changed since stays)',
 		'',
 		'To put them back:',
 		'  cd roe-search',
@@ -440,16 +473,24 @@ export function checkWritten(changes, before, after) {
 
 /**
  * Write new summaries: read the episodes again, back up the summaries they have, one
- * import, then check. Returns { dir, written, leftAlone, problems } (dir: the backup).
+ * import, then check what D1 has, even when the import reported an error (it may have
+ * applied all the same). Returns { dir, written, leftAlone, already, problems } (dir: the backup).
  */
 export function writeSummaries(db, wanted, { database = 'production', source = '' } = {}) {
 	const before = loadEpisodes(db, wanted.map((w) => w.id));
-	const { changes, leftAlone } = summaryChanges(wanted, before);
-	if (changes.length === 0) return { dir: null, written: [], leftAlone, problems: [] };
+	const { changes, leftAlone, already } = summaryChanges(wanted, before);
+	if (changes.length === 0) return { dir: null, written: [], leftAlone, already, problems: [] };
 	const dir = backupSummaries(changes, { database, source });
-	db.importSQL(summaryUpdateSQL(changes));
+	let importError = null;
+	try {
+		db.importSQL(summaryUpdateSQL(changes));
+	} catch (err) {
+		importError = err;
+	}
 	const after = loadEpisodes(db, changes.map((c) => c.id));
-	return { dir, leftAlone, ...checkWritten(changes, before, after) };
+	const { written, problems } = checkWritten(changes, before, after);
+	if (importError) problems.unshift(`the import reported an error (${importError.message.split('\n')[0]}); what D1 holds now is checked below`);
+	return { dir, written, leftAlone, already, problems };
 }
 
 function reportWrite(result) {
@@ -457,10 +498,18 @@ function reportWrite(result) {
 		console.log(`[${stamp()}] Backed up the old summaries to ${rel(result.dir)} (restore.sql puts them back)`);
 		console.log(`[${stamp()}] Wrote ${plural(result.written.length, 'new summary', 'new summaries')}${result.problems.length ? '' : '; checked: the new summaries are in, and titles, guests, reviewed flags and interview times are unchanged'}`);
 	} else {
-		console.log(`[${stamp()}] Nothing to write: D1 already has these summaries, or its summaries changed after the new ones were made`);
+		console.log(`[${stamp()}] Nothing to write`);
 	}
+	if (result.already.length > 0) console.log(`  ${plural(result.already.length, 'episode')} already had the new summary`);
 	for (const l of result.leftAlone) console.log(`  left alone: ${l.id}: ${l.why}`);
 	for (const p of result.problems) console.log(`  PROBLEM: ${p}`);
+}
+
+/** Note a write in the review file (and its .md), so it says what was written and where the old ones went. */
+function noteWrite(review, jsonFile, result) {
+	if (!result.dir) return;
+	review.writes = [...(review.writes ?? []), { at: new Date().toISOString(), backup: result.dir, ids: result.written }];
+	saveReview(review, jsonFile);
 }
 
 // ── --apply ───────────────────────────────────────────────────────────
@@ -474,7 +523,7 @@ export function reviewedSummaries(review, busy = new Map()) {
 		const text = typeof e.new_summary === 'string' ? e.new_summary.trim() : '';
 		if (!text) skipped.push({ id: e.id, why: 'no new summary in the file' });
 		else if (busy.has(e.id)) skipped.push({ id: e.id, why: `the repair is working on it (${busy.get(e.id)})` });
-		else wanted.push({ id: e.id, old_summary: e.old_summary ?? null, new_summary: text });
+		else wanted.push({ id: e.id, old_summary: e.old_summary ?? null, new_summary: text, ...(e.transcript ? { transcript: e.transcript } : {}) });
 	}
 	return { wanted, skipped };
 }
@@ -488,7 +537,8 @@ function applyReview(file, db, { yes, database, busy }) {
 	for (const s of skipped) console.log(`  left out: ${s.id}: ${s.why}`);
 	const where = database === 'local' ? 'the local D1 copy' : 'production D1';
 	if (!yes) {
-		const { changes, leftAlone } = summaryChanges(wanted, loadEpisodes(db, wanted.map((w) => w.id)));
+		const { changes, leftAlone, already } = summaryChanges(wanted, loadEpisodes(db, wanted.map((w) => w.id)));
+		if (already.length > 0) console.log(`  ${plural(already.length, 'episode')} already had the new summary`);
 		for (const l of leftAlone) console.log(`  left alone: ${l.id}: ${l.why}`);
 		console.log(`[${stamp()}] ${rel(file)} (${review.engine} ${review.model}): ${plural(changes.length, 'new summary', 'new summaries')} to write to ${where}. Nothing was written: add --yes to write ${changes.length === 1 ? 'it' : 'them'} (the old ones are backed up first).`);
 		return 0;
@@ -496,7 +546,27 @@ function applyReview(file, db, { yes, database, busy }) {
 	console.log(`[${stamp()}] Writing the new summaries in ${rel(file)} (${review.engine} ${review.model}) to ${where}`);
 	const result = writeSummaries(db, wanted, { database, source: `${rel(file)} (${review.engine} ${review.model})` });
 	reportWrite(result);
+	noteWrite(review, file, result);
 	return result.problems.length > 0 ? 1 : 0;
+}
+
+// ── The GPU ───────────────────────────────────────────────────────────
+
+/**
+ * The whisper-cli processes on the GPU (not given -ng) in `ps -axo pid=,args=`
+ * output, by pid: the repair's transcriptions. A local model beside one would slow
+ * both, and could take the transcription past its time limit.
+ */
+export function whisperOnGpu(psOutput) {
+	return psOutput.split('\n').map((l) => l.trim().split(/\s+/)).filter(([, command = '', ...args]) => path.basename(command) === 'whisper-cli' && !args.includes('-ng')).map(([pid]) => Number(pid));
+}
+
+function runningWhisperOnGpu() {
+	try {
+		return whisperOnGpu(execFileSync('ps', ['-axo', 'pid=,args='], { encoding: 'utf-8', maxBuffer: 16 * 1024 * 1024 }));
+	} catch {
+		return [];
+	}
 }
 
 // ── CLI ───────────────────────────────────────────────────────────────
@@ -518,9 +588,14 @@ async function main() {
 	if (process.env.ROE_PERSIST_TO && !isLocal) stop('ROE_PERSIST_TO is set (a test run): add --local');
 	loadEnv();
 
+	// The repair's state, when it is for this database (a --local run on the developer's copy
+	// may find production's): what it has finished (--from-repair) and what it is working on
 	const progressFile = flags.progress ? path.resolve(flags.progress) : path.join(transcriptsDir, '.repair', 'progress.json');
-	const repair = readRepairState(progressFile);
-	if (repair?.database && repair.database !== database) quit(`${rel(progressFile)} is the repair's state on the ${repair.database} database, not the ${database} one`);
+	let repair = readRepairState(progressFile);
+	if (repair && (repair.database ?? 'production') !== database) {
+		if (flags['from-repair']) quit(`${rel(progressFile)} is the repair's state on the ${repair.database ?? 'production'} database, not the ${database} one`);
+		repair = null;
+	}
 	const busy = repairBusy(repair);
 	const db = wranglerDb({ isLocal });
 
@@ -585,13 +660,17 @@ async function main() {
 		apiKey = process.env.OPENAI_API_KEY;
 		if (!apiKey) quit('\nOPENAI_API_KEY is not set (add it to .env)');
 	} else {
+		const onThisMac = ['localhost', '127.0.0.1', '[::1]'].includes(new URL(ollamaUrl).hostname);
+		const whisper = onThisMac ? runningWhisperOnGpu() : [];
+		if (whisper.length > 0) quit(`\nwhisper.cpp is transcribing on the GPU (whisper-cli, pid ${whisper.join(', ')}; the repair?): a local model would share the GPU with it, slow both, and could take the transcription past its time limit. Run this when it has finished (pgrep -fl whisper-cli). Nothing was asked or written.`);
 		const models = await ollamaModels(ollamaUrl).catch((err) => quit(`\n${err.message}`));
 		if (!models.includes(model) && !models.includes(`${model}:latest`)) quit(`\nOllama doesn't have ${model} (it has: ${models.join(', ') || 'none'}): \`ollama pull ${model}\`, or --model <one of those>`);
 	}
 
 	// Ask, one episode at a time, keeping the review file up to date
 	const made = new Date();
-	const fileStamp = `${made.toISOString().slice(0, 10)}-${made.toTimeString().slice(0, 8).replace(/:/g, '')}`;
+	const fileStamp = [made.getFullYear(), made.getMonth() + 1, made.getDate()].map((n) => String(n).padStart(2, '0')).join('-')
+		+ `-${made.toTimeString().slice(0, 8).replace(/:/g, '')}`; // local time, like the backups' folders
 	const reviewFile = path.join(transcriptsDir, '.summaries', `${fileStamp}-${engine}-${model.replace(/[^\w.-]+/g, '-')}.json`);
 	const review = {
 		made_at: made.toISOString(),
@@ -643,7 +722,7 @@ async function main() {
 		return;
 	}
 	// The repair may have moved on during a long run: what it is working on now is left out
-	const { wanted, skipped } = reviewedSummaries(review, repairBusy(readRepairState(progressFile)));
+	const { wanted, skipped } = reviewedSummaries(review, repair ? repairBusy(readRepairState(progressFile)) : busy);
 	for (const s of skipped) console.log(`  left out: ${s.id}: ${s.why}`);
 	if (wanted.length === 0) {
 		console.log('\nNo new summaries to write.');
@@ -653,10 +732,7 @@ async function main() {
 	console.log(`\n[${stamp()}] Writing ${plural(wanted.length, 'new summary', 'new summaries')} to ${isLocal ? 'the local D1 copy' : 'production D1'}`);
 	const result = writeSummaries(db, wanted, { database, source: `${rel(reviewFile)} (${engine} ${model})` });
 	reportWrite(result);
-	if (result.dir) {
-		review.written = { at: new Date().toISOString(), backup: result.dir, ids: result.written };
-		saveReview(review, reviewFile);
-	}
+	noteWrite(review, reviewFile, result);
 	process.exitCode = stopped || result.problems.length > 0 ? 1 : 0;
 }
 

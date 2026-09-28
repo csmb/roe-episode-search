@@ -59,6 +59,24 @@ function showDate(episodeId) {
 }
 
 /**
+ * The Worker's summary instructions (roe-pipeline/src/summary.js, composeSummary), word
+ * for word. Copied, not shared: summary.js asks for a title and guests too, and it is the
+ * Worker's and process-episode's code. A test checks the copy still matches it.
+ */
+export const WORKER_SUMMARY_LINES = {
+	intro: 'You summarize transcripts from "Roll Over Easy," a live morning radio show on BFF.fm broadcast from the Ferry Building in San Francisco.',
+	format: [
+		'   Line 1: The weather/vibe that morning (if mentioned — fog, sun, rain, cold, etc.). If not mentioned, skip this line.',
+		'   Line 2: Who joined the show — name any guests who came on for a segment and briefly note who they are. The show is live on location, so random passersby sometimes hop on the mic for a few seconds to a few minutes — mention these folks too if they say something memorable or funny.',
+		'   Line 3-4: What stories and topics came up — San Francisco news, local culture, neighborhood happenings, food, music, etc.',
+		'   Keep a warm, San Francisco tone. Use 2-5 sentences total. Do not use bullet points or labels like "Weather:" — just weave it naturally.',
+	],
+	weather: 'Mention the weather and temperature only if the hosts talk about them in the transcript; never guess.',
+	sun: 'Also mention what time sunrise and sunset were that day.',
+	user: 'Summarize this Roll Over Easy episode transcript:',
+};
+
+/**
  * The chat messages for one episode's summary: the Worker's summary instructions,
  * asking for the summary only.
  * @param {{id: string, reviewed?: boolean, guests?: string[]}} episode - a reviewed
@@ -68,14 +86,12 @@ function showDate(episodeId) {
  * @param {{sunrise: string, sunset: string}|null} [sun]
  */
 export function summaryMessages(episode, transcriptText, sun = null) {
+	const w = WORKER_SUMMARY_LINES;
 	const system = [
-		'You summarize transcripts from "Roll Over Easy," a live morning radio show on BFF.fm broadcast from the Ferry Building in San Francisco.',
+		w.intro,
 		'',
 		'Respond with a JSON object with one field, "summary": a concise summary of the episode in this format:',
-		'   Line 1: The weather/vibe that morning (if mentioned — fog, sun, rain, cold, etc.). If not mentioned, skip this line.',
-		'   Line 2: Who joined the show — name any guests who came on for a segment and briefly note who they are. The show is live on location, so random passersby sometimes hop on the mic for a few seconds to a few minutes — mention these folks too if they say something memorable or funny.',
-		'   Line 3-4: What stories and topics came up — San Francisco news, local culture, neighborhood happenings, food, music, etc.',
-		'   Keep a warm, San Francisco tone. Use 2-5 sentences total. Do not use bullet points or labels like "Weather:" — just weave it naturally.',
+		...w.format,
 		'',
 		`These are the show's hosts, never its guests: ${HOST_NAMES.join(', ')}. Never say a host joined, visited or was a guest.`,
 		'Write only what the transcript says: never make up weather, temperatures, guests, places or events.',
@@ -88,10 +104,11 @@ export function summaryMessages(episode, transcriptText, sun = null) {
 		if (sun) system.push(`- Sunrise: ${sun.sunrise} PT`, `- Sunset: ${sun.sunset} PT`);
 		if (guests.length > 0) system.push(`- Guests, checked by hand (spell their names this way): ${guests.join(', ')}`);
 	}
-	system.push(`Mention the weather and temperature only if the hosts talk about them in the transcript; never guess.${sun ? ' Also mention what time sunrise and sunset were that day.' : ''}`);
+	// Only with the times to hand: the Worker asks for them even when the lookup failed
+	system.push(sun ? `${w.weather} ${w.sun}` : w.weather);
 	return [
 		{ role: 'system', content: system.join('\n') },
-		{ role: 'user', content: `Summarize this Roll Over Easy episode transcript:\n\n${transcriptText}` },
+		{ role: 'user', content: `${w.user}\n\n${transcriptText}` },
 	];
 }
 
@@ -229,9 +246,11 @@ function httpError(service, status, body, stopStatuses) {
 
 /**
  * Ask GPT-4o-mini for the summary, as the Worker asks it (summary.js).
+ * @param {{usd: number}} [meter] - adds what each answer cost, a refused one included
+ *   (a cut-off or unreadable reply is paid for too)
  * @returns {Promise<{summary: string, promptTokens: number, replyTokens: number, usd: number}>}
  */
-export async function askOpenAI(messages, { apiKey, fetchImpl = fetch, timeoutMs = TIMEOUT_MS.summary } = {}) {
+export async function askOpenAI(messages, { apiKey, fetchImpl = fetch, timeoutMs = TIMEOUT_MS.summary, meter = null } = {}) {
 	const data = await timed('OpenAI', timeoutMs, async (signal) => {
 		const res = await fetchImpl('https://api.openai.com/v1/chat/completions', {
 			method: 'POST',
@@ -248,16 +267,13 @@ export async function askOpenAI(messages, { apiKey, fetchImpl = fetch, timeoutMs
 		if (!res.ok) throw httpError('OpenAI API', res.status, await res.text(), [401, 403, 404]);
 		return res.json();
 	});
-	const choice = data.choices?.[0];
-	if (choice?.finish_reason === 'length') throw new Error('The summary reply was cut off');
 	const promptTokens = data.usage?.prompt_tokens ?? 0;
 	const replyTokens = data.usage?.completion_tokens ?? 0;
-	return {
-		summary: parseSummaryReply(choice?.message?.content),
-		promptTokens,
-		replyTokens,
-		usd: promptTokens * OPENAI_USD_PER_TOKEN.in + replyTokens * OPENAI_USD_PER_TOKEN.out,
-	};
+	const usd = promptTokens * OPENAI_USD_PER_TOKEN.in + replyTokens * OPENAI_USD_PER_TOKEN.out;
+	if (meter) meter.usd += usd;
+	const choice = data.choices?.[0];
+	if (choice?.finish_reason === 'length') throw new Error('The summary reply was cut off');
+	return { summary: parseSummaryReply(choice?.message?.content), promptTokens, replyTokens, usd };
 }
 
 /**
@@ -304,7 +320,9 @@ export async function askOllama(messages, { url = OLLAMA_URL, model, numCtx, thi
 		return res.json();
 	});
 	if (data.error) throw /exceeds the context length/i.test(data.error) ? tooLong(body.options.num_ctx, data.error) : new Error(`Ollama: ${data.error}`);
-	// A prompt that didn't fit loses its start (and the reply its room): refuse the answer
+	// A prompt that didn't fit loses its start (and the reply its room): refuse the answer.
+	// Only a fallback for an Ollama without truncate: prompt_eval_count leaves out tokens it
+	// had cached, so this can miss one (the estimate the transcript was fitted to errs high).
 	const used = (data.prompt_eval_count ?? 0) + (data.eval_count ?? 0);
 	if (used >= body.options.num_ctx) {
 		throw new PermanentError(`the prompt and reply took all of the model's ${body.options.num_ctx}-token context (${used}), so Ollama may have left part of the transcript out: use a larger --num-ctx`);
@@ -354,7 +372,11 @@ function pacificTime(iso) {
 	return new Date(iso).toLocaleTimeString('en-US', { timeZone: 'America/Los_Angeles', hour: 'numeric', minute: '2-digit' });
 }
 
-/** Sunrise and sunset at the Ferry Building on a YYYY-MM-DD date, Pacific time, as the Worker gets them (null if the lookup fails). */
+/**
+ * Sunrise and sunset at the Ferry Building on a YYYY-MM-DD date, Pacific time, as the
+ * Worker gets them (null if the lookup fails). lib.js's fetchSunriseSunset without a time
+ * limit could hold a run up, and it logs a failure to pipeline-errors.log.
+ */
 export async function sunTimes(dateStr, { fetchImpl = fetch, timeoutMs = TIMEOUT_MS.sunrise } = {}) {
 	if (!dateStr) return null;
 	try {

@@ -13,6 +13,7 @@ process.env.ROE_PERSIST_TO ??= tmp; // a test run: no keys from .env
 const {
 	summaryMessages, promptTokens, transcriptBudget, fitTranscript, parseSummaryReply, ollamaRequest, askOllama, askOpenAI,
 	ollamaModels, withRetries, sunTimes, summaryNotes, retry, CHARS_PER_TOKEN, OLLAMA_REPLY_TOKENS, OLLAMA_THINKING_TOKENS,
+	WORKER_SUMMARY_LINES,
 } = await import('../summary-engines.js');
 const { HOST_NAMES } = await import('../../roe-pipeline/src/hosts.js');
 retry.openaiWaitsMs = [0, 0, 0];
@@ -54,6 +55,17 @@ test('the prompt: the Worker\'s summary instructions, the hosts never guests, an
 	const [plain] = summaryMessages({ ...REVIEWED, reviewed: false }, 'x', null);
 	assert.doesNotMatch(plain.content, /Brett Walker|Sunrise|sunrise and sunset/);
 	assert.match(plain.content, /- Date: March 20, 2014\nMention the weather and temperature only if the hosts talk about them in the transcript; never guess\.$/);
+});
+
+test('the copied instructions are still the Worker\'s, word for word (a change to summary.js shows here)', () => {
+	const worker = fs.readFileSync(new URL('../../roe-pipeline/src/summary.js', import.meta.url), 'utf-8')
+		.replace(/\\u2014/g, '—').replace(/\\'/g, '\'');
+	const w = WORKER_SUMMARY_LINES;
+	for (const line of [w.intro, ...w.format, `${w.weather} ${w.sun}`, w.user]) {
+		assert.ok(worker.includes(line), `summary.js no longer has: ${line}`);
+	}
+	const [system] = summaryMessages(REVIEWED, 'x', SUN);
+	for (const line of [w.intro, ...w.format]) assert.ok(system.content.includes(line));
 });
 
 test('Ollama: the request asks for the whole JSON answer, with the context size set and thinking off', async () => {
@@ -170,6 +182,11 @@ test('OpenAI: GPT-4o-mini as the Worker asks it, its cost, and its refusals', as
 	const limited = stub({ status: 429, json: '{"error":{"message":"Rate limit"}}' }, openaiReply(JSON.stringify({ summary: SUMMARY })));
 	assert.equal((await withRetries(() => askOpenAI(messages, { apiKey: 'k', fetchImpl: limited }), retry.openaiWaitsMs, () => {})).summary, SUMMARY);
 	assert.equal(limited.calls.length, 2);
+	// A refused answer was paid for too: the meter counts every answer
+	const meter = { usd: 0 };
+	const cutThenFine = stub(openaiReply('{"summary": "A fo', 'length'), openaiReply('not JSON'), openaiReply(JSON.stringify({ summary: SUMMARY })));
+	await withRetries(() => askOpenAI(messages, { apiKey: 'k', fetchImpl: cutThenFine, meter }), retry.openaiWaitsMs, () => {});
+	assert.equal(meter.usd.toFixed(6), (3 * (26_000 * 0.15e-6 + 180 * 0.6e-6)).toFixed(6));
 });
 
 test('a transcript too long for the context loses its shortest lines first, the rest in order', () => {
