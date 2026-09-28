@@ -49,9 +49,10 @@ function getVectors(ids) {
 	return found.map(({ id, values, metadata }) => ({ id, values, metadata }));
 }
 
-function insert(table, row) {
+/** An INSERT (or `INSERT OR IGNORE`) that puts back one row exactly, every column as it was. */
+export function insertStatement(table, row, verb = 'INSERT') {
 	const cols = Object.keys(row);
-	return inlineParams(`INSERT INTO ${table} (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')});`, cols.map((c) => row[c]));
+	return inlineParams(`${verb} INTO ${table} (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')});`, cols.map((c) => row[c]));
 }
 
 /** SQL that puts the episode's rows back exactly, after removing whatever it has now. */
@@ -65,9 +66,9 @@ function restoreSQL(episodeId, rows) {
 		`DELETE FROM episode_guests WHERE episode_id = '${id}';`,
 		`DELETE FROM transcript_segments WHERE episode_id = '${id}';`,
 		`DELETE FROM episodes WHERE id = '${id}';`,
-		...rows.episodes.map((r) => insert('episodes', r)),
-		...rows.transcript_segments.map((r) => insert('transcript_segments', r)),
-		...rows.episode_guests.map((r) => insert('episode_guests', r)),
+		...rows.episodes.map((r) => insertStatement('episodes', r)),
+		...rows.transcript_segments.map((r) => insertStatement('transcript_segments', r)),
+		...rows.episode_guests.map((r) => insertStatement('episode_guests', r)),
 		'-- Place links find their place by name; a place deleted since then is not brought back.',
 	];
 	for (const mention of rows.place_mentions) {
@@ -80,13 +81,13 @@ function restoreSQL(episodeId, rows) {
 	return sql.join('\n') + '\n';
 }
 
-// transcripts/.backups/<date>-<episode-id>/, or …-2, …-3 when that is taken
-function newBackupDir(episodeId) {
+/** A new folder transcripts/.backups/<date>-<label>/ (…-2, …-3 when that is taken). */
+export function newBackupDir(label) {
 	const now = new Date();
 	const date = [now.getFullYear(), now.getMonth() + 1, now.getDate()].map((n) => String(n).padStart(2, '0')).join('-');
 	fs.mkdirSync(backupsDir, { recursive: true });
 	for (let n = 1; ; n++) {
-		const dir = path.join(backupsDir, `${date}-${episodeId}${n > 1 ? `-${n}` : ''}`);
+		const dir = path.join(backupsDir, `${date}-${label}${n > 1 ? `-${n}` : ''}`);
 		try {
 			fs.mkdirSync(dir);
 			return dir;

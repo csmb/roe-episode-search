@@ -2,34 +2,47 @@
 /**
  * cleanup-places.js
  *
- * Re-verifies existing D1 places and removes false positives.
+ * Re-verifies existing D1 places and removes false positives, in two runs.
  *
- * Phase 1: Stoplist check — flag places whose name is in the stoplist or ≤ 2 chars.
- * Phase 2: LLM verification — GPT-4o-mini decides KEEP or REMOVE for remaining places.
+ * 1. The dry run (no --apply) writes scripts/cleanup_report.json:
+ *    Phase 1: Stoplist check — flag places whose name is in the stoplist or ≤ 2 chars.
+ *    Phase 2: LLM verification — GPT-4o-mini decides KEEP or REMOVE for remaining places.
+ *    It changes nothing, and needs OPENAI_API_KEY (read from .env).
+ * 2. --apply deletes exactly the places listed in that report, with their
+ *    links and narratives: edit the report first to keep any of them. It asks
+ *    GPT nothing (so needs no key), refuses if any listed place was renamed or
+ *    removed since the report, and first backs up every row it deletes, with
+ *    undo SQL, in transcripts/.backups/<date>-cleanup-places/.
  *
  * Usage:
- *   OPENAI_API_KEY=... node scripts/cleanup-places.js [--apply]
- *
- *   Without --apply: generates scripts/cleanup_report.json (dry run).
- *   With --apply:    deletes flagged places from D1.
+ *   node scripts/cleanup-places.js [--local]            # dry run: writes the report
+ *   node scripts/cleanup-places.js --apply [--local]    # deletes what the report lists
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
 import https from 'node:https';
 import { fileURLToPath } from 'node:url';
-import { queryJSON, runSQL } from './lib.js';
+import { loadEnv, queryJSON, runSQL } from './lib.js';
+import { newBackupDir, insertStatement } from './episode-backup.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const TRANSCRIPTS_DIR = path.join(__dirname, '..', 'transcripts');
 const REPORT_PATH = path.join(__dirname, 'cleanup_report.json');
-const APPLY = process.argv.includes('--apply');
 
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-if (!OPENAI_API_KEY) {
-	console.error('OPENAI_API_KEY is required');
+const args = process.argv.slice(2);
+const unknown = args.filter((a) => a !== '--apply' && a !== '--local');
+if (unknown.length > 0) {
+	console.error(`Unknown option: ${unknown.join(' ')}\n`);
+	console.error('Usage: node scripts/cleanup-places.js [--apply] [--local]');
 	process.exit(1);
 }
+const APPLY = args.includes('--apply');
+const TARGET = { isLocal: args.includes('--local') };
+const DATABASE = TARGET.isLocal ? 'local' : 'production';
+
+loadEnv();
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -195,19 +208,24 @@ Use REMOVE if the name is a person's name, a generic common word, a company/bran
 }
 
 // ---------------------------------------------------------------------------
-// Main
+// Dry run: write the report
 // ---------------------------------------------------------------------------
 
-async function main() {
+async function writeReport() {
+	if (!OPENAI_API_KEY) {
+		console.error('OPENAI_API_KEY is required for the dry run (--apply needs none)');
+		process.exit(1);
+	}
+
 	// Step 1: Fetch all places with episode counts
-	console.log('Fetching places from D1...');
+	console.log(`Fetching places from the ${DATABASE} D1 database...`);
 	const places = queryJSON(`
 		SELECT p.id, p.name, COUNT(pm.episode_id) as ep_count
 		FROM places p
 		LEFT JOIN place_mentions pm ON pm.place_id = p.id
 		GROUP BY p.id
 		ORDER BY ep_count DESC
-	`);
+	`, TARGET);
 	console.log(`${places.length} places in D1`);
 
 	// Step 2: Phase 1 — Stoplist check
@@ -278,58 +296,129 @@ async function main() {
 	}
 	console.log('');
 
-	// Step 4: Write report
+	// Step 4: Write report (what --apply will delete)
 	const report = {
+		generated: new Date().toISOString(),
+		database: DATABASE,
 		toRemove,
 		total: toRemove.length,
 	};
 	fs.writeFileSync(REPORT_PATH, JSON.stringify(report, null, 2));
 	console.log(`\nReport written to ${REPORT_PATH}`);
 
-	if (!APPLY) {
-		// Dry run: print top 20 and instructions
-		console.log(`\nTop 20 places to remove:`);
-		for (const r of toRemove.slice(0, 20)) {
-			console.log(`  [${r.episodes} ep] ${r.name} — ${r.reason}`);
-		}
-		if (toRemove.length > 20) {
-			console.log(`  ... and ${toRemove.length - 20} more (see cleanup_report.json)`);
-		}
-		console.log(`\nTo apply deletions, re-run with --apply:`);
-		console.log(`  OPENAI_API_KEY=... node scripts/cleanup-places.js --apply`);
-		return;
+	// Print top 20 and instructions
+	console.log(`\nTop 20 places to remove:`);
+	for (const r of toRemove.slice(0, 20)) {
+		console.log(`  [${r.episodes} ep] ${r.name} — ${r.reason}`);
 	}
-
-	// Step 5: Apply deletions
-	if (toRemove.length === 0) {
-		console.log('Nothing to remove.');
-		return;
+	if (toRemove.length > 20) {
+		console.log(`  ... and ${toRemove.length - 20} more (see cleanup_report.json)`);
 	}
-
-	// ids come from D1 (integer PKs), but coerce defensively before splicing into SQL.
-	// Abort rather than silently drop a malformed id — a partial delete would
-	// leave orphaned place rows behind.
-	const ids = toRemove.map(r => Number(r.id));
-	if (!ids.every(n => Number.isInteger(n) && n > 0)) {
-		throw new Error('Refusing to delete: some place IDs are not positive integers');
-	}
-	const BATCH = 20;
-
-	for (const table of ['place_mentions', 'place_narratives', 'places']) {
-		const column = table === 'places' ? 'id' : 'place_id';
-		console.log(`\nDeleting from ${table} for ${ids.length} places...`);
-		for (let i = 0; i < ids.length; i += BATCH) {
-			const idList = ids.slice(i, i + BATCH).join(', ');
-			try {
-				runSQL(`DELETE FROM ${table} WHERE ${column} IN (${idList})`);
-			} catch (err) {
-				console.error(`  Delete ${table} error: ${err.message}`);
-			}
-			process.stdout.write(`\r  ${table} deleted: ${Math.min(i + BATCH, ids.length)}/${ids.length}`);
-		}
-		console.log('');
-	}
-	console.log('Done!');
+	console.log('\nCheck the report (delete any entry you want to keep), then delete exactly what it lists with:');
+	console.log(`  node scripts/cleanup-places.js --apply${TARGET.isLocal ? ' --local' : ''}`);
 }
 
-main().catch(err => { console.error('Fatal:', err); process.exit(1); });
+// ---------------------------------------------------------------------------
+// --apply: delete exactly what the report lists
+// ---------------------------------------------------------------------------
+
+const ID_BATCH = 20;
+
+function idBatches(ids) {
+	const batches = [];
+	for (let i = 0; i < ids.length; i += ID_BATCH) batches.push(ids.slice(i, i + ID_BATCH).join(', '));
+	return batches;
+}
+
+function applyReport() {
+	if (!fs.existsSync(REPORT_PATH)) throw new Error(`No report at ${REPORT_PATH}: run the dry run first`);
+	const report = JSON.parse(fs.readFileSync(REPORT_PATH, 'utf-8'));
+	if (!Array.isArray(report.toRemove)) throw new Error(`${REPORT_PATH} has no toRemove list`);
+	if (report.database && report.database !== DATABASE) {
+		throw new Error(`The report was made from the ${report.database} database, not the ${DATABASE} one`);
+	}
+
+	// ids come from D1 (integer PKs), but check them before splicing into SQL
+	const names = new Map();
+	for (const entry of report.toRemove) {
+		const id = Number(entry.id);
+		if (!Number.isInteger(id) || id <= 0 || typeof entry.name !== 'string') {
+			throw new Error(`Refusing: bad entry in the report: ${JSON.stringify(entry)}`);
+		}
+		names.set(id, entry.name);
+	}
+	const ids = [...names.keys()];
+	console.log(`The report (${report.generated ?? 'undated'}) lists ${ids.length} place(s) to remove.`);
+	if (ids.length === 0) return;
+
+	// Every listed place must still be there, under the same name
+	const now = new Map();
+	for (const list of idBatches(ids)) {
+		for (const row of queryJSON(`SELECT id, name FROM places WHERE id IN (${list})`, TARGET)) now.set(row.id, row.name);
+	}
+	const changed = ids.filter((id) => now.get(id) !== names.get(id));
+	if (changed.length > 0) {
+		console.error(`\nRefusing: ${changed.length} place(s) changed since the report:`);
+		for (const id of changed) {
+			console.error(`  ${id}: "${names.get(id)}" in the report, ${now.has(id) ? `"${now.get(id)}" now` : 'no longer there'}`);
+		}
+		console.error('Nothing was deleted. Run the dry run again for a fresh report.');
+		process.exit(1);
+	}
+
+	// Back up every row that will go, with undo SQL
+	const rows = { places: [], place_mentions: [], place_narratives: [] };
+	for (const list of idBatches(ids)) {
+		rows.places.push(...queryJSON(`SELECT * FROM places WHERE id IN (${list}) ORDER BY id`, TARGET));
+		rows.place_mentions.push(...queryJSON(`SELECT * FROM place_mentions WHERE place_id IN (${list}) ORDER BY place_id, episode_id`, TARGET));
+		rows.place_narratives.push(...queryJSON(`SELECT * FROM place_narratives WHERE place_id IN (${list}) ORDER BY place_id`, TARGET));
+	}
+	const deletes = [];
+	for (const table of ['place_mentions', 'place_narratives', 'places']) {
+		const column = table === 'places' ? 'id' : 'place_id';
+		for (const list of idBatches(ids)) deletes.push(`DELETE FROM ${table} WHERE ${column} IN (${list});`);
+	}
+	const undo = [
+		'-- Puts back what cleanup-places.js --apply deleted: the places, then their links, then narratives.',
+		...rows.places.map((r) => insertStatement('places', r, 'INSERT OR IGNORE')),
+		...rows.place_mentions.map((r) => insertStatement('place_mentions', r, 'INSERT OR IGNORE')),
+		...rows.place_narratives.map((r) => insertStatement('place_narratives', r, 'INSERT OR IGNORE')),
+	];
+	const dir = newBackupDir('cleanup-places');
+	fs.writeFileSync(path.join(dir, 'rows.json'), JSON.stringify(rows, null, 1));
+	fs.writeFileSync(path.join(dir, 'cleanup_report.json'), JSON.stringify(report, null, 2));
+	fs.writeFileSync(path.join(dir, 'applied.sql'), deletes.join('\n') + '\n');
+	fs.writeFileSync(path.join(dir, 'undo.sql'), undo.join('\n') + '\n');
+	fs.writeFileSync(path.join(dir, 'README.txt'), [
+		`Places deleted by cleanup-places.js --apply, ${new Date().toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })}, ` +
+			`from the ${DATABASE} D1 database.`,
+		`The list is scripts/cleanup_report.json as it was then (made ${report.generated ?? 'at an unknown time'}); a copy is here.`,
+		'',
+		`  rows.json    every deleted row: ${rows.places.length} places, ${rows.place_mentions.length} place_mentions, ` +
+			`${rows.place_narratives.length} place_narratives`,
+		'  applied.sql  exactly what was run',
+		'  undo.sql     puts them all back (INSERT OR IGNORE with every column as it was)',
+		'',
+		'To undo:',
+		'  cd roe-search',
+		`  env -u CLOUDFLARE_API_TOKEN npx wrangler d1 execute roe-episodes ${TARGET.isLocal ? '--local' : '--remote'} --file "${path.join(dir, 'undo.sql')}"`,
+		'',
+	].join('\n'));
+	console.log(`Backed up ${rows.places.length} places, ${rows.place_mentions.length} links and ` +
+		`${rows.place_narratives.length} narratives to ${dir}`);
+
+	// Delete, stopping at the first error (the backup has every row)
+	for (const sql of deletes) runSQL(sql, TARGET);
+	console.log(`Deleted ${ids.length} places with their links and narratives (applied.sql).`);
+}
+
+if (APPLY) {
+	try {
+		applyReport();
+	} catch (err) {
+		console.error('Fatal:', err.message);
+		process.exit(1);
+	}
+} else {
+	writeReport().catch(err => { console.error('Fatal:', err); process.exit(1); });
+}

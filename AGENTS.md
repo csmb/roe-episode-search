@@ -122,7 +122,10 @@ node scripts/generate-summaries.js
 
 New episodes get their places from roe-pipeline's `extract-places` step, which only keeps
 names the transcript mentions. `scripts/redo-places.js <episode-id>` runs the same code for
-an existing episode. `scripts/cleanup-places.js` removes false positives from D1.
+an existing episode. `scripts/cleanup-places.js` removes false positives from D1: its dry run
+(GPT-4o-mini) writes `scripts/cleanup_report.json`, and `--apply` deletes exactly the places
+listed there (edit it first to keep any), refusing if one was renamed or removed since, after a
+backup with `undo.sql` in `transcripts/.backups/<date>-cleanup-places/`.
 The April 2026 map build (external business lists matched against transcripts) is archived
 in `scripts/archive/`: it caused the fake pins and common-word places cleaned up in
 September, so don't re-run it as is. Guest lists are edited in the admin page; the old
