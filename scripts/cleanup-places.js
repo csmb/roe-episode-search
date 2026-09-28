@@ -25,6 +25,7 @@ import https from 'node:https';
 import { fileURLToPath } from 'node:url';
 import { loadEnv, queryJSON, runSQL } from './lib.js';
 import { newBackupDir, insertStatement } from './episode-backup.js';
+import { inlineParams } from './remote-d1.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const TRANSCRIPTS_DIR = path.join(__dirname, '..', 'transcripts');
@@ -324,6 +325,18 @@ async function writeReport() {
 
 const ID_BATCH = 20;
 
+// INSERT OR IGNORE of one row, its place found by name, and a link only while its episode exists
+// (foreign keys are enforced, and OR IGNORE doesn't cover them)
+function undoByName(table, row, placeName) {
+	const cols = Object.keys(row).filter((c) => c !== 'place_id');
+	const hasEpisode = cols.includes('episode_id');
+	return inlineParams(
+		`INSERT OR IGNORE INTO ${table} (place_id, ${cols.join(', ')}) SELECT id, ${cols.map(() => '?').join(', ')} ` +
+			`FROM places WHERE name = ?${hasEpisode ? ' AND EXISTS (SELECT 1 FROM episodes WHERE id = ?)' : ''};`,
+		[...cols.map((c) => row[c]), placeName, ...(hasEpisode ? [row.episode_id] : [])]
+	);
+}
+
 function idBatches(ids) {
 	const batches = [];
 	for (let i = 0; i < ids.length; i += ID_BATCH) batches.push(ids.slice(i, i + ID_BATCH).join(', '));
@@ -378,11 +391,14 @@ function applyReport() {
 		const column = table === 'places' ? 'id' : 'place_id';
 		for (const list of idBatches(ids)) deletes.push(`DELETE FROM ${table} WHERE ${column} IN (${list});`);
 	}
+	const placeNames = new Map(rows.places.map((p) => [p.id, p.name]));
 	const undo = [
 		'-- Puts back what cleanup-places.js --apply deleted: the places, then their links, then narratives.',
+		'-- Links and narratives find their place by name (one made again since has a new id); a link',
+		'-- whose episode has been deleted since is left out.',
 		...rows.places.map((r) => insertStatement('places', r, 'INSERT OR IGNORE')),
-		...rows.place_mentions.map((r) => insertStatement('place_mentions', r, 'INSERT OR IGNORE')),
-		...rows.place_narratives.map((r) => insertStatement('place_narratives', r, 'INSERT OR IGNORE')),
+		...rows.place_mentions.map((r) => undoByName('place_mentions', r, placeNames.get(r.place_id))),
+		...rows.place_narratives.map((r) => undoByName('place_narratives', r, placeNames.get(r.place_id))),
 	];
 	const dir = newBackupDir('cleanup-places');
 	fs.writeFileSync(path.join(dir, 'rows.json'), JSON.stringify(rows, null, 1));
@@ -397,7 +413,8 @@ function applyReport() {
 		`  rows.json    every deleted row: ${rows.places.length} places, ${rows.place_mentions.length} place_mentions, ` +
 			`${rows.place_narratives.length} place_narratives`,
 		'  applied.sql  exactly what was run',
-		'  undo.sql     puts them all back (INSERT OR IGNORE with every column as it was)',
+		'  undo.sql     puts them all back (INSERT OR IGNORE with every column as it was; links and',
+		'               narratives find their place by name, and skip an episode deleted since)',
 		'',
 		'To undo:',
 		'  cd roe-search',
