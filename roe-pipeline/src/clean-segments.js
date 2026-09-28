@@ -97,6 +97,83 @@ export function dropRepeatedLines(segments) {
   return kept;
 }
 
+const LOOP_RECENT_MS = 5 * 60_000; // a line heard again this soon is a repeat
+const LOOP_LINES = 20;             // judged 20 lines at a time
+const LOOP_SHARE = 0.5;            // half of them repeats: a loop, not a conversation
+const LOOP_MIN_REPEATS = 50;       // fewer is a chorus or a quick back-and-forth; left alone
+const LOOP_SILENCE_MS = 60_000;    // a minute with no lines ends a stretch
+
+const loopKey = text => text.toLowerCase().replace(/[^\p{L}\p{N} ]/gu, '').replace(/\s+/g, ' ').trim();
+
+/**
+ * Find Whisper's repetition loops ("Something to wear." 2,236 times, or two or
+ * three lines taking turns) and drop the repeats, keeping each line's first copy.
+ *
+ * A line is a repeat when the same words were heard in the last five minutes.
+ * A stretch where half or more of every 20 lines are repeats, with 50+ repeats
+ * in all, is a loop. Normal talk never gets that dense: a show's "yeah"s and
+ * "you know"s stay well under it. A song's chorus, or a quick "Yep." / "Nope."
+ * exchange, can be as dense but stays under 50 (the loops in the archive have
+ * 55 to 4,469), so those lines are all kept.
+ *
+ * @param {Array<{start_ms: number, end_ms: number, text: string}>} segments - in time order
+ * @returns {{segments: Array, loops: Array<{startMs: number, endMs: number, removed: number, top: string}>}}
+ *   the kept lines, and each loop's stretch (to transcribe again), with its most repeated line
+ */
+export function findLoops(segments) {
+  const n = segments.length;
+  const keys = segments.map(seg => loopKey(seg.text));
+  const repeat = new Array(n).fill(false);
+  const lastHeard = new Map();
+  segments.forEach((seg, i) => {
+    if (!keys[i]) return;
+    const prev = lastHeard.get(keys[i]);
+    if (prev !== undefined && seg.start_ms - prev <= LOOP_RECENT_MS) repeat[i] = true;
+    lastHeard.set(keys[i], seg.start_ms);
+  });
+
+  // Every window of LOOP_LINES lines that is at least half repeats is in a loop
+  const inLoop = new Array(n).fill(false);
+  let repeats = 0;
+  for (let i = 0; i < n; i++) {
+    if (repeat[i]) repeats++;
+    if (i >= LOOP_LINES && repeat[i - LOOP_LINES]) repeats--;
+    if (i >= LOOP_LINES - 1 && repeats >= LOOP_LINES * LOOP_SHARE) inLoop.fill(true, i - LOOP_LINES + 1, i + 1);
+  }
+
+  // Each run of lines in a loop, with the repeats it holds
+  const stretches = [];
+  for (let i = 0; i < n; i++) {
+    if (!inLoop[i]) continue;
+    const silence = i > 0 && segments[i].start_ms - segments[i - 1].end_ms > LOOP_SILENCE_MS;
+    if (!inLoop[i - 1] || silence) stretches.push({ from: i, repeats: [] });
+    if (repeat[i]) stretches.at(-1).repeats.push(i);
+  }
+
+  const drop = new Set();
+  const loops = [];
+  for (const { from, repeats } of stretches) {
+    if (repeats.length < LOOP_MIN_REPEATS) continue;
+    const counts = new Map();
+    for (const i of repeats) {
+      drop.add(i);
+      counts.set(segments[i].text, (counts.get(segments[i].text) || 0) + 1);
+    }
+    // The loop starts at the first copy of the line that repeats first
+    let first = repeats[0];
+    for (let j = from; j < repeats[0]; j++) if (keys[j] === keys[repeats[0]]) { first = j; break; }
+    let endMs = 0;
+    for (const i of repeats) endMs = Math.max(endMs, segments[i].end_ms);
+    loops.push({
+      startMs: segments[first].start_ms,
+      endMs,
+      removed: repeats.length,
+      top: [...counts].sort((a, b) => b[1] - a[1])[0][0],
+    });
+  }
+  return { segments: segments.filter((_, i) => !drop.has(i)), loops };
+}
+
 /**
  * Detect internal looping: a phrase of 3-8 words repeating 4+ times consecutively.
  */

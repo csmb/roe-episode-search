@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { cleanSegments, dropRepeatedLines, isMostlyNonLatin, isPromptEcho } from '../src/clean-segments.js';
+import { cleanSegments, dropRepeatedLines, findLoops, isMostlyNonLatin, isPromptEcho } from '../src/clean-segments.js';
 
 describe('cleanSegments', () => {
   it('removes zero-duration segments', () => {
@@ -119,5 +119,49 @@ describe('dropRepeatedLines', () => {
     for (let i = 0; i < 30; i++) segs.push(line(i * 2, 'Thank you so much.'));   // 18 characters
     for (let i = 0; i < 20; i++) segs.push(line(100 + i, 'We will be right back after this.'));
     expect(dropRepeatedLines(segs)).toHaveLength(50);
+  });
+});
+
+describe('findLoops', () => {
+  // Lines every `step` seconds from `startSec`, taking their text from `text(i)`
+  const lines = (count, text, { startSec = 0, step = 3 } = {}) => Array.from({ length: count }, (_, i) => ({
+    start_ms: (startSec + i * step) * 1000, end_ms: (startSec + i * step + step - 0.5) * 1000, text: text(i),
+  }));
+  const talk = (count, opts) => lines(count, i => `Talk line number ${i} about the fog.`, opts);
+
+  it('drops a loop of two lines taking turns, keeping the first copy of each', () => {
+    const loop = lines(300, i => (i % 2 ? 'Something to wear.' : "I'm going to take the sun from everything."), { startSec: 600 });
+    const { segments, loops } = findLoops([...talk(200), ...loop, ...talk(50, { startSec: 1600 })]);
+    expect(loops).toEqual([expect.objectContaining({ removed: 298, top: expect.any(String) })]);
+    expect(loops[0].startMs).toBeLessThanOrEqual(600_000);
+    expect(loops[0].endMs).toBeGreaterThanOrEqual(1_496_000);
+    expect(segments.filter(s => s.text === 'Something to wear.')).toHaveLength(1);
+    expect(segments).toHaveLength(252);
+  });
+
+  it('leaves natural talk alone: a "yeah" every half minute for two hours', () => {
+    const show = lines(2400, i => (i % 10 === 0 ? 'Yeah.' : `Line ${i} of a real conversation.`));
+    expect(findLoops(show).loops).toEqual([]);
+  });
+
+  it('leaves a short dense exchange or a chorus alone', () => {
+    // As on 10/24/2019: 38 quick repeats (a loop needs 50)
+    const game = lines(40, i => (i % 2 ? 'Yep.' : 'Nope.'), { startSec: 900, step: 2 });
+    const chorus = lines(40, i => ['Clap your hands now.', 'Stomp your feet.', 'Here we go.', 'One more time.'][i % 4], { startSec: 1200 });
+    const { segments, loops } = findLoops([...talk(200), ...game, ...chorus]);
+    expect(loops).toEqual([]);
+    expect(segments).toHaveLength(280);
+  });
+
+  it('does not join two dense passages across a silence into one loop', () => {
+    const a = lines(34, i => (i % 2 ? 'Yep.' : 'Nope.'), { startSec: 600, step: 2 });
+    const b = lines(34, i => (i % 2 ? 'Clap.' : 'Stomp.'), { startSec: 900, step: 2 });
+    expect(findLoops([...talk(100), ...a, ...b]).loops).toEqual([]);
+  });
+
+  it('dates the loop from the first copy of the looping line', () => {
+    const loop = lines(120, () => 'Good vibrations.', { startSec: 1440 });
+    const { loops } = findLoops([...talk(480), ...loop]);
+    expect(loops).toEqual([{ startMs: 1_440_000, endMs: 1_799_500, removed: 119, top: 'Good vibrations.' }]);
   });
 });
