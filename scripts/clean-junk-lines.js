@@ -26,9 +26,9 @@
  * An episode whose embeddings step didn't finish in an earlier run (its stale
  * IDs are still waiting) gets it again, even with no junk left.
  *
- * The embeddings step embeds the episode's D1 lines once the search clean-up
- * (A1) is in; before that it reads the local transcript file, which the
- * drag-and-drop shows don't have.
+ * The embeddings step embeds the lines D1 has and deletes the episode's other
+ * vectors, so drag-and-drop shows, which have no local transcript file, are
+ * covered too.
  *
  * Usage:
  *   node scripts/clean-junk-lines.js (--only <date|id>,… | --all) [--rules echo,loops] [--yes] [--no-embed] [--local]

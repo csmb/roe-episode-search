@@ -306,7 +306,7 @@ node scripts/scan-transcripts.js --only 2014-09-04,… --json after.json        
 - **Resume:** state is in `transcripts/.repair/progress.json` and a log per episode in `transcripts/.repair/logs/<date>.log`. Run the same command again after a stop: published episodes are skipped, a checked transcript is published without being made again, and OpenAI carries on from its last chunk. The run keeps the Mac awake (`caffeinate`).
 - **Lines only:** `scripts/clean-junk-lines.js --only <dates>` (a dry run unless `--yes`) is what the L rows run: the prompt read back as speech (today's prompt or the old one's terms), loop repeats, and with `--rules non-latin` wrong-language lines in a show's first 10 minutes.
 
-To undo one episode, use its backup, `transcripts/.backups/<date>-<id>/` (its README has the commands): `restore.sql` puts the D1 rows back (`npx wrangler d1 execute roe-episodes --remote --file …`), delete the episode's current search entries and upsert `vectors.ndjson`, copy the old `<id>.json` back into `transcripts/`, and for a join put the old `<id>.m4a` back in R2. Then remove the episode from `transcripts/.repair/progress.json` if it should be redone.
+To undo one episode, use its backup, `transcripts/.backups/<date>-<id>/` (its README.txt has the exact commands): `restore.sql` puts the D1 rows back (`npx wrangler d1 execute roe-episodes --remote --file …`), `generate-embeddings.js --only <id> --yes` makes its search entries again from those lines, copy the old `<id>.json` back into `transcripts/`, and for a join put the old `<id>.m4a` back in R2. Then remove the episode from `transcripts/.repair/progress.json` if it should be redone.
 
 ### Local development
 

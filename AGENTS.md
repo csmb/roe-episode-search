@@ -182,7 +182,8 @@ also `upload-audio`), and checks on D1 (lines, keyword search, length, reviewed 
 show that fails twice is set aside and the run goes on; a publishing failure stops it. It resumes
 from `transcripts/.repair/progress.json`. Joined shows' interview and quote times move by the parts
 added before the site's part. Each episode's backup (`transcripts/.backups/<date>-<id>/`) undoes it:
-`restore.sql`, `vectors.ndjson`, the old transcript and, for joins, the old .m4a. Details: README,
+`restore.sql`, then `generate-embeddings.js --only <id> --yes`, the old transcript and, for joins, the
+old .m4a (its README.txt has the commands). Details: README,
 "Repairing damaged transcripts". Every write to production is gated by the owner: rehearse with
 `--local` on a scratch D1 first.
 
