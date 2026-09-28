@@ -13,8 +13,8 @@
  *   node scripts/clean-hallucinations.js --local …                 # the local D1 copy
  *
  * The episode's search vectors are left as they were: re-embed it afterwards
- * (generate-embeddings.js --only <id>), or transcribe it again, which its loop
- * stretch usually needs.
+ * (generate-embeddings.js --only <id> --yes, which also deletes the loop's
+ * vectors), or transcribe it again, which its loop stretch usually needs.
  */
 
 import { escapeSQL, queryJSON, runSQL } from './lib.js';

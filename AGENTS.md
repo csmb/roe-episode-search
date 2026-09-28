@@ -35,7 +35,9 @@ roe-episode-search/
 │   ├── process-episode.js     # Local pipeline: transcribe (whisper.cpp or --engine openai) → seed → embed → summary → upload
 │   ├── transcribe.js          # OpenAI Whisper with roe-pipeline's code, resumable chunk by chunk
 │   ├── transcript-file.js     # Writes transcripts/<id>.json the same way for both engines (meta, loops, re-transcribe list)
-│   ├── remote-cloudflare.js   # Workers AI + Vectorize stand-ins over the REST API, for roe-pipeline's embeddings code
+│   ├── remote-cloudflare.js   # Workers AI + Vectorize stand-ins over the REST API (paced), for roe-pipeline's embeddings code
+│   ├── vector-ids.js          # The search index's IDs by episode: one listing per run, waiting for Vectorize's queue
+│   ├── generate-embeddings.js # Make the search index match D1's lines: dry run, --yes, --orphans, --resume (the rebuild)
 │   ├── process-all.js         # Batch runner with checkpoint/resume; falls back to a date's next recording
 │   ├── discover-episodes.js   # Scan directory, parse filenames, a date's file and its alternates
 │   ├── generate-summaries.js  # Regenerate AI summaries
@@ -95,7 +97,8 @@ cd roe-pipeline && npm test
 
 ### Run the scripts' tests
 ```
-node --test scripts/test/*.test.js    # discover-episodes' alternates, process-all's fallback choice
+node --test scripts/test/*.test.js    # discover-episodes' alternates, process-all's fallback choice, and the
+                                      # search-index tools against a stand-in for the REST API (no network)
 ```
 
 ### Test the scripts on a scratch D1
@@ -110,7 +113,9 @@ export ROE_PERSIST_TO=/tmp/roe-test
 node scripts/delete-episode.js <id> --local --yes
 ```
 `process-all.js` has no `--local`: in a test run it asks the scratch D1 which episodes are done, runs
-phase 2 with `--local`, and keeps its `batch-progress.json` in `<dir>`.
+phase 2 with `--local`, and keeps its `batch-progress.json` in `<dir>`. With `--local`,
+`episode-backup.js`, `delete-episode.js` and `merge-episode.js` neither read nor change Vectorize.
+`generate-embeddings.js` only works on production, so it doesn't run in a test run at all.
 
 ### Process a single episode (local pipeline)
 ```
@@ -132,8 +137,10 @@ holes, coverage). The seed step refuses a transcript that ends past its recordin
 90% of it unless `--accept-short`, re-seeds when D1 holds a different transcript (lines off by 20%+
 or the end by 60 s+, and only from a complete file), sets `duration_ms` to the recording's real
 length, and cleans an old file without `meta` the new way first (the original goes to
-`transcripts/.backups/`). The embeddings step deletes the vectors a replaced transcript had and the
-new one doesn't. Episodes needing another pass are listed in `transcripts/.retranscribe/episodes.json`.
+`transcripts/.backups/`). The embeddings step embeds the lines and length D1 has (what the site shows),
+not the local file, then deletes every other vector of the episode: the IDs that start with its own
+in a listing of the index (about half a minute), plus any a replaced transcript left in
+`transcripts/.stale-vectors/`. Episodes needing another pass are listed in `transcripts/.retranscribe/episodes.json`.
 
 An episode whose guests were reviewed (`guests_reviewed = 1`) keeps its title, summary, guests and
 interview time, even with `--force`, unless `--include-reviewed` is given (new AI guests then go
@@ -152,6 +159,23 @@ rejects a transcript, the date's next recording (discover-episodes' `alternates`
 that date, not copies of the same size) is tried in the same run, under the date's episode ID. Every
 rejected file is recorded (name and size) in `batch-progress.json`, and its transcript goes to
 `transcripts/.rejected/`; a later run skips the date until a file it hasn't rejected appears.
+
+### Rebuild or check the search index (Vectorize)
+```
+node scripts/generate-embeddings.js --all                        # dry run: what differs from D1 (read-only)
+node scripts/generate-embeddings.js --only <id>,<id> --yes       # re-embed some episodes
+node scripts/generate-embeddings.js --all --orphans --yes        # the whole index (~$1.20 of Workers AI)
+```
+A vector's ID is `<episode-id>:<window start ms>`, and the only way to find an episode's vectors is
+to list the whole index (about 100 requests; the Worker's binding can't list), so every tool lists
+once per run (`scripts/vector-ids.js`) and matches IDs with `isEpisodeVectorId` (exactly
+`<id>:<digits>`, never a same-date neighbour). `replaceEmbeddings` (roe-pipeline/src/embeddings.js)
+upserts every window before it deletes anything, and deletes 100 IDs a call. Vectorize applies
+writes from a queue (under 30 s as a rule), so a listing right after a write may not show it;
+generate-embeddings waits for the queue before its closing check. Cloudflare allows 1,200 API
+requests per 5 minutes per user (going over blocks every call, wrangler's too, for 5 minutes):
+`remote-cloudflare.js` sends at most about 3 a second. The rebuild's backups, plan and progress go
+to `transcripts/.backups/<date>-embeddings/`. See README.md, "Rebuilding the search index".
 
 ### Apply schema to D1
 ```

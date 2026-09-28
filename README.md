@@ -149,17 +149,17 @@ All scripts are in `scripts/` and run locally with Node.js:
 
 | Script | Purpose |
 |---|---|
-| `process-episode.js` | One episode through the local pipeline: transcribe (whisper.cpp, or `--engine openai` for the Cloudflare pipeline's own Whisper code), seed D1, embeddings, title + summary, "Skip to interview", .m4a upload. whisper.cpp gets a one-second test run first and a time limit, since its GPU start-up can hang on this Mac (`--no-gpu` runs it on the CPU, about 2.5x the recording's length). It uses the Worker's code for cleaning, loops, summaries, embeddings and interview times, so both pipelines agree. The seed step refuses a transcript that ends past its recording or stops before 90% of it (`--accept-short` to seed one anyway), re-seeds when D1 holds a different transcript, and gives the episode the recording's real length. No places or sentiment; new episodes use the drag-and-drop pipeline. |
+| `process-episode.js` | One episode through the local pipeline: transcribe (whisper.cpp, or `--engine openai` for the Cloudflare pipeline's own Whisper code), seed D1, embeddings, title + summary, "Skip to interview", .m4a upload. whisper.cpp gets a one-second test run first and a time limit, since its GPU start-up can hang on this Mac (`--no-gpu` runs it on the CPU, about 2.5x the recording's length). It uses the Worker's code for cleaning, loops, summaries, embeddings and interview times, so both pipelines agree. The seed step refuses a transcript that ends past its recording or stops before 90% of it (`--accept-short` to seed one anyway), re-seeds when D1 holds a different transcript, and gives the episode the recording's real length. The embeddings step embeds the lines D1 has (what the site shows), then deletes the episode's other vectors, found by listing the index (about half a minute). No places or sentiment; new episodes use the drag-and-drop pipeline. |
 | `transcribe.js` | Transcribe one MP3 with OpenAI Whisper using the pipeline's code (six-minute chunks, gap retries, cleaning): `node scripts/transcribe.js <file.mp3> <episode-id>`. A failed chunk is retried, and progress is saved after every chunk, so a crash resumes without paying twice. About $0.72 for a two-hour show. |
 | `transcribe-all.js` | The same for every show in an archive folder that has no transcript yet (split shows are skipped and listed). |
-| `generate-embeddings.js` | Embed transcripts into Vectorize with the pipeline's code: `--only <id>[,<id>…]` or `--all`; episodes not in D1 are skipped. |
+| `generate-embeddings.js` | Make episodes' search vectors exactly the windows of their lines in D1, with the pipeline's code (see "Rebuilding the search index"). A dry run unless `--yes`: `--only <id>[,<id>…]` or `--all` (every D1 episode), `--orphans` for vectors whose episode is gone, `--resume` to carry on a stopped run. |
 | `generate-summaries.js` | Titles, summaries and guests with the pipeline's prompt and checks, for episodes missing a summary (`--force`, `--include-reviewed`, `--dry-run`). |
 | `process-all.js` | Batch runner with checkpoint/resume, cooldown, retries, and quality gates. Leaves episodes already complete on the site alone. When the gate rejects a transcript it tries the date's next recording, if there is one; a date whose every recording was rejected is skipped until a new or changed file for it appears (rejected transcripts go to `transcripts/.rejected/`). |
 | `discover-episodes.js` | Scan an audio directory, parse filenames, deduplicate by date. A date recorded as several different files is skipped and listed as `MULTI-PART` (join the parts first); for any other date it also lists the date's other recordings to fall back on (a file the size of another is a copy and is left out). |
 | `clean-hallucinations.js` | Delete Whisper's repetition loops from episodes already in D1, with the pipelines' loop check (each looping line keeps its first copy). |
-| `delete-episode.js` | Back up an episode, then remove it from D1 and Vectorize (a dry run without `--yes`; `--delete-audio` also removes its .m4a). |
-| `merge-episode.js` | Merge a same-date duplicate into the canonical episode: backs up both, gives the canonical the duplicate's transcript and `--mp3` as its audio (refused if the transcript runs past the MP3's end), keeps reviewed titles, summaries, guests and interview times, then deletes the duplicate. |
-| `episode-backup.js` | Back up one episode (D1 rows, search vectors, local transcript, with `--with-audio` its .m4a) with restore SQL and a README, in `transcripts/.backups/`. |
+| `delete-episode.js` | Back up an episode, then remove it from D1 and Vectorize: every vector whose ID starts with the episode's (a dry run without `--yes`; `--delete-audio` also removes its .m4a; `--local` leaves Vectorize alone). |
+| `merge-episode.js` | Merge a same-date duplicate into the canonical episode: backs up both, gives the canonical the duplicate's transcript and `--mp3` as its audio (refused if the transcript runs past the MP3's end), keeps reviewed titles, summaries, guests and interview times, then deletes the duplicate and all its vectors. |
+| `episode-backup.js` | Back up one episode (D1 rows, every search vector listed under its ID, local transcript, with `--with-audio` its .m4a) with restore SQL and a README, in `transcripts/.backups/`. |
 | `repair-missing-m4a.js` | Make and upload the .m4a for episodes that only have their MP3. |
 | `redo-places.js` | Redo one episode's places and their sentiment with the pipeline's own code (`--no-places` for every episode that has none). |
 
@@ -257,7 +257,7 @@ node scripts/delete-episode.js roll-over-easy_YYYY-MM-DD_07-30-00          # dry
 node scripts/delete-episode.js roll-over-easy_YYYY-MM-DD_07-30-00 --yes    # backs it up, then deletes it
 ```
 
-`delete-episode.js` first backs the episode up with `episode-backup.js` (its rows, search entries and local transcript, with a `restore.sql` and a README, in `transcripts/.backups/<date>-<id>/`); the local transcript is moved there. It finds the search entries from the transcript lines in D1, so drag-and-drop episodes are covered. The episode's .m4a stays in R2 unless you add `--delete-audio` (it is then saved in the backup first): do that when the new upload has different audio (joined parts, say), or the site keeps playing the old recording. Without an .m4a the site plays the MP3 until `node scripts/repair-missing-m4a.js --only <id>` makes it again. Raw MP3 uploads are never deleted.
+`delete-episode.js` first backs the episode up with `episode-backup.js` (its rows, search entries and local transcript, with a `restore.sql` and a README, in `transcripts/.backups/<date>-<id>/`); the local transcript is moved there. It finds the search entries by listing the index (every ID that starts with the episode's), so drag-and-drop episodes, and entries an older transcript left, are covered. To put an episode back, follow the backup's README: `restore.sql`, then `generate-embeddings.js --only <id> --yes`, which makes its search entries again and deletes any made since (a later run's). The episode's .m4a stays in R2 unless you add `--delete-audio` (it is then saved in the backup first): do that when the new upload has different audio (joined parts, say), or the site keeps playing the old recording. Without an .m4a the site plays the MP3 until `node scripts/repair-missing-m4a.js --only <id>` makes it again. Raw MP3 uploads are never deleted.
 
 ### Batch processing (historical backfill only)
 
@@ -270,6 +270,19 @@ node scripts/process-episode.js /path/to/episode.mp3
 # Process all episodes in batch with checkpoint/resume
 node scripts/process-all.js "/path/to/All episodes/" --cooldown 120
 ```
+
+### Rebuilding the search index
+
+Each episode's search entries should be exactly the 45-second windows of its lines in D1. `generate-embeddings.js` makes them so, and without `--yes` only says what it would change:
+
+```bash
+node scripts/generate-embeddings.js --all                          # dry run: lists the index, reads D1 (read-only, free)
+node scripts/generate-embeddings.js --only <id>,<id> --yes         # a few episodes first, as a check
+node scripts/generate-embeddings.js --all --orphans --yes          # every episode, and entries whose episode is gone
+node scripts/generate-embeddings.js --all --orphans --yes --resume transcripts/.backups/<date>-embeddings
+```
+
+Vectorize can't be asked for one episode's entries, so the tool lists the whole index once (about 100 requests) and reads D1 after it. Per episode it backs up the entries it will delete (`deleted-vectors/<id>.ndjson` in its folder under `transcripts/.backups/`), embeds every window of the D1 lines, upserts them, and only then deletes the episode's other entries; each finished episode goes in `progress.ndjson`, which `--resume` skips. It leaves alone (and says so) an episode whose lines end 30+ seconds past its length, like 2014-09-04's stretched times. At the end it waits for Vectorize's write queue, lists the index again and checks that each episode it did holds exactly its windows and nothing else changed (`verify.json`). All 544 episodes come to about 83,000 windows, $1.10-1.20 of Workers AI and about 2,800 API requests, paced to stay under Cloudflare's limit of 1,200 per 5 minutes. Run it with nothing else writing D1 or Vectorize, not while the pipeline is taking in a show, and after any transcript repairs: some old entries hold speech that D1's lines are still missing.
 
 ### Local development
 
