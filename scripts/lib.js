@@ -71,14 +71,21 @@ export function wranglerExec(args, opts = {}) {
 	}
 	const env = { ...process.env };
 	delete env.CLOUDFLARE_API_TOKEN;
-	return execFileSync(wranglerBin, args, {
-		cwd: workerDir,
-		encoding: 'utf-8',
-		stdio: opts.stdio || 'pipe',
-		env,
-		maxBuffer: 64 * 1024 * 1024, // a whole transcript as JSON can pass the 1 MB default
-		...opts,
-	});
+	try {
+		return execFileSync(wranglerBin, args, {
+			cwd: workerDir,
+			encoding: 'utf-8',
+			stdio: opts.stdio || 'pipe',
+			env,
+			maxBuffer: 64 * 1024 * 1024, // a whole transcript as JSON can pass the 1 MB default
+			...opts,
+		});
+	} catch (err) {
+		// Say why it failed: wrangler prints the reason (as JSON with --json) on stdout or stderr
+		const reason = `${err.stdout ?? ''}${err.stderr ?? ''}`.trim();
+		if (reason) err.message += `\n${reason.slice(0, 2000)}`;
+		throw err;
+	}
 }
 
 export function queryJSON(sql, { isLocal = false } = {}) {
