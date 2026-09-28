@@ -34,14 +34,15 @@ export const VECTORIZE_INDEX = 'roe-transcripts';
 
 // Keys the project .env decides even when the shell has its own: a stale
 // CLOUDFLARE_API_TOKEN exported from a shell profile once made every R2 and D1
-// call fail with an authentication error. In a test run (ROE_PERSIST_TO) the
-// shell still wins, so a test can pass a dummy key instead of the real one.
+// call fail with an authentication error. A test run (ROE_PERSIST_TO) never
+// reads them from .env at all: a test passes the (dummy) keys it needs, so it
+// can't spend money or reach production with the real ones by accident.
 const DOTENV_WINS = ['CLOUDFLARE_ACCOUNT_ID', 'CLOUDFLARE_API_TOKEN', 'OPENAI_API_KEY', 'PIPELINE_TOKEN'];
 
 export function loadEnv() {
 	const envPath = path.join(projectRoot, '.env');
 	if (!fs.existsSync(envPath)) return;
-	const overrideShell = !process.env.ROE_PERSIST_TO;
+	const testRun = !!process.env.ROE_PERSIST_TO;
 	for (const line of fs.readFileSync(envPath, 'utf-8').split('\n')) {
 		const trimmed = line.trim();
 		if (!trimmed || trimmed.startsWith('#')) continue;
@@ -49,9 +50,10 @@ export function loadEnv() {
 		if (eq === -1) continue;
 		const key = trimmed.slice(0, eq);
 		const val = trimmed.slice(eq + 1);
+		if (testRun && DOTENV_WINS.includes(key)) continue;
 		if (!process.env[key]) {
 			process.env[key] = val;
-		} else if (overrideShell && DOTENV_WINS.includes(key) && process.env[key] !== val) {
+		} else if (DOTENV_WINS.includes(key) && process.env[key] !== val) {
 			console.warn(`Using ${key} from .env; your shell has a different one (remove it from your shell profile).`);
 			process.env[key] = val;
 		}

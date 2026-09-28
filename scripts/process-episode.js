@@ -133,7 +133,8 @@ function checkPrerequisites(skip = new Set(), engine = 'whisper.cpp') {
 	if ((!skip.has('summary') || (!skip.has('transcribe') && engine === 'openai')) && !process.env.OPENAI_API_KEY) {
 		missing.push('OPENAI_API_KEY (for the summary, and the openai engine) — add it to .env');
 	}
-	if (!skip.has('embeddings') && !db.isLocal && !(process.env.CLOUDFLARE_ACCOUNT_ID && process.env.CLOUDFLARE_API_TOKEN)) {
+	// (A test run refuses the embeddings step anyway, so it doesn't need the keys.)
+	if (!skip.has('embeddings') && !db.isLocal && !process.env.ROE_PERSIST_TO && !(process.env.CLOUDFLARE_ACCOUNT_ID && process.env.CLOUDFLARE_API_TOKEN)) {
 		missing.push('CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN (for the embeddings) — add them to .env');
 	}
 

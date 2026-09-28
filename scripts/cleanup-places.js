@@ -29,7 +29,8 @@ import { inlineParams } from './remote-d1.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const TRANSCRIPTS_DIR = path.join(__dirname, '..', 'transcripts');
-const REPORT_PATH = path.join(__dirname, 'cleanup_report.json');
+// A test run (ROE_PERSIST_TO) keeps its report in the test folder, not the checkout
+const REPORT_PATH = path.join(process.env.ROE_PERSIST_TO ? path.resolve(process.env.ROE_PERSIST_TO) : __dirname, 'cleanup_report.json');
 
 const args = process.argv.slice(2);
 const unknown = args.filter((a) => a !== '--apply' && a !== '--local');
