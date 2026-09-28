@@ -18,6 +18,7 @@
 import { chunkSegments, isEpisodeVectorId } from '../roe-pipeline/src/embeddings.js';
 
 const LIST_PAGE = 1000; // the most one list request returns
+const LIST_TRIES = 3; // listings started, when Vectorize rejects its own cursor partway through
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -35,8 +36,24 @@ export function chunkEpisode(transcript) {
  * Every vector ID in the index, in the order the index lists them (not by ID).
  * A listing that comes back short of the count its first page gave throws: an
  * ID left out is a vector the caller would never delete.
+ *
+ * Vectorize sometimes rejects the cursor it has just handed out ("List vectors
+ * cursor appears to be corrupted", code 40052: a repair run stopped on it on
+ * 2026-09-28, and the next listing was fine). A new listing takes a new
+ * snapshot, so the listing then starts again from the top.
  */
 export async function listAllVectorIds(vectorize) {
+	for (let attempt = 1; ; attempt++) {
+		try {
+			return await listOnce(vectorize);
+		} catch (err) {
+			if (attempt >= LIST_TRIES || !/\b40052\b|cursor appears to be corrupted/i.test(err.message)) throw err;
+			console.warn(`  Vectorize rejected its own listing cursor; listing again from the start (${attempt + 1} of ${LIST_TRIES})`);
+		}
+	}
+}
+
+async function listOnce(vectorize) {
 	const ids = new Set();
 	const cursors = new Set();
 	let cursor = null;

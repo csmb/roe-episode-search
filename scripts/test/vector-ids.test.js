@@ -83,6 +83,28 @@ test('a listing that comes back short stops, rather than leave vectors nobody de
 	assert.equal((await listAllVectorIds(remoteVectorize())).length, 2500);
 });
 
+test('a cursor Vectorize rejects partway through (40052) starts the listing again, at most 3 times', async () => {
+	const ids = [...idsOf(A, 1500), ...idsOf(B, 1000)]; // 3 pages a listing
+	const cf = stand({ ids });
+	const corrupted = () => new Response(JSON.stringify({ result: null, success: false,
+		errors: [{ code: 40052, message: 'List vectors cursor appears to be corrupted' }] }), { status: 400 });
+	// The first listing's second page is refused, as on 2026-09-28; a new listing goes through
+	let lists = 0;
+	globalThis.fetch = async (url, init) => (String(url).includes('/list') && ++lists === 2 ? corrupted() : cf.fetch(url, init));
+	assert.deepEqual(sorted(await listAllVectorIds(remoteVectorize())), sorted(ids));
+	assert.equal(lists, 5);
+	// Refused every time: the third listing's error reaches the caller
+	lists = 0;
+	globalThis.fetch = async (url, init) => (String(url).includes('/list') && String(url).includes('cursor=') && ++lists ? corrupted() : cf.fetch(url, init));
+	await assert.rejects(listAllVectorIds(remoteVectorize()), /40052/);
+	assert.equal(lists, 3);
+	// Any other listing error isn't retried
+	lists = 0;
+	globalThis.fetch = async (url, init) => (String(url).includes('/list') && ++lists ? new Response(JSON.stringify({ success: false, errors: [{ code: 40004, message: 'count must be 1-1000' }] }), { status: 400 }) : cf.fetch(url, init));
+	await assert.rejects(listAllVectorIds(remoteVectorize()), /40004/);
+	assert.equal(lists, 1);
+});
+
 test('a snapshot groups by episode: a same-date neighbour, a longer ID or a malformed one never joins', async () => {
 	const odd = [`${A}:12x`, `${A}:1:2`, 'no-colon', ':5'];
 	stand({ ids: [...idsOf(A, 3), ...idsOf(B, 2), `${A}0:5`, ...odd] });
