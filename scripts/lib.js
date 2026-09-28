@@ -114,9 +114,10 @@ export { applyWordCorrections } from '../roe-pipeline/src/clean-segments.js';
 
 // ROE_PERSIST_TO=<dir> is for tests. Every --local call (D1 and R2) uses the
 // local state in <dir> instead of roe-search/.wrangler, transcripts (and
-// backups) live in <dir>/transcripts, and wrangler may not reach production:
-// --remote calls and Vectorize writes are refused. (process-episode.js and
-// generate-embeddings.js check it too before their own Vectorize writes.)
+// backups) live in <dir>/transcripts, warnings go to <dir>/pipeline-errors.log,
+// and wrangler may not reach production: --remote calls and Vectorize writes
+// are refused. (process-episode.js and generate-embeddings.js check it too
+// before their own Vectorize writes.)
 const VECTORIZE_WRITES = new Set(['insert', 'upsert', 'delete-vectors']);
 
 export function wranglerExec(args, opts = {}) {
@@ -208,10 +209,17 @@ export function stepTimer(name) {
 	};
 }
 
+// A test run (ROE_PERSIST_TO) keeps its warnings in its own folder, not the checkout's log
+const warningsLog = () => process.env.ROE_PERSIST_TO
+	? path.join(path.resolve(process.env.ROE_PERSIST_TO), 'pipeline-errors.log')
+	: path.join(projectRoot, 'scripts', 'pipeline-errors.log');
+
 export function logWarn(message) {
 	const line = `[${new Date().toISOString()}] ${message}`;
 	console.warn(`  ${message}`);
-	fs.appendFileSync(path.join(projectRoot, 'scripts', 'pipeline-errors.log'), line + '\n');
+	const file = warningsLog();
+	fs.mkdirSync(path.dirname(file), { recursive: true });
+	fs.appendFileSync(file, line + '\n');
 }
 
 // ── Audio ──────────────────────────────────────────────────────────────
