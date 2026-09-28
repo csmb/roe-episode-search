@@ -56,10 +56,13 @@
 			text-decoration: none;
 			font-size: 0.9rem;
 			transition: color 0.2s ease;
+			padding: 4px 0; /* a 25 px tap target; padding on an inline link moves nothing */
 		}
 		.hero nav a:hover { color: #fff; }
 		.hero nav a[aria-current="page"] { color: #fff; border-bottom: 2px solid #FF4F00; padding-bottom: 2px; }
-		:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+		:focus-visible { outline: 2px solid #505050; outline-offset: 2px; }
+		/* White where the background is dark: the header photo. */
+		.hero :focus-visible { outline-color: #fff; }
 
 		@media (max-width: 768px) {
 			.hero { padding: 1rem 1.5rem; }
@@ -69,6 +72,8 @@
 		#map {
 			flex: 1;
 		}
+		/* The map fills the window, so draw its ring inside, over the tiles. */
+		#map:focus-visible { outline-offset: -2px; }
 
 		.leaflet-popup-content-wrapper {
 			border-radius: 6px;
@@ -122,6 +127,8 @@
 			width: 240px;
 			font-family: inherit;
 		}
+		/* The input has no outline of its own; ring the whole box instead. */
+		.map-search:has(input:focus-visible) { outline: 2px solid #505050; outline-offset: 2px; }
 		.map-search input {
 			width: 100%;
 			border: none;
@@ -190,7 +197,9 @@
 		.place-detail .pd-count { font-size: 12px; color: #777; margin-bottom: 8px; }
 		.place-detail .pd-copy-link { font: 500 11px inherit; color: #c44d02; background: none;
 			border: 1px solid #e0b89c; border-radius: 4px; padding: 1px 6px; margin-left: 6px;
-			cursor: pointer; vertical-align: middle; }
+			cursor: pointer; vertical-align: middle; position: relative; }
+		/* A tap target over 24 px tall around the small button, without changing its look. */
+		.place-detail .pd-copy-link::after { content: ''; position: absolute; inset: -5px -3px; }
 		.place-detail .pd-copy-link:hover { background: #fbeee6; }
 		.place-detail .pd-copy-fallback { display: block; width: 100%; margin-top: 6px;
 			font-size: 11px; padding: 2px 4px; }
@@ -215,18 +224,23 @@
 		  box-shadow: 0 -2px 16px rgba(0,0,0,0.25);
 		  padding: 16px 18px calc(16px + env(safe-area-inset-bottom));
 		  max-height: 75vh; overflow-y: auto;
-		  transform: translateY(100%); transition: transform 0.25s ease;
+		  transform: translateY(100%); transition: transform 0.25s ease, visibility 0s 0.25s;
+		  visibility: hidden; /* closed: out of the tab order, once it has slid away */
 		}
-		#pd-sheet.open { transform: translateY(0); }
+		#pd-sheet.open { transform: translateY(0); visibility: visible; transition: transform 0.25s ease; }
 		#pd-sheet .pd-close {
-		  position: absolute; top: 8px; right: 12px; font-size: 22px;
-		  background: none; border: none; cursor: pointer; color: #777; line-height: 1;
+		  position: absolute; top: 5px; right: 5px; width: 28px; height: 28px; padding: 0;
+		  font-size: 22px; background: none; border: none; cursor: pointer; color: #777; line-height: 1;
 		}
 		#pd-backdrop {
 		  position: fixed; inset: 0; background: rgba(0,0,0,0.35); z-index: 1999;
 		  opacity: 0; pointer-events: none; transition: opacity 0.25s ease;
 		}
 		#pd-backdrop.open { opacity: 1; pointer-events: auto; }
+		/* "Reduce motion": no sliding sheet or fades; openPlace skips the fly-to as well. */
+		@media (prefers-reduced-motion: reduce) {
+			*, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+		}
 	</style>
 </head>
 <body>
@@ -289,7 +303,8 @@
 		// Search results and ?place= links open a place the same way: the marker's click
 		// handler (bottom sheet on phones, detail popup on desktop).
 		function openPlace(circle) {
-			map.flyTo(circle.getLatLng(), 17, { duration: 0.6 });
+			if (reducedMotion.matches) map.setView(circle.getLatLng(), 17, { animate: false });
+			else map.flyTo(circle.getLatLng(), 17, { duration: 0.6 });
 			circle.fire('click');
 		}
 
@@ -494,7 +509,10 @@
 		  }
 		}
 
-		const map = L.map('map', { zoomControl: false }).setView([37.7749, -122.4194], 13);
+		// "Reduce motion": zooms jump instead of animating, and search picks don't fly.
+		const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+		const map = L.map('map', { zoomControl: false, zoomAnimation: !reducedMotion.matches, fadeAnimation: !reducedMotion.matches, markerZoomAnimation: !reducedMotion.matches })
+			.setView([37.7749, -122.4194], 13);
 		L.control.zoom({ position: 'topright' }).addTo(map);
 
 		L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}', {

@@ -54,6 +54,7 @@
 		text-decoration: none;
 		font-size: 0.9rem;
 		transition: color 0.2s ease;
+		padding: 4px 0; /* a 25 px tap target; padding on an inline link moves nothing */
 	}
 	.hero nav a:hover { color: #fff; }
 	.hero nav a[aria-current="page"] { color: #fff; border-bottom: 2px solid #FF4F00; padding-bottom: 2px; }
@@ -219,6 +220,8 @@
 	}
 	.player-inner { max-width: 800px; margin: 0 auto; }
 	body:has(.player-bar.active) { padding-bottom: 110px; }
+	/* Tabbing to a button near the bottom scrolls it above the bar, not under it. */
+	html:has(.player-bar.active) { scroll-padding-bottom: 140px; } /* the bar is up to 126 px tall */
 	/* Top row: vinyl + title + coffee */
 	.player-top { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
 	.spinning-coffee { font-size: 1.5rem; flex-shrink: 0; cursor: default; display: inline-block; }
@@ -240,6 +243,7 @@
 		background: none; border: none; color: #fff; font-size: 1rem;
 		cursor: pointer; padding: 4px; border-radius: 50%;
 		transition: all 0.15s ease; line-height: 1;
+		min-width: 24px; min-height: 24px; /* tap targets, also on phones' smaller emoji */
 	}
 	.player-controls button:hover { background: rgba(255,255,255,0.12); transform: scale(1.15); }
 	.play-pause-btn {
@@ -304,7 +308,7 @@
 	#clip-card .clip-label {
 		font-size: 0.8rem;
 		font-weight: 600;
-		color: #FF4F00;
+		color: #c14a05; /* the guest pills' orange: 4.9:1 on white (#FF4F00 was 3.3:1) */
 		text-transform: uppercase;
 		letter-spacing: 0.5px;
 		margin-bottom: 8px;
@@ -322,7 +326,7 @@
 	.otd-year {
 		font-size: 0.85rem;
 		font-weight: 600;
-		color: #FF4F00;
+		color: #c14a05;
 		margin-bottom: 4px;
 	}
 	.episode-actions {
@@ -353,6 +357,8 @@
 		outline: 2px solid #505050;
 		outline-offset: 2px;
 	}
+	/* White where the background is dark: the header photo and the player. */
+	.hero :focus-visible, .player-bar :focus-visible { outline-color: #fff; }
 
 	/* Episode body layout (side-by-side map) */
 	.episode-body {
@@ -403,6 +409,11 @@
 		.hero .subtagline { font-size: 0.82rem; }
 		.spinning-coffee { font-size: 1rem; }
 		.player-top { gap: 6px; }
+	}
+	/* "Reduce motion": no spinning, sliding, scrolling title or shimmer. The confetti and
+	   the waveform check the same setting in the script. */
+	@media (prefers-reduced-motion: reduce) {
+		*, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 	}
 </style>
 </head>
@@ -460,19 +471,19 @@
 <div id="player-bar" class="player-bar">
 	<div class="player-inner">
 		<div class="player-top">
-			<span class="spinning-coffee" id="spinning-coffee">☕</span>
+			<span class="spinning-coffee" id="spinning-coffee" aria-hidden="true">☕</span>
 			<div class="player-title-marquee" id="player-title-marquee">
 				<span id="player-title"></span>
 			</div>
 		</div>
 		<div class="player-bottom">
 			<div class="player-controls">
-				<button id="skip-back-btn" title="Back 15s">⏪</button>
-				<button id="play-pause-btn" class="play-pause-btn" title="Play/Pause">▶️</button>
-				<button id="skip-fwd-btn" title="Forward 15s">⏩</button>
+				<button id="skip-back-btn" title="Back 15s" aria-label="Back 15 seconds">⏪</button>
+				<button id="play-pause-btn" class="play-pause-btn" title="Play/Pause" aria-label="Play">▶️</button>
+				<button id="skip-fwd-btn" title="Forward 15s" aria-label="Forward 15 seconds">⏩</button>
 			</div>
 			<div class="progress-wrapper">
-				<div class="progress-container" id="progress-container">
+				<div class="progress-container" id="progress-container" role="slider" tabindex="0" aria-label="Seek" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0" aria-valuetext="0:00">
 					<svg class="skyline-bg" viewBox="0 0 800 40" preserveAspectRatio="none">
 						<path d="M0,40 L0,35 8,35 8,32 16,32 16,35 28,35 28,26 42,26 42,35 52,35 52,30 58,30 58,26 64,26 64,30 72,30 72,35 82,35 86,20 92,6 98,20 98,35 112,35 112,24 126,24 126,35 140,35 145,14 Q150,4 155,14 L155,35 170,35 170,28 184,28 184,35 194,35 194,20 200,16 204,12 208,16 212,20 212,35 228,35 228,28 244,28 244,35 264,35 272,20 276,16 276,4 280,4 280,16 284,20 284,22 Q320,30 356,22 L356,20 360,16 360,4 364,4 364,16 368,20 368,35 388,35 388,30 408,30 408,35 428,35 428,32 448,32 448,35 468,35 468,28 488,28 488,35 508,35 508,32 540,32 540,35 560,35 560,30 580,30 580,35 600,35 600,33 640,33 640,35 660,35 660,32 700,32 700,35 720,35 720,34 760,34 760,35 780,35 780,33 800,33 800,40 Z" fill="currentColor"/>
 					</svg>
@@ -483,7 +494,7 @@
 				</div>
 			</div>
 			<div class="player-time" id="player-time">0:00</div>
-			<button class="speed-toggle" id="speed-toggle" title="Playback speed">🚶 1x</button>
+			<button class="speed-toggle" id="speed-toggle" title="Playback speed" aria-label="Playback speed 1x">🚶 1x</button>
 		</div>
 		<canvas class="waveform-canvas" id="waveform-canvas"></canvas>
 	</div>
@@ -789,6 +800,8 @@ function initMiniMap(container, places) {
 let hasPlayedOnce = false;
 let waveAnimId = null;
 let wavePhase = 0;
+// The system's "reduce motion" setting: no confetti, a still waveform, no scrolling title.
+const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 const speeds = [
 	{ rate: 0.5, label: '\uD83D\uDC22 0.5x' },
 	{ rate: 1, label: '\uD83D\uDEB6 1x' },
@@ -802,7 +815,7 @@ function setupMarquee(text) {
 	playerTitle.textContent = text;
 	playerTitle.classList.remove('scrolling');
 	requestAnimationFrame(() => {
-		if (playerTitle.scrollWidth > wrap.clientWidth + 5) {
+		if (!reducedMotion.matches && playerTitle.scrollWidth > wrap.clientWidth + 5) {
 			playerTitle.textContent = text + '    \u00b7    ' + text + '    \u00b7    ';
 			const dur = Math.max(10, playerTitle.scrollWidth / 40);
 			playerTitle.style.setProperty('--marquee-dur', dur + 's');
@@ -828,6 +841,7 @@ document.getElementById('speed-toggle').addEventListener('click', () => {
 	speedIdx = (speedIdx + 1) % speeds.length;
 	audioPlayer.playbackRate = speeds[speedIdx].rate;
 	document.getElementById('speed-toggle').textContent = speeds[speedIdx].label;
+	document.getElementById('speed-toggle').setAttribute('aria-label', 'Playback speed ' + speeds[speedIdx].rate + 'x');
 });
 
 // Progress bar
@@ -842,6 +856,18 @@ audioPlayer.addEventListener('timeupdate', () => {
 	progFill.style.width = pct + '%';
 	progThumb.style.left = pct + '%';
 	timeDisplay.textContent = formatTime(audioPlayer.currentTime * 1000) + ' / ' + formatTime(audioPlayer.duration * 1000);
+	progContainer.setAttribute('aria-valuemax', Math.round(audioPlayer.duration));
+	progContainer.setAttribute('aria-valuenow', Math.round(audioPlayer.currentTime));
+	progContainer.setAttribute('aria-valuetext', formatTime(audioPlayer.currentTime * 1000) + ' of ' + formatTime(audioPlayer.duration * 1000));
+});
+// The bar is a slider for the keyboard too: arrows move 5 s, Page Up/Down a minute, Home/End the ends.
+progContainer.addEventListener('keydown', (e) => {
+	const step = { ArrowLeft: -5, ArrowDown: -5, ArrowRight: 5, ArrowUp: 5, PageDown: -60, PageUp: 60 }[e.key];
+	if (step === undefined && e.key !== 'Home' && e.key !== 'End') return;
+	e.preventDefault();
+	if (!audioPlayer.duration) return;
+	const t = e.key === 'Home' ? 0 : e.key === 'End' ? audioPlayer.duration : audioPlayer.currentTime + step;
+	audioPlayer.currentTime = Math.max(0, Math.min(audioPlayer.duration, t));
 });
 
 function seekTo(clientX) {
@@ -864,17 +890,20 @@ progContainer.addEventListener('touchmove', (e) => seekTo(e.touches[0].clientX),
 audioPlayer.addEventListener('play', () => {
 	playerBar.classList.add('playing');
 	document.getElementById('play-pause-btn').textContent = '\u23F8\uFE0F';
-	if (!hasPlayedOnce) { hasPlayedOnce = true; launchConfetti(); }
+	document.getElementById('play-pause-btn').setAttribute('aria-label', 'Pause');
+	if (!hasPlayedOnce) { hasPlayedOnce = true; if (!reducedMotion.matches) launchConfetti(); }
 	startWaveform();
 });
 audioPlayer.addEventListener('pause', () => {
 	playerBar.classList.remove('playing');
 	document.getElementById('play-pause-btn').textContent = '\u25B6\uFE0F';
+	document.getElementById('play-pause-btn').setAttribute('aria-label', 'Play');
 	stopWaveform();
 });
 audioPlayer.addEventListener('ended', () => {
 	playerBar.classList.remove('playing');
 	document.getElementById('play-pause-btn').textContent = '\u25B6\uFE0F';
+	document.getElementById('play-pause-btn').setAttribute('aria-label', 'Play');
 	stopWaveform();
 });
 // The file is missing or the connection dropped: say so. Forgetting the src makes the
@@ -892,7 +921,8 @@ function startWaveform() { if (!waveAnimId) drawWave(); }
 function stopWaveform() { if (waveAnimId) { cancelAnimationFrame(waveAnimId); waveAnimId = null; } }
 
 function drawWave() {
-	waveAnimId = requestAnimationFrame(drawWave);
+	// With reduced motion, one still frame instead of a loop.
+	waveAnimId = reducedMotion.matches ? null : requestAnimationFrame(drawWave);
 	const cvs = document.getElementById('waveform-canvas');
 	const ctx = cvs.getContext('2d');
 	const r = cvs.getBoundingClientRect();

@@ -47,10 +47,13 @@
 		text-decoration: none;
 		font-size: 0.9rem;
 		transition: color 0.2s ease;
+		padding: 4px 0; /* a 25 px tap target; padding on an inline link moves nothing */
 	}
 	.hero nav a:hover { color: #fff; }
 	.hero nav a[aria-current="page"] { color: #fff; border-bottom: 2px solid #FF4F00; padding-bottom: 2px; }
-	:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+	:focus-visible { outline: 2px solid #505050; outline-offset: 2px; }
+	/* White where the background is dark: the header photo and the player. */
+	.hero :focus-visible, .player-bar :focus-visible { outline-color: #fff; }
 	.container {
 		max-width: 800px;
 		margin: 0 auto;
@@ -486,6 +489,8 @@
 	}
 	.player-inner { max-width: 800px; margin: 0 auto; }
 	body:has(.player-bar.active) { padding-bottom: 80px; }
+	/* Tabbing to a button near the bottom scrolls it above the bar, not under it. */
+	html:has(.player-bar.active) { scroll-padding-bottom: 90px; } /* the bar is up to 78 px tall */
 	.player-top { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
 	.player-title { flex: 1; font-size: 0.85rem; color: rgba(255,255,255,0.85); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 	.player-bottom { display: flex; align-items: center; gap: 8px; }
@@ -494,6 +499,7 @@
 		background: none; border: none; color: #fff; font-size: 1rem;
 		cursor: pointer; padding: 4px; border-radius: 50%; line-height: 1;
 		transition: all 0.15s ease;
+		min-width: 24px; min-height: 24px; /* tap targets, also on phones' smaller emoji */
 	}
 	.player-controls button:hover { background: rgba(255,255,255,0.12); }
 	.play-pause-btn {
@@ -501,9 +507,9 @@
 		display: flex !important; align-items: center; justify-content: center;
 		background: rgba(255,255,255,0.08) !important;
 	}
-	.progress-container { flex: 1; position: relative; height: 20px; cursor: pointer; }
+	.progress-container { flex: 1; position: relative; height: 24px; cursor: pointer; } /* tap target */
 	.progress-track {
-		position: absolute; top: 8px; left: 0; right: 0;
+		position: absolute; top: 10px; left: 0; right: 0;
 		height: 4px; background: rgba(255,255,255,0.15); border-radius: 2px;
 	}
 	.progress-fill {
@@ -520,6 +526,10 @@
 		.search-box button { width: 100%; }
 		.player-controls button { font-size: 0.9rem; padding: 3px; }
 		.play-pause-btn { width: 30px !important; height: 30px !important; font-size: 1.1rem !important; }
+	}
+	/* "Reduce motion": no sliding player or animated transitions. */
+	@media (prefers-reduced-motion: reduce) {
+		*, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 	}
 </style>
 </head>
@@ -597,11 +607,11 @@
 		</div>
 		<div class="player-bottom">
 			<div class="player-controls">
-				<button id="skip-back-btn" title="Back 15s">⏪</button>
-				<button id="play-pause-btn" class="play-pause-btn" title="Play/Pause">▶️</button>
-				<button id="skip-fwd-btn" title="Forward 15s">⏩</button>
+				<button id="skip-back-btn" title="Back 15s" aria-label="Back 15 seconds">⏪</button>
+				<button id="play-pause-btn" class="play-pause-btn" title="Play/Pause" aria-label="Play">▶️</button>
+				<button id="skip-fwd-btn" title="Forward 15s" aria-label="Forward 15 seconds">⏩</button>
 			</div>
-			<div class="progress-container" id="progress-container">
+			<div class="progress-container" id="progress-container" role="slider" tabindex="0" aria-label="Seek" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0" aria-valuetext="0:00">
 				<div class="progress-track">
 					<div class="progress-fill" id="progress-fill"></div>
 				</div>
@@ -791,7 +801,7 @@ function renderGuests() {
 	// Alpha bar
 	alphaBar.innerHTML = '#ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map(l =>
 		letters.has(l)
-			? `<a href="#${anchorId(l)}">${l}</a>`
+			? `<a href="#${anchorId(l)}"${l === '#' ? ' aria-label="Numbers and symbols"' : ''}>${l}</a>`
 			: `<a class="disabled">${l}</a>`
 	).join('');
 	alphaBar.style.display = 'flex';
@@ -867,10 +877,13 @@ function makeGuestRow(name, count, onSuccess) {
 	const renameBtn = document.createElement('button');
 	renameBtn.className = 'btn-rename';
 	renameBtn.textContent = 'rename';
+	renameBtn.setAttribute('aria-label', 'Rename ' + name);
 
 	const deleteBtn = document.createElement('button');
 	deleteBtn.className = 'btn-delete';
 	deleteBtn.textContent = '×';
+	deleteBtn.setAttribute('aria-label', 'Delete ' + name);
+	deleteBtn.title = 'Delete';
 
 	actions.appendChild(renameBtn);
 	actions.appendChild(deleteBtn);
@@ -1275,6 +1288,18 @@ audioPlayer.addEventListener('timeupdate', () => {
 	const pct = (audioPlayer.currentTime / audioPlayer.duration) * 100;
 	progFill.style.width = pct + '%';
 	timeDisplay.textContent = formatSearchTime(audioPlayer.currentTime * 1000) + ' / ' + formatSearchTime(audioPlayer.duration * 1000);
+	progContainer.setAttribute('aria-valuemax', Math.round(audioPlayer.duration));
+	progContainer.setAttribute('aria-valuenow', Math.round(audioPlayer.currentTime));
+	progContainer.setAttribute('aria-valuetext', formatSearchTime(audioPlayer.currentTime * 1000) + ' of ' + formatSearchTime(audioPlayer.duration * 1000));
+});
+// The bar is a slider for the keyboard too: arrows move 5 s, Page Up/Down a minute, Home/End the ends.
+progContainer.addEventListener('keydown', (e) => {
+	const step = { ArrowLeft: -5, ArrowDown: -5, ArrowRight: 5, ArrowUp: 5, PageDown: -60, PageUp: 60 }[e.key];
+	if (step === undefined && e.key !== 'Home' && e.key !== 'End') return;
+	e.preventDefault();
+	if (!audioPlayer.duration) return;
+	const t = e.key === 'Home' ? 0 : e.key === 'End' ? audioPlayer.duration : audioPlayer.currentTime + step;
+	audioPlayer.currentTime = Math.max(0, Math.min(audioPlayer.duration, t));
 });
 
 function seekTo(clientX) {
@@ -1295,14 +1320,17 @@ progContainer.addEventListener('touchmove', (e) => seekTo(e.touches[0].clientX),
 audioPlayer.addEventListener('play', () => {
 	playerBar.classList.add('playing');
 	document.getElementById('play-pause-btn').textContent = '\u23F8\uFE0F';
+	document.getElementById('play-pause-btn').setAttribute('aria-label', 'Pause');
 });
 audioPlayer.addEventListener('pause', () => {
 	playerBar.classList.remove('playing');
 	document.getElementById('play-pause-btn').textContent = '\u25B6\uFE0F';
+	document.getElementById('play-pause-btn').setAttribute('aria-label', 'Play');
 });
 audioPlayer.addEventListener('ended', () => {
 	playerBar.classList.remove('playing');
 	document.getElementById('play-pause-btn').textContent = '\u25B6\uFE0F';
+	document.getElementById('play-pause-btn').setAttribute('aria-label', 'Play');
 });
 // The file is missing or the connection dropped: say so. Forgetting the src makes the
 // next play of this episode load it again.

@@ -47,10 +47,13 @@
 		text-decoration: none;
 		font-size: 0.9rem;
 		transition: color 0.2s ease;
+		padding: 4px 0; /* a 25 px tap target; padding on an inline link moves nothing */
 	}
 	.hero nav a:hover { color: #fff; }
 	.hero nav a[aria-current="page"] { color: #fff; border-bottom: 2px solid #FF4F00; padding-bottom: 2px; }
-	:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+	:focus-visible { outline: 2px solid #505050; outline-offset: 2px; }
+	/* White where the background is dark: the header photo. */
+	.hero :focus-visible { outline-color: #fff; }
 	.container {
 		max-width: 800px;
 		margin: 0 auto;
@@ -139,6 +142,10 @@
 		.container { padding: 1.5rem; }
 		.alpha-bar a { width: 28px; height: 28px; font-size: 0.8rem; }
 	}
+	/* "Reduce motion": no animated transitions. */
+	@media (prefers-reduced-motion: reduce) {
+		*, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+	}
 </style>
 </head>
 <body>
@@ -216,7 +223,9 @@ async function loadGuests() {
 		let barHtml = '';
 		for (const l of allLetters) {
 			if (letters.has(l)) {
-				barHtml += '<a href="#' + anchorId(l) + '">' + l + '</a>';
+				// A bare '#' is read out as "number sign".
+				const label = l === '#' ? ' aria-label="Numbers and symbols"' : '';
+				barHtml += '<a href="#' + anchorId(l) + '"' + label + '>' + l + '</a>';
 			} else {
 				barHtml += '<a class="disabled">' + l + '</a>';
 			}
