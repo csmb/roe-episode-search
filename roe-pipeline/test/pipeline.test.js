@@ -175,6 +175,31 @@ describe('a whole run', () => {
   });
 });
 
+describe('cleaning the finished transcript', () => {
+  it('drops a loop the per-chunk check misses, reports its stretch as a hole, and fixes misheard names', async () => {
+    // Minutes 20-30: Whisper cycling through six lines, too many for the chunk's
+    // "same as one of the last four lines" check, so no chunk sees a gap
+    const cycle = ['Something to wear.', 'Take the sun.', 'From everything.', 'Oh yeah.', 'Every day.', 'Come on now.'];
+    const inLoop = sec => sec >= 1200 && sec < 1800;
+    const t = setup({
+      fetch: {
+        speech: sec => (inLoop(sec) ? cycle[Math.round((sec - 5) / 10) % 6]
+          : sec === 605 ? 'Our friend soldier joins us.' : `Line at ${Math.round(sec)} seconds.`),
+      },
+    });
+    await t.start();
+    await drain(t);
+    expect((await t.status()).status).toBe('completed');
+    const lines = t.env.DB.rows('SELECT start_ms, text FROM transcript_segments ORDER BY start_ms');
+    for (const line of cycle) expect(lines.filter(l => l.text === line)).toHaveLength(1);
+    expect(lines.some(l => l.text === 'Our friend Suldrew joins us.')).toBe(true);
+    // The dropped stretch is a hole of 5+ minutes, shown on /status
+    const [hole] = (await t.status()).holes;
+    expect(hole.startMs).toBeLessThanOrEqual(1_265_000);
+    expect(hole.endMs).toBeGreaterThanOrEqual(1_795_000);
+  });
+});
+
 describe('when something goes wrong mid-transcription', () => {
   it('a crash mid-chunk costs only that chunk', async () => {
     let hang = true;

@@ -24,8 +24,8 @@ const PROBE_BYTES = 64 * 1024;
 const SAMPLE_BYTES = 64 * 1024;
 const FORCE = 'POST /process?key=<any part>&force=1';
 
-// " 2", "_2", " part 2", " pt 2" after the date at the end of the name
-const PART_SUFFIX = /^(.*\d{4}-\d{2}-\d{2})[ _]+(?:(?:part|pt)[ _]*)?([1-9]\d?)$/i;
+// " 2", "_2", "-2", " part 2", " pt 2" after the date at the end of the name
+const PART_SUFFIX = /^(.*\d{4}-\d{2}-\d{2})[ _-]+(?:(?:part|pt)[ _]*)?([1-9]\d?)$/i;
 const COPY_SUFFIX = /\s\(\d+\)$/; // "… (1).mp3", a second download of a file
 
 /**

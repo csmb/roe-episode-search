@@ -100,8 +100,9 @@ export async function transcribeFile(audioPath, episodeId, title = episodeId) {
 		}
 
 		const raw = [...state.own.flat(), ...state.boundary.flat()];
-		const { segments } = finishTranscription(raw, Math.round(state.tx.timeOffset * 1000));
+		const { segments, loops } = finishTranscription(raw, Math.round(state.tx.timeOffset * 1000));
 		return buildTranscript({
+			knownLoops: loops,
 			episodeId,
 			title,
 			segments,

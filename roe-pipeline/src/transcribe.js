@@ -7,7 +7,7 @@
  * never has to fit in one alarm's 15 minutes, and a crash costs one chunk.
  */
 
-import { cleanSegments, dropRepeatedLines, isMostlyNonLatin, isPromptEcho } from './clean-segments.js';
+import { cleanSegments, dropRepeatedLines, findLoops, applyWordCorrections, isMostlyNonLatin, isPromptEcho } from './clean-segments.js';
 import { pickChunkSlice } from './mp3-frames.js';
 import { fillGaps, retryHole, findBoundaryHole, findGaps, MIN_GAP_MS } from './gap-retry.js';
 import { SF_VOCAB_PROMPT } from './whisper-prompt.js';
@@ -105,24 +105,29 @@ export async function transcribeNextChunk(bucket, key, openaiApiKey, tx, { prevS
 }
 
 /**
- * Put the stored chunks together: sort, clean, and list the stretches of 5+
- * minutes still without transcript after every retry (long music, dead air,
- * or audio Whisper couldn't recover).
+ * Put the stored chunks together: sort, clean, fix the names Whisper mishears,
+ * drop repetition loops, and list the stretches of 5+ minutes still without
+ * transcript after every retry (long music, dead air, a dropped loop, or audio
+ * Whisper couldn't recover).
  *
  * @param {Array} segments - every chunk's segments plus the boundary recoveries
  * @param {number} durationMs - length of the audio
- * @returns {{ segments: Array, holes: Array<{startMs: number, endMs: number}> }}
+ * @returns {{ segments: Array, holes: Array<{startMs: number, endMs: number}>, loops: Array }}
  */
 export function finishTranscription(segments, durationMs) {
   const sorted = [...segments].sort((a, b) => a.start_ms - b.start_ms);
-  const cleaned = dropRepeatedLines(cleanSegments(sorted));
+  const corrected = dropRepeatedLines(cleanSegments(sorted)).map(s => ({ ...s, text: applyWordCorrections(s.text) }));
+  const { segments: cleaned, loops } = findLoops(corrected);
+  if (loops.length > 0) {
+    console.warn(`  Dropped ${corrected.length - cleaned.length} looping lines: ${loops.map(l => `${Math.round(l.startMs / 60000)}-${Math.round(l.endMs / 60000)} min "${l.top.slice(0, 40)}"`).join(', ')}`);
+  }
   console.log(`  Total: ${cleaned.length} segments (${sorted.length - cleaned.length} removed by cleaning), ${durationMs}ms`);
 
   const holes = findGaps(cleaned, 0, durationMs, MIN_GAP_MS);
   if (holes.length > 0) {
     console.warn(`  ${holes.length} hole(s) of 5+ min left: ${holes.map(h => `${Math.round(h.startMs / 60000)}–${Math.round(h.endMs / 60000)} min`).join(', ')}`);
   }
-  return { segments: cleaned, holes };
+  return { segments: cleaned, holes, loops };
 }
 
 async function readRange(bucket, key, offset, length) {

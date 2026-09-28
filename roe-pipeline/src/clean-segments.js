@@ -30,6 +30,19 @@ export function isPromptEcho(text) {
   return hits / items.length >= 0.6;
 }
 
+// Names Whisper consistently mishears. Keys are lowercase; replacements are
+// case-sensitive. Both pipelines apply these (the scripts through lib.js).
+const WORD_CORRECTIONS = {
+  soldier: 'Suldrew',
+};
+
+export function applyWordCorrections(text) {
+  for (const [wrong, right] of Object.entries(WORD_CORRECTIONS)) {
+    text = text.replace(new RegExp(`\\b${wrong}\\b`, 'gi'), right);
+  }
+  return text;
+}
+
 export function cleanSegments(segments) {
   // Build hallucination frequency map from original segments before any dedup.
   // This catches short phrases that Whisper repeated many times consecutively.

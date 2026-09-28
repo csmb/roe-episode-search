@@ -52,11 +52,12 @@ export function readTranscript(episodeId) {
  * @param {object} [run.settings] - what the engine was run with
  * @param {string} [run.audioFile]
  * @param {number} [run.removedByCleaning] - lines the engine's cleaning dropped
- * @param {Array} [run.holes] - holes the engine already knows about (OpenAI's retries)
+ * @param {Array} [run.knownLoops] - loops the engine's cleaning already dropped (the Worker's finishTranscription)
  */
-export function buildTranscript({ episodeId, title = episodeId, segments, audioMs, engine, model, settings = {}, audioFile = null, removedByCleaning = 0 }) {
+export function buildTranscript({ episodeId, title = episodeId, segments, audioMs, engine, model, settings = {}, audioFile = null, removedByCleaning = 0, knownLoops = [] }) {
 	const corrected = segments.map((s) => ({ ...s, text: applyWordCorrections(s.text) }));
-	const { segments: kept, loops } = findLoops(corrected);
+	const { segments: kept, loops: found } = findLoops(corrected);
+	const loops = [...knownLoops, ...found]; // knownLoops: already dropped by the engine's own cleaning
 	const coverage = checkCoverage(kept, audioMs);
 	return {
 		episode_id: episodeId,
@@ -69,7 +70,7 @@ export function buildTranscript({ episodeId, title = episodeId, segments, audioM
 			settings,
 			audio_file: audioFile ? path.basename(audioFile) : null,
 			audio_ms: audioMs,
-			lines_removed: { cleaning: removedByCleaning, loops: loops.reduce((n, l) => n + l.removed, 0) },
+			lines_removed: { cleaning: removedByCleaning - knownLoops.reduce((n, l) => n + l.removed, 0), loops: loops.reduce((n, l) => n + l.removed, 0) },
 			loops,
 			holes: coverage.holes,
 			coverage: { ok: coverage.ok, problems: coverage.problems },

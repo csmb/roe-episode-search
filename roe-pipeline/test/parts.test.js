@@ -10,6 +10,7 @@ describe('parseUpload', () => {
     ['Roll Over Easy 2026-10-01.mp3', 1],
     ['Roll Over Easy 2024-08-08 4.mp3', 4],
     ['Roll Over Easy 2024-08-08_2.mp3', 2],
+    ['Roll Over Easy 2026-10-01-2.mp3', 2],
     ['Roll Over Easy 2024-08-08 Part 3.mp3', 3],
     ['Roll Over Easy 2022-08-19 16.mp3', 16],
     ['Roll%20Over%20Easy%202026-10-01%202.mp3', 2],

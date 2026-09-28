@@ -105,18 +105,8 @@ export function isAscii(text) {
 	return /^[\x00-\x7F]*$/.test(text);
 }
 
-// Word corrections: whisper consistently mishears these proper nouns.
-// Keys are lowercase; replacements are case-sensitive.
-const WORD_CORRECTIONS = {
-	soldier: 'Suldrew',
-};
-
-export function applyWordCorrections(text) {
-	for (const [wrong, right] of Object.entries(WORD_CORRECTIONS)) {
-		text = text.replace(new RegExp(`\\b${wrong}\\b`, 'gi'), right);
-	}
-	return text;
-}
+// Word corrections ("soldier" -> "Suldrew"): the Worker's list, so both pipelines agree
+export { applyWordCorrections } from '../roe-pipeline/src/clean-segments.js';
 
 // ── Wrangler / D1 helpers ─────────────────────────────────────────────
 
