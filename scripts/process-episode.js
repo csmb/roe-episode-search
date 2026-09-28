@@ -239,8 +239,20 @@ async function transcribe(mp3Path, episodeId, force, engine, noGpu) {
 	timer.done(`${transcript.segments.length} segments (${m.lines_removed.cleaning} removed by cleanup, ${m.lines_removed.loops} by the loop check)`);
 }
 
-/** whisper.cpp on this machine, then the Worker's cleaning (roe-pipeline/src/clean-segments.js). */
+/** whisper.cpp, then save the transcript (keeping the old one's vector IDs for the embeddings step). */
 function transcribeWithWhisperCpp(mp3Path, episodeId, noGpu) {
+	const transcript = whisperCppTranscript(mp3Path, episodeId, noGpu);
+	const old = readTranscript(episodeId);
+	const reasons = writeTranscript(transcript, { oldVectorIds: old ? chunkEpisode(old).map((c) => c.id) : [] });
+	return { transcript, reasons };
+}
+
+/**
+ * whisper.cpp on this machine, then the Worker's cleaning
+ * (roe-pipeline/src/clean-segments.js). Returns the transcript without saving
+ * it: repair-archive.js checks a new transcript before it replaces the old one.
+ */
+export function whisperCppTranscript(mp3Path, episodeId, noGpu = false) {
 	const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'roe-whisper-'));
 	const audioMs = probeDurationMs(mp3Path);
 	const { gpuArgs, env } = whisperOptions(noGpu);
@@ -293,8 +305,7 @@ function transcribeWithWhisperCpp(mp3Path, episodeId, noGpu) {
 			.filter((seg) => seg.text.length >= 3); // whisper.cpp's stray fragments
 
 		const segments = cleanSegments(parsed);
-		const old = readTranscript(episodeId);
-		const transcript = buildTranscript({
+		return buildTranscript({
 			episodeId,
 			segments,
 			audioMs,
@@ -304,8 +315,6 @@ function transcribeWithWhisperCpp(mp3Path, episodeId, noGpu) {
 			settings: { language: 'en', prompt_sha1: PROMPT_SHA1, max_context: 0, carry_initial_prompt: true, vad: true, suppress_nst: true, gpu: !noGpu },
 			removedByCleaning: parsed.length - segments.length,
 		});
-		const reasons = writeTranscript(transcript, { oldVectorIds: old ? chunkEpisode(old).map((c) => c.id) : [] });
-		return { transcript, reasons };
 	} finally {
 		fs.rmSync(tmpDir, { recursive: true, force: true });
 	}
