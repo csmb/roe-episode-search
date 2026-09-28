@@ -651,11 +651,16 @@ function showTab(tab) {
 
 function getPassword() { return sessionStorage.getItem('admin_pw') || ''; }
 
-async function verifyPassword(pw) {
+// Null when the password works; otherwise what to tell the user. After too many
+// wrong passwords from here, the server refuses even the right one for a while
+// and says for how long.
+async function passwordProblem(pw) {
 	const res = await fetch('/api/admin/unreviewed', {
 		headers: { 'X-Admin-Password': pw },
 	});
-	return res.ok;
+	if (res.ok) return null;
+	if (res.status === 429) return (await res.json().catch(() => null))?.error || 'Too many wrong passwords. Try again later.';
+	return 'Wrong password';
 }
 
 (async function initAuth() {
@@ -666,7 +671,7 @@ async function verifyPassword(pw) {
 
 	// Check if already authenticated this session
 	const saved = getPassword();
-	if (saved && await verifyPassword(saved)) {
+	if (saved && !(await passwordProblem(saved))) {
 		overlay.remove();
 		loadAndRender();
 		return;
@@ -677,12 +682,14 @@ async function verifyPassword(pw) {
 		if (!pw) return;
 		btn.disabled = true;
 		err.style.display = 'none';
-		if (await verifyPassword(pw)) {
+		const problem = await passwordProblem(pw);
+		if (!problem) {
 			sessionStorage.setItem('admin_pw', pw);
 			overlay.remove();
 			loadAndRender();
 		} else {
-			err.style.display = '';
+			err.textContent = problem;
+			err.style.display = 'block'; // the stylesheet hides it, so '' would too
 			btn.disabled = false;
 			input.select();
 		}
@@ -1111,7 +1118,9 @@ async function runSearch() {
 async function fetchSearchResults(isNew) {
 	try {
 		const endpoint = searchModeVal === 'semantic' ? '/api/semantic-search' : '/api/search';
-		const res = await fetch(endpoint + '?q=' + encodeURIComponent(searchQuery) + '&page=' + searchPage);
+		const res = await fetch(endpoint + '?q=' + encodeURIComponent(searchQuery) + '&page=' + searchPage, {
+			headers: { 'X-Admin-Password': getPassword() },
+		});
 		const data = await res.json();
 
 		if (data.error) {

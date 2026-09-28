@@ -1,6 +1,6 @@
 # ROE Episode Search
 
-An archive of the Roll Over Easy podcast. Browse episodes, explore guests, and discover places mentioned on the show. There is no public search box: transcript search (FTS5 + Cloudflare Vectorize) is on the password-protected admin page, though its API routes (`/api/search`, `/api/semantic-search`) are open.
+An archive of the Roll Over Easy podcast. Browse episodes, explore guests, and discover places mentioned on the show. There is no public search: transcript search (FTS5 + Cloudflare Vectorize) is on the password-protected admin page, and its API routes (`/api/search`, `/api/semantic-search`) need the admin password too.
 
 **Live:** https://rollovereasy.org
 
@@ -61,7 +61,7 @@ chunk at most, and the run can be resumed (see "Processing a new episode").
 
 ### Components
 
-**Cloudflare Worker** (`roe-search/src/index.js`) — serves the frontend and handles all API routes: keyword search (FTS5), semantic search (Vectorize), episode/guest/place listings, and audio proxying from R2 with range request support. API requests are rate limited per IP by Cloudflare's rate-limiting bindings (`ratelimits` in `roe-search/wrangler.jsonc`), with a budget per kind of route each minute: 30 keyword searches, 10 semantic searches, 120 for the pages' lists and details (map places, place detail, episodes, guests, On This Day) and 1,000 for `/api/episode/…`, which `/episodes` calls once per card as you scroll. The public feeds `/api/episodes/latest` and `/api/episodes/stats`, the pages, `/audio` and the admin API are not limited.
+**Cloudflare Worker** (`roe-search/src/index.js`) — serves the frontend and handles all API routes: keyword search (FTS5), semantic search (Vectorize), episode/guest/place listings, and audio proxying from R2 with range request support. API requests are rate limited per IP by Cloudflare's rate-limiting bindings (`ratelimits` in `roe-search/wrangler.jsonc`), with a budget per kind of route each minute: 30 keyword searches, 10 semantic searches, 120 for the pages' lists and details (map places, place detail, episodes, guests, On This Day) and 1,000 for `/api/episode/…`, which `/episodes` calls once per card as you scroll. The public feeds `/api/episodes/latest` and `/api/episodes/stats`, the pages and `/audio` are not limited. The admin password (on `/api/admin/…` and the two search routes) has its own limit: after 5 wrong passwords in a minute, that visitor's password requests are refused for 15 minutes, the right password included. A request with no password isn't counted.
 
 **Cloudflare D1** — SQLite database with episode metadata, timestamped transcript segments, an FTS5 virtual table, and guest-episode links.
 

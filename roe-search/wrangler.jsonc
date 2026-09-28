@@ -33,7 +33,14 @@
   // src/index.js says which route spends which. A namespace_id can be any
   // positive integer, but it is account-wide: a Worker reusing one shares its counts.
   "ratelimits": [
-    // Keyword search. Only the admin page has a search box, but the route is public.
+    // Wrong admin passwords. Past this, the client is shut out of the password
+    // routes for 15 minutes (refuseAdmin() in src/index.js).
+    {
+      "name": "ADMIN_GUESS_LIMITER",
+      "namespace_id": "1005",
+      "simple": { "limit": 5, "period": 60 }
+    },
+    // Keyword search, for the admin page (it needs the password too).
     {
       "name": "SEARCH_LIMITER",
       "namespace_id": "1001",

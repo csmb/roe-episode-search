@@ -4,14 +4,17 @@
  * checks the fields they read, so a deploy that silently drops a route (as
  * 34357ed did in April) fails loudly. A few checks also pin behaviour: search
  * ranking, the On This Day fallback, /latest skipping unfinished episodes, the
- * header photo the pages use and the map's cache header. Read-only; 21 requests.
+ * header photo the pages use and the map's cache header. Read-only; 22 requests,
+ * 23 with ADMIN_PASSWORD set (search ranking needs the admin password).
  *
  *   npm run smoke                 # https://rollovereasy.org
  *   node smoke-test.mjs http://roe.localhost:8791
+ *   ADMIN_PASSWORD=… npm run smoke   # also checks search ranking
  */
 
 const BASE = (process.argv[2] || 'https://rollovereasy.org').replace(/\/$/, '');
 const failures = [];
+const skipped = [];
 let passed = 0;
 
 async function check(name, path, test, init) {
@@ -81,13 +84,21 @@ await check('/api/on-this-day fallback', '/api/on-this-day?date=01-02', (res, bo
 	res.status !== 200 ? `status ${res.status}`
 		: body?.shown_date !== '01-01' ? `shown_date ${body?.shown_date}, expected 01-01`
 		: !(body.episodes?.length >= 1) ? 'no episodes' : null);
+// Transcript search needs the admin password. A request without one isn't
+// counted as a wrong guess, so this never trips the guess limit.
+await check('keyword search without password', '/api/search?q=stairway', status(401));
+await check('semantic search without password', '/api/semantic-search?q=coffee', status(401));
 // Keyword search ranks episodes by matching lines: the 2016 staircase show says "stairway" most.
-await check('/api/search', '/api/search?q=stairway', (res, body) => {
-	if (res.status !== 200) return `status ${res.status}`;
-	const first = body?.results?.[0]?.episode_id;
-	if (!first?.includes('_2016-03-03_')) return `first result is ${first}, expected the 2016-03-03 show`;
-	return body.has_more === true ? null : `has_more is ${body.has_more}, expected true`;
-});
+if (process.env.ADMIN_PASSWORD) {
+	await check('/api/search', '/api/search?q=stairway', (res, body) => {
+		if (res.status !== 200) return `status ${res.status}`;
+		const first = body?.results?.[0]?.episode_id;
+		if (!first?.includes('_2016-03-03_')) return `first result is ${first}, expected the 2016-03-03 show`;
+		return body.has_more === true ? null : `has_more is ${body.has_more}, expected true`;
+	}, { headers: { 'X-Admin-Password': process.env.ADMIN_PASSWORD } });
+} else {
+	skipped.push('search ranking (set ADMIN_PASSWORD to run it)');
+}
 await check('/api/guests', '/api/guests', (res, body) =>
 	res.status !== 200 ? `status ${res.status}` : !Array.isArray(body?.guests) || body.guests.length === 0 ? 'no guests' : null);
 // About 1 MB, so browsers should keep a copy.
@@ -110,4 +121,4 @@ if (failures.length) {
 	for (const f of failures) console.error('  ✗ ' + f);
 	process.exit(1);
 }
-console.log(`Smoke test passed against ${BASE}: ${passed} checks`);
+console.log(`Smoke test passed against ${BASE}: ${passed} checks` + (skipped.length ? `; skipped ${skipped.join(', ')}` : ''));

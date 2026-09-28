@@ -15,8 +15,9 @@ import { HOST_NAMES } from '../../roe-pipeline/src/hosts.js';
 //
 // Each kind of route has its own budget, so a busy map session can't use up
 // search. Routes with none: the pages, /audio, the admin API (behind its
-// password) and the public feeds /api/episodes/latest and /api/episodes/stats,
-// which other sites read and browsers cache for an hour.
+// password, whose wrong guesses have their own limit: see Admin password) and
+// the public feeds /api/episodes/latest and /api/episodes/stats, which other
+// sites read and browsers cache for an hour.
 function rateLimiterFor(pathname) {
 	switch (pathname) {
 		case '/api/search':
@@ -103,10 +104,50 @@ async function timingSafeEqual(a, b) {
 	return diff === 0;
 }
 
-async function checkAdminPassword(request, env) {
+// ── Admin password ────────────────────────────────────────────────────
+// Wrong passwords are counted per IP (ADMIN_GUESS_LIMITER: 5 a minute). Past
+// that, the client is shut out of every password route for ADMIN_BLOCK_SEC,
+// the right password included: counting only the misses would let a guesser
+// carry on regardless and just wait for a 200. The block is kept in this
+// location's cache, the same scope as the count. A request with no password
+// isn't counted, so loading the admin page before logging in costs nothing.
+const ADMIN_BLOCK_SEC = 15 * 60;
+
+// One fixed host, so rollovereasy.org and www. share a client's block.
+const adminBlockKey = clientIP => new Request(`https://rollovereasy.org/__admin-block/${encodeURIComponent(clientIP)}`);
+
+async function adminBlocked(clientIP) {
+	try {
+		return !!(await caches.default.match(adminBlockKey(clientIP)));
+	} catch (err) {
+		console.error('Could not read the admin block list', err);
+		return false;
+	}
+}
+
+async function blockAdmin(clientIP) {
+	try {
+		await caches.default.put(adminBlockKey(clientIP), new Response('blocked', {
+			headers: { 'Cache-Control': `max-age=${ADMIN_BLOCK_SEC}` },
+		}));
+	} catch (err) {
+		console.error('Could not block a client after too many wrong passwords', err);
+	}
+}
+
+// Null when the request has the right admin password; otherwise the answer to send.
+async function refuseAdmin(request, env, clientIP) {
 	const password = request.headers.get('X-Admin-Password');
-	if (!password || !env.ADMIN_PASSWORD) return false;
-	return timingSafeEqual(password, env.ADMIN_PASSWORD);
+	if (!password || !env.ADMIN_PASSWORD) return json({ error: 'Unauthorized' }, 401, request);
+	const tooMany = () => json({ error: `Too many wrong passwords. Try again in ${ADMIN_BLOCK_SEC / 60} minutes.` }, 429, request,
+		{ 'Retry-After': String(ADMIN_BLOCK_SEC) });
+	if (await adminBlocked(clientIP)) return tooMany();
+	if (await timingSafeEqual(password, env.ADMIN_PASSWORD)) return null;
+	if (!(await withinRateLimit(env, 'ADMIN_GUESS_LIMITER', clientIP))) {
+		await blockAdmin(clientIP);
+		return tooMany();
+	}
+	return json({ error: 'Unauthorized' }, 401, request);
 }
 
 // CORS preflight. The actual responses set Allow-Origin via json(); a preflight
@@ -162,10 +203,14 @@ async function handleRequest(request, env) {
 		return new Response(ADMIN_HTML, { headers: HTML_HEADERS });
 	}
 	if (url.pathname.startsWith('/api/admin/')) {
-		if (!(await checkAdminPassword(request, env))) {
-			return json({ error: 'Unauthorized' }, 401, request);
-		}
+		const refusal = await refuseAdmin(request, env, clientIP);
+		if (refusal) return refusal;
 		return handleAdminApi(url, env, request);
+	}
+	// Transcript search is for the admin page only (X6).
+	if (url.pathname === '/api/search' || url.pathname === '/api/semantic-search') {
+		const refusal = await refuseAdmin(request, env, clientIP);
+		if (refusal) return refusal;
 	}
 
 	// Spend the route's budget, if it has one (see Rate limiting). The 429 has
