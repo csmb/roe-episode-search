@@ -41,6 +41,8 @@ roe-episode-search/
 │   ├── process-all.js         # Batch runner with checkpoint/resume; falls back to a date's next recording
 │   ├── discover-episodes.js   # Scan directory, parse filenames, a date's file and its alternates
 │   ├── generate-summaries.js  # Regenerate AI summaries
+│   ├── rewrite-summaries.js   # Rewrite only the summary text (repaired episodes): dry run, review file, --apply --yes
+│   ├── summary-engines.js     # Its summary-only prompt; GPT-4o-mini or a local model through Ollama
 │   ├── cleanup-places.js      # Remove false positive places from D1
 │   ├── redo-places.js         # Redo one episode's places with roe-pipeline's code
 │   ├── delete-episode.js      # Back up, then remove an episode from D1 and Vectorize (--yes)
@@ -101,7 +103,7 @@ cd roe-pipeline && npm test
 
 ### Run the scripts' tests
 ```
-node --test scripts/test/*.test.js    # discover-episodes, process-all, the seed SQL, the repair tools' checks and plans
+node --test scripts/test/*.test.js    # discover-episodes, process-all, the seed SQL, the repair tools' checks and plans, the summary rewrite
 ```
 
 ### Test the scripts on a scratch D1
@@ -199,6 +201,30 @@ cd roe-search && npx wrangler d1 execute roe-episodes --remote --file=../schema.
 node scripts/generate-summaries.js --dry-run    # lists the episodes it would do (no OpenAI calls)
 node scripts/generate-summaries.js
 ```
+
+### Rewrite summary text only (repaired episodes)
+```
+node scripts/rewrite-summaries.js --from-repair --engine ollama --plan               # episodes, size, cost; nothing asked
+node scripts/rewrite-summaries.js --only <date|id>,… --engine ollama                # dry run: old and new side by side
+node scripts/rewrite-summaries.js --from-repair --engine openai --max-cost 1          # GPT-4o-mini (paid), capped
+node scripts/rewrite-summaries.js --apply transcripts/.summaries/<file>.json --yes     # write what you read
+```
+Sets `episodes.summary` and nothing else: title, guests, `guests_reviewed` and `guest_start_ms`
+stay, reviewed episodes included (unlike `generate-summaries.js`). `--from-repair` takes the
+episodes `transcripts/.repair/progress.json` shows as published or done; an episode the repair is
+still working on is always left out. The prompt (`summary-engines.js`) is the Worker's summary
+instructions asking for the summary only, with the hosts named as never guests and a reviewed
+episode's guests given for their spelling; both engines get the same one. `--engine openai` runs
+only within `--max-cost` (default $0: it stops after the plan); a dry run spends it too.
+`--engine ollama` (default model `qwen3:30b`, free) needs the Ollama app or `ollama serve`; its
+context is 32,768 tokens (`--num-ctx`), and a transcript too long for it leaves out its shortest
+lines; thinking is off unless `--think`. Ollama is called over `node:http`: `fetch` gives up after
+300 s without response headers, and Ollama sends none until its whole answer is ready. The dry run
+saves `transcripts/.summaries/<time>-<engine>-<model>.json` and `.md` with notes on what to check
+(weather, temperatures or names the transcript lacks, a host called a guest). Writing backs up to
+`transcripts/.backups/<date>-summaries/` (`restore.sql`), then one import that changes a summary
+only where it is still the one the new one was made against, then checks. Details: README, "New
+summaries for repaired episodes".
 
 ### Rebuild or check the search index (Vectorize)
 ```

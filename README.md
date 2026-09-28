@@ -157,6 +157,7 @@ All scripts are in `scripts/` and run locally with Node.js:
 | `transcribe-all.js` | The same for every show in an archive folder that has no transcript yet (split shows are skipped and listed). |
 | `generate-embeddings.js` | Make episodes' search vectors exactly the windows of their lines in D1, with the pipeline's code (see "Rebuilding the search index"). A dry run unless `--yes`: `--only <id>[,<id>…]` or `--all` (every D1 episode), `--orphans` for vectors whose episode is gone, `--resume` to carry on a stopped run. |
 | `generate-summaries.js` | Titles, summaries and guests with the pipeline's prompt and checks, for episodes missing a summary (`--force`, `--include-reviewed`, `--dry-run`). |
+| `rewrite-summaries.js` | Rewrite only the summary text of some episodes (`--only`, or `--from-repair`: those the transcript repair finished) from their transcript in D1, with GPT-4o-mini (`--engine openai`, paid) or a local model through Ollama (`--engine ollama`, free). Titles, guests, reviewed flags and interview times stay, reviewed episodes included. A dry run unless `--yes`; see "New summaries for repaired episodes". |
 | `process-all.js` | Batch runner with checkpoint/resume, cooldown, retries, and quality gates. Leaves episodes already complete on the site alone. When the gate rejects a transcript it tries the date's next recording, if there is one; a date whose every recording was rejected is skipped until a new or changed file for it appears (rejected transcripts go to `transcripts/.rejected/`). |
 | `discover-episodes.js` | Scan an audio directory, parse filenames, deduplicate by date. A date recorded as several different files is skipped and listed as `MULTI-PART` (join the parts first); for any other date it also lists the date's other recordings to fall back on (a file the size of another is a copy and is left out). |
 | `clean-hallucinations.js` | Delete Whisper's repetition loops from episodes already in D1, with the pipelines' loop check (each looping line keeps its first copy). |
@@ -308,6 +309,24 @@ node scripts/scan-transcripts.js --only 2014-09-04,… --json after.json        
 - **Lines only:** `scripts/clean-junk-lines.js --only <dates>` (a dry run unless `--yes`) is what the L rows run: the prompt read back as speech (today's prompt or the old one's terms), loop repeats, and with `--rules non-latin` wrong-language lines in a show's first 10 minutes.
 
 To undo one episode, use its backup, `transcripts/.backups/<date>-<id>/` (its README.txt has the exact commands): `restore.sql` puts the D1 rows back (`npx wrangler d1 execute roe-episodes --remote --file …`), `generate-embeddings.js --only <id> --yes` makes its search entries again from those lines, copy the old `<id>.json` back into `transcripts/`, and for a join put the old `<id>.m4a` back in R2. Then remove the episode from `transcripts/.repair/progress.json` if it should be redone.
+
+### New summaries for repaired episodes
+
+The repair keeps each episode's title, summary and guests, but the summaries were written from the old, partial transcripts (one has a "sunny 65 degree" morning the hosts never mention). `scripts/rewrite-summaries.js` writes a new summary from the transcript now in D1 and changes nothing else: the title, the guests, the reviewed flag and the interview time stay, reviewed episodes included.
+
+```bash
+node scripts/rewrite-summaries.js --from-repair --engine ollama --plan          # the episodes, their size, the cost; nothing asked
+node scripts/rewrite-summaries.js --only 2014-03-20,2020-01-16 --engine ollama   # a dry run: old and new side by side
+node scripts/rewrite-summaries.js --from-repair --engine openai --max-cost 1     # GPT-4o-mini, within $1
+node scripts/rewrite-summaries.js --apply transcripts/.summaries/<file>.json --yes   # write the summaries you read
+```
+
+- **Which episodes:** `--only <dates or IDs>`, or `--from-repair`: the episodes `transcripts/.repair/progress.json` shows as published (a new transcript) or done (junk lines deleted, or the duration fixed), less any no longer in D1. An episode the repair is still working on is always left out: its transcript is about to change, and the repair checks that its summary doesn't.
+- **The prompt** is the Worker's summary instructions (`roe-pipeline/src/summary.js`) asking for the summary alone, with the date and sunrise/sunset, the hosts named as never guests (`hosts.js`), a reviewed episode's hand-checked guests for their spelling, and "never make up weather, temperatures, guests, places or events". A transcript too thin to summarize (the Worker's rule) keeps its summary.
+- **`--engine openai`:** GPT-4o-mini with the Worker's settings, about half a cent a 2-hour show (180 shows: about $0.85). The run stops after the plan unless `--max-cost` covers the estimate, and a dry run spends it too (it makes the summaries to show them). A failed reply is asked for again up to three times.
+- **`--engine ollama`:** a local model (`--model`, default `qwen3:30b`), free; the Ollama app or `ollama serve` has to be running. The context is set to 32,768 tokens (`--num-ctx`), which fits nearly every 2-hour show; a longer transcript leaves out its shortest lines ("Yeah.", "Mm-hmm.") to fit, since Ollama would otherwise cut the prompt's start. Thinking is off; `--think` lets a thinking model reason first (slower; the reasoning is kept out of the answer). Each reply may take minutes (the limit is 30), and a failed one is asked for once more. qwen3:30b is 18.6 GB, so on a 24 GB Mac part of it may run on the CPU; don't run it while whisper.cpp has the GPU.
+- **The review:** each episode's old and new summary are printed side by side and saved to `transcripts/.summaries/<time>-<engine>-<model>.json` and `.md`, with notes on what to check in each: weather or a temperature the transcript never mentions, capitalized words it doesn't have (a made-up name), a host called a guest, reasoning where a summary should be.
+- **Writing:** `--apply <file.json> --yes` writes the summaries in the file (edit them there first if you like) without asking a model again; `--yes` on a run writes as soon as it's done. First a backup, `transcripts/.backups/<date>-summaries/` (`summaries.json`, `restore.sql`, `README.txt`), then one D1 import that sets only `summary`, and only where it is still the summary the new one was made against (one changed since is left alone), then a check that the new summaries are in and nothing else changed. `restore.sql` puts the old ones back.
 
 ### Local development
 
