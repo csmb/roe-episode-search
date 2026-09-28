@@ -2,8 +2,9 @@
 
 /**
  * Process a single episode through the full pipeline:
- *   1. Transcribe locally with whisper.cpp
- *   2. Seed D1 database
+ *   1. Transcribe: locally with whisper.cpp, or with OpenAI Whisper (--engine
+ *      openai, the Cloudflare pipeline's own code, about $0.72 a show)
+ *   2. Seed D1 database (only a transcript that covers the recording)
  *   3. Generate embeddings → Vectorize
  *   4. Generate AI summary
  *   5. Detect guest-interview start (guest_start_ms)
@@ -18,6 +19,8 @@
  *   --skip step1,step2       Skip specific steps (transcribe, seed-db, embeddings, summary, guest-start, upload-audio)
  *   --include-reviewed       Also redo a reviewed episode's title, summary, guests and interview time
  *   --local                  Use the local D1 copy and R2 instead of production (no embeddings)
+ *   --engine whisper.cpp|openai  How to transcribe (default whisper.cpp)
+ *   --accept-short           Seed a transcript that stops early (e.g. a recording that was lost)
  *
  * An episode whose guests were reviewed by hand (guests_reviewed = 1) keeps its
  * title, summary, guests and interview time, even with --force, unless
@@ -25,6 +28,13 @@
  * The interview time is only filled in when empty, unless guest-start is
  * forced. Forcing transcribe also forces seed-db, so D1 gets the new
  * transcript. A mistyped option or step name stops the run.
+ *
+ * Transcripts are written by transcript-file.js for both engines (spelling
+ * fixes and loop removal before saving, a meta block, the re-transcribe list).
+ * The seed step refuses a transcript that ends past its recording or before 90%
+ * of it, re-seeds when D1 holds a different version of the transcript, and
+ * gives the episode the recording's real length. The embeddings step deletes
+ * the vectors a replaced transcript had and the new one doesn't.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -33,24 +43,32 @@ import path from 'node:path';
 import os from 'node:os';
 
 import {
-	loadEnv, escapeSQL, isAscii, wranglerExec, queryJSON, runSQL,
-	stepTimer, logWarn, transcriptsDir,
-	applyWordCorrections, parseEpisodeDate, fetchSunriseSunset, convertAudio,
-	R2_BUCKET, R2_PUBLIC_URL, VECTORIZE_INDEX, EMBED_MODEL,
+	loadEnv, escapeSQL, wranglerExec, queryJSON, runSQL,
+	stepTimer, logWarn, transcriptsDir, applyWordCorrections, convertAudio, probeDurationMs,
+	R2_BUCKET, R2_PUBLIC_URL,
 } from './lib.js';
 import { SF_VOCAB_PROMPT } from '../roe-pipeline/src/whisper-prompt.js';
-import { purgeEpisode } from './clean-hallucinations.js';
-import { generateSummaryFromText } from './generate-summaries.js';
+import { cleanSegments } from '../roe-pipeline/src/clean-segments.js';
+import { checkCoverage } from '../roe-pipeline/src/coverage.js';
+import { chunkSegments, generateEmbeddings as embedEpisode } from '../roe-pipeline/src/embeddings.js';
+import { summarizeEpisode, saveSummary } from './generate-summaries.js';
 import { chunkEpisode } from './generate-embeddings.js';
 import { detectGuestStart, MIN_START_MS } from './guest-start.js';
+import { transcribeAndSave } from './transcribe.js';
+import { remoteAI, remoteVectorize } from './remote-cloudflare.js';
+import {
+	buildTranscript, writeTranscript, readTranscript, transcriptPath, PROMPT_SHA1,
+	rememberStaleVectors, staleVectors, forgetStaleVectors,
+} from './transcript-file.js';
 
 loadEnv();
 
 // ── Constants ──────────────────────────────────────────────────────────
 
-const EMBED_BATCH_SIZE = 100;
-const UPSERT_BATCH_SIZE = 1000;
 const DB_BATCH_SIZE = 50;
+const DELETE_BATCH_SIZE = 100;
+const RESEED_IF_OFF_MS = 60_000; // D1 and the disk file differ by more than this at the end…
+const RESEED_IF_OFF_SHARE = 0.2; // …or by this share of their lines: re-seed
 
 // Which D1 (and R2) every step uses: production, or the local copy with --local.
 const db = { isLocal: false };
@@ -74,11 +92,11 @@ const VAD_MODEL_PATH = path.join(os.homedir(), '.cache', 'whisper-cpp', 'ggml-si
 // from failing on a machine without whisper installed. The keys those steps
 // need are checked here too, so a missing one stops the run before anything is
 // written, not halfway through it.
-function checkPrerequisites(skip = new Set()) {
+function checkPrerequisites(skip = new Set(), engine = 'whisper.cpp') {
 	const timer = stepTimer('PREREQUISITES');
 	const missing = [];
 
-	const needsWhisper = !skip.has('transcribe');
+	const needsWhisper = !skip.has('transcribe') && engine === 'whisper.cpp';
 	const needsFfmpeg = !skip.has('transcribe') || !skip.has('upload-audio');
 
 	if (needsWhisper) {
@@ -111,8 +129,8 @@ function checkPrerequisites(skip = new Set()) {
 		}
 	}
 
-	if (!skip.has('summary') && !process.env.OPENAI_API_KEY) {
-		missing.push('OPENAI_API_KEY (for the summary) — add it to .env');
+	if ((!skip.has('summary') || (!skip.has('transcribe') && engine === 'openai')) && !process.env.OPENAI_API_KEY) {
+		missing.push('OPENAI_API_KEY (for the summary, and the openai engine) — add it to .env');
 	}
 	if (!skip.has('embeddings') && !db.isLocal && !(process.env.CLOUDFLARE_ACCOUNT_ID && process.env.CLOUDFLARE_API_TOKEN)) {
 		missing.push('CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN (for the embeddings) — add them to .env');
@@ -257,96 +275,32 @@ export function parseEpisodeId(mp3Path) {
 	return null;
 }
 
-// ── Transcript cleanup ─────────────────────────────────────────────────
+// ── Step 3: Transcribe ─────────────────────────────────────────────────
 
-/**
- * Clean whisper.cpp artifacts from parsed segments:
- *  - Apply word corrections (e.g. "soldier" -> "Suldrew")
- *  - Drop zero-duration segments (start_ms == end_ms)
- *  - Deduplicate consecutive identical text
- *  - Drop segments with internal phrase looping (same phrase 4+ times)
- */
-function cleanSegments(segments) {
-	const cleaned = [];
+async function transcribe(mp3Path, episodeId, force, engine) {
+	const timer = stepTimer(`TRANSCRIBE (${engine})`);
 
-	for (let i = 0; i < segments.length; i++) {
-		const seg = { ...segments[i], text: applyWordCorrections(segments[i].text) };
-
-		// Drop zero-duration segments
-		if (seg.start_ms === seg.end_ms) continue;
-
-		// Drop consecutive duplicates (same text as previous kept segment)
-		if (cleaned.length > 0 && seg.text === cleaned[cleaned.length - 1].text) continue;
-
-		// Drop segments with internal phrase looping
-		if (hasInternalLoop(seg.text)) continue;
-
-		cleaned.push(seg);
-	}
-
-	// Remove non-consecutive repeated hallucinations (e.g. "coffee." 500+ times)
-	const freq = new Map();
-	for (const seg of cleaned) {
-		const words = seg.text.trim().split(/\s+/);
-		if (words.length <= 3) {
-			const key = seg.text.trim().toLowerCase();
-			freq.set(key, (freq.get(key) || 0) + 1);
-		}
-	}
-	const threshold = Math.max(10, Math.floor(cleaned.length * 0.02));
-	const hallucinated = new Set();
-	for (const [text, count] of freq) {
-		if (count > threshold) hallucinated.add(text);
-	}
-	if (hallucinated.size > 0) {
-		return cleaned.filter(seg => !hallucinated.has(seg.text.trim().toLowerCase()));
-	}
-
-	return cleaned;
-}
-
-/**
- * Detect internal looping: a phrase of 3+ words repeating 4+ times in a row.
- */
-function hasInternalLoop(text) {
-	const words = text.toLowerCase().split(/\s+/);
-	if (words.length < 12) return false;
-
-	for (let phraseLen = 3; phraseLen <= 8 && phraseLen <= words.length / 4; phraseLen++) {
-		for (let start = 0; start <= words.length - phraseLen * 4; start++) {
-			const phrase = words.slice(start, start + phraseLen).join(' ');
-			let repeats = 1;
-			let pos = start + phraseLen;
-			while (pos + phraseLen <= words.length) {
-				const next = words.slice(pos, pos + phraseLen).join(' ');
-				if (next === phrase) {
-					repeats++;
-					pos += phraseLen;
-				} else {
-					break;
-				}
-			}
-			if (repeats >= 4) return true;
-		}
-	}
-
-	return false;
-}
-
-// ── Step 3: Transcribe (whisper.cpp) ───────────────────────────────────
-
-function transcribe(mp3Path, episodeId, force) {
-	const timer = stepTimer('TRANSCRIBE');
-
-	const outputPath = path.join(transcriptsDir, `${episodeId}.json`);
-
-	if (!force && fs.existsSync(outputPath)) {
+	if (!force && fs.existsSync(transcriptPath(episodeId))) {
 		timer.done('transcript already exists, skipping');
 		return;
 	}
 
-	fs.mkdirSync(transcriptsDir, { recursive: true });
+	let transcript;
+	let reasons;
+	if (engine === 'openai') {
+		({ transcript, reasons } = await transcribeAndSave(mp3Path, episodeId));
+	} else {
+		({ transcript, reasons } = transcribeWithWhisperCpp(mp3Path, episodeId));
+	}
 
+	const m = transcript.meta;
+	if (!m.coverage.ok) logWarn(`[${episodeId}] ${m.coverage.problems.join('; ')}`);
+	if (reasons.length > 0) console.log(`  On the re-transcribe list: ${reasons.join('; ')}`);
+	timer.done(`${transcript.segments.length} segments (${m.lines_removed.cleaning} removed by cleanup, ${m.lines_removed.loops} by the loop check)`);
+}
+
+/** whisper.cpp on this machine, then the Worker's cleaning (roe-pipeline/src/clean-segments.js). */
+function transcribeWithWhisperCpp(mp3Path, episodeId) {
 	const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'roe-whisper-'));
 
 	try {
@@ -385,103 +339,143 @@ function transcribe(mp3Path, episodeId, force) {
 		}
 
 		const whisperData = JSON.parse(fs.readFileSync(whisperJsonPath, 'utf-8'));
-		const rawSegments = whisperData.transcription || [];
+		const parsed = (whisperData.transcription || [])
+			.map((seg) => ({ start_ms: seg.offsets.from, end_ms: seg.offsets.to, text: (seg.text || '').trim() }))
+			.filter((seg) => seg.text.length >= 3); // whisper.cpp's stray fragments
 
-		// Convert to our format, filtering obvious bad segments
-		const parsed = [];
-		for (const seg of rawSegments) {
-			const text = (seg.text || '').trim();
-
-			// Filter non-ASCII (Whisper hallucinations on music)
-			if (!isAscii(text)) continue;
-
-			// Filter very short segments
-			if (text.length < 3) continue;
-
-			parsed.push({
-				start_ms: seg.offsets.from,
-				end_ms: seg.offsets.to,
-				text,
-			});
-		}
-
-		// Clean up whisper artifacts
 		const segments = cleanSegments(parsed);
-
-		const transcript = {
-			episode_id: episodeId,
-			title: episodeId,
+		const old = readTranscript(episodeId);
+		const transcript = buildTranscript({
+			episodeId,
 			segments,
-		};
-
-		fs.writeFileSync(outputPath, JSON.stringify(transcript, null, 2));
-		timer.done(`${segments.length} segments (${parsed.length - segments.length} removed by cleanup)`);
+			audioMs: probeDurationMs(mp3Path),
+			audioFile: mp3Path,
+			engine: 'whisper.cpp',
+			model: path.basename(WHISPER_MODEL_PATH, '.bin'),
+			settings: { language: 'en', prompt_sha1: PROMPT_SHA1, max_context: 0, carry_initial_prompt: true, vad: true, suppress_nst: true },
+			removedByCleaning: parsed.length - segments.length,
+		});
+		const reasons = writeTranscript(transcript, { oldVectorIds: old ? chunkEpisode(old).map((c) => c.id) : [] });
+		return { transcript, reasons };
 	} finally {
 		fs.rmSync(tmpDir, { recursive: true, force: true });
 	}
 }
 
+/**
+ * A transcript file from before transcript-file.js has no meta block, and may
+ * still hold a loop the old filters missed. Clean it the way new ones are and
+ * save it, keeping the original in transcripts/.backups/, so D1 and the search
+ * vectors are built from the same lines.
+ */
+function upgradeOldTranscript(episodeId, transcript, mp3Path) {
+	const backupDir = path.join(transcriptsDir, '.backups', `${new Date().toLocaleDateString('sv')}-before-meta`); // today's local date
+	fs.mkdirSync(backupDir, { recursive: true });
+	fs.copyFileSync(transcriptPath(episodeId), path.join(backupDir, `${episodeId}.json`));
+	const upgraded = buildTranscript({
+		episodeId,
+		title: transcript.title,
+		segments: transcript.segments,
+		audioMs: probeDurationMs(mp3Path),
+		audioFile: mp3Path,
+		engine: 'unknown (made before 2026-09-27)',
+		model: 'unknown',
+	});
+	upgraded.meta.created_at = null;
+	upgraded.meta.upgraded_at = new Date().toISOString();
+	writeTranscript(upgraded, { oldVectorIds: chunkEpisode(transcript).map((c) => c.id) });
+	console.log(`  Old transcript file cleaned and given a meta block (original kept in ${path.relative(transcriptsDir, backupDir)}/)`);
+	return upgraded;
+}
+
 // ── Step 4: Seed D1 database ───────────────────────────────────────────
 
-function seedDB(episodeId, force) {
+function seedDB(episodeId, force, mp3Path, acceptShort) {
 	const timer = stepTimer('SEED-DB');
+	const id = escapeSQL(episodeId);
+
+	let transcript = readTranscript(episodeId);
+	if (!transcript) throw new Error(`No transcript file for ${episodeId}; run the transcribe step first`);
+	if (!transcript.meta) transcript = upgradeOldTranscript(episodeId, transcript, mp3Path);
+	const { segments, meta } = transcript;
+
+	// A transcript with no segments is a failed transcription — refuse to seed
+	// an empty episode. Thrown before any D1 mutation.
+	if (!Array.isArray(segments) || segments.length === 0) {
+		throw new Error(`Transcript for ${episodeId} has no segments — refusing to seed an empty episode`);
+	}
+	// Measured again here, not taken from the file's meta, in case the lines were edited since
+	const coverage = checkCoverage(segments, meta.audio_ms || probeDurationMs(mp3Path));
+	const shortProblem = coverage.ok ? null : `Transcript for ${episodeId}: ${coverage.problems.join('; ')}`;
 
 	// transcript_segments.episode_id has a foreign key to episodes, so the
 	// episodes row must exist before segments are inserted (and must never be
 	// deleted while segments or guests reference it). The duration_ms update
 	// after all segments land is the completion marker: a crash mid-seed
 	// leaves duration_ms NULL, so the next run re-seeds instead of skipping.
-	if (!force) {
-		const existing = queryJSON(
-			`SELECT id FROM episodes WHERE id = '${escapeSQL(episodeId)}' AND duration_ms IS NOT NULL
-			 AND EXISTS (SELECT 1 FROM transcript_segments WHERE episode_id = '${escapeSQL(episodeId)}')`,
-			db
-		);
-		if (existing.length > 0) {
+	const [inD1] = queryJSON(
+		`SELECT e.duration_ms AS duration_ms,
+			(SELECT COUNT(*) FROM transcript_segments WHERE episode_id = '${id}') AS lines,
+			(SELECT MAX(end_ms) FROM transcript_segments WHERE episode_id = '${id}') AS end_ms
+		 FROM episodes e WHERE e.id = '${id}'`,
+		db
+	);
+	const endMs = segments.reduce((max, s) => Math.max(max, s.end_ms), 0);
+	if (!force && inD1?.duration_ms != null && inD1.lines > 0) {
+		// Already seeded: but from this transcript? An early partial one seeded first
+		// used to stay in D1 while better transcripts on disk were skipped.
+		const offMs = Math.abs((inD1.end_ms ?? 0) - endMs);
+		const offShare = Math.abs(inD1.lines - segments.length) / Math.max(inD1.lines, segments.length);
+		if (offMs <= RESEED_IF_OFF_MS && offShare <= RESEED_IF_OFF_SHARE) {
 			timer.done('episode already in DB, skipping');
 			return;
 		}
+		const difference = `D1 has a different transcript (${inD1.lines} lines to ${Math.round((inD1.end_ms ?? 0) / 60000)} min; the file has ${segments.length} to ${Math.round(endMs / 60000)} min)`;
+		if (shortProblem && !acceptShort) {
+			// Don't swap what's live for a file that is itself incomplete
+			logWarn(`${difference}, but ${shortProblem.replace(`Transcript for ${episodeId}: `, 'the file ')}; D1 left as it is`);
+			timer.done('left as it is');
+			return;
+		}
+		console.log(`  ${difference}: re-seeding`);
 	}
 
-	// Read transcript
-	const transcriptPath = path.join(transcriptsDir, `${episodeId}.json`);
-	const transcript = JSON.parse(fs.readFileSync(transcriptPath, 'utf-8'));
-	const { segments } = transcript;
+	// A new episode (or a forced seed) only gets a transcript that covers the recording
+	if (shortProblem) {
+		if (!acceptShort) throw new Error(`${shortProblem}. Not seeding it: transcribe it again (--force transcribe), or seed it anyway with --accept-short.`);
+		logWarn(`${shortProblem} (seeding anyway: --accept-short)`);
+	}
 
-	// A transcript with no segments is a failed transcription — refuse to seed
-	// an empty episode (process-all's quality gate catches this, but direct
-	// runs have no such guard). Thrown before any D1 mutation.
-	if (!Array.isArray(segments) || segments.length === 0) {
-		throw new Error(`Transcript for ${episodeId} has no segments — refusing to seed an empty episode`);
+	// The vectors built from what D1 held go once the new ones are uploaded
+	if (inD1?.lines > 0) {
+		const oldLines = queryJSON(`SELECT start_ms, end_ms, text FROM transcript_segments WHERE episode_id = '${id}' ORDER BY start_ms`, db);
+		rememberStaleVectors(episodeId, chunkSegments(episodeId, oldLines).map((c) => c.id));
 	}
 
 	// Clear partial segments from a previously crashed seed (no-op on a
 	// clean run); under --force this also clears the old complete seed.
 	// An existing episodes row is kept (audio_file, title, etc. survive a
 	// re-seed); a new one is created with NULL duration until seeding finishes.
-	runSQL(`DELETE FROM transcript_segments WHERE episode_id = '${escapeSQL(episodeId)}'`, db);
-	runSQL(`UPDATE episodes SET duration_ms = NULL WHERE id = '${escapeSQL(episodeId)}'`, db);
-	runSQL(
-		`INSERT OR IGNORE INTO episodes (id, title) VALUES ('${escapeSQL(episodeId)}', '${escapeSQL(episodeId)}')`,
-		db
-	);
+	runSQL(`DELETE FROM transcript_segments WHERE episode_id = '${id}'`, db);
+	runSQL(`UPDATE episodes SET duration_ms = NULL WHERE id = '${id}'`, db);
+	runSQL(`INSERT OR IGNORE INTO episodes (id, title) VALUES ('${id}', '${id}')`, db);
 
-	// Insert segments in batches
+	// Insert segments in batches (spelling fixes are in the file already; applying
+	// them again changes nothing)
 	for (let i = 0; i < segments.length; i += DB_BATCH_SIZE) {
 		const batch = segments.slice(i, i + DB_BATCH_SIZE);
 		const values = batch
-			.map((s) => `('${escapeSQL(episodeId)}', ${s.start_ms}, ${s.end_ms}, '${escapeSQL(applyWordCorrections(s.text))}')`)
+			.map((s) => `('${id}', ${s.start_ms}, ${s.end_ms}, '${escapeSQL(applyWordCorrections(s.text))}')`)
 			.join(', ');
 		runSQL(`INSERT INTO transcript_segments (episode_id, start_ms, end_ms, text) VALUES ${values}`, db);
 	}
 
-	// Set duration last — the completion marker
-	const lastSegment = segments[segments.length - 1];
-	const durationMs = lastSegment ? lastSegment.end_ms : 0;
-	runSQL(`UPDATE episodes SET duration_ms = ${durationMs} WHERE id = '${escapeSQL(episodeId)}'`, db);
+	// Set duration last — the completion marker. It's the recording's real
+	// length, not the last line's end, which would hide a transcript that stops early.
+	const durationMs = meta.audio_ms || endMs;
+	runSQL(`UPDATE episodes SET duration_ms = ${durationMs} WHERE id = '${id}'`, db);
 
-	timer.done(`${segments.length} segments inserted`);
-	purgeEpisode(episodeId, db);
+	timer.done(`${segments.length} segments inserted, duration ${Math.round(durationMs / 60000)} min`);
 }
 
 // ── Step 5: Generate embeddings → Vectorize ────────────────────────────
@@ -496,94 +490,24 @@ async function generateEmbeddings(episodeId) {
 	// These calls go to Cloudflare's API directly, not through lib.js's test-run check
 	if (process.env.ROE_PERSIST_TO) throw new Error('ROE_PERSIST_TO is set (a test run): refusing to write embeddings to production');
 
-	const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
-	const apiToken = process.env.CLOUDFLARE_API_TOKEN;
-	if (!accountId || !apiToken) {
-		throw new Error('Missing CLOUDFLARE_ACCOUNT_ID or CLOUDFLARE_API_TOKEN environment variables');
+	const transcript = readTranscript(episodeId);
+	if (!transcript) throw new Error(`No transcript file for ${episodeId}`);
+	const segments = transcript.segments || [];
+	const durationMs = transcript.meta?.audio_ms ?? segments.at(-1)?.end_ms ?? 0;
+
+	// The Worker's own embeddings code, through REST stand-ins for its bindings
+	const vectorize = remoteVectorize();
+	const count = await embedEpisode(remoteAI(), vectorize, episodeId, segments, durationMs);
+
+	// Vectors of the transcript this one replaced that it doesn't have any more
+	const current = new Set(chunkSegments(episodeId, segments, durationMs).map((c) => c.id));
+	const stale = staleVectors(episodeId).filter((vid) => !current.has(vid));
+	for (let i = 0; i < stale.length; i += DELETE_BATCH_SIZE) {
+		await vectorize.deleteByIds(stale.slice(i, i + DELETE_BATCH_SIZE));
 	}
+	forgetStaleVectors(episodeId);
 
-	const baseUrl = `https://api.cloudflare.com/client/v4/accounts/${accountId}`;
-
-	// Read transcript and chunk it
-	const transcriptPath = path.join(transcriptsDir, `${episodeId}.json`);
-	const transcript = JSON.parse(fs.readFileSync(transcriptPath, 'utf-8'));
-	const chunks = chunkEpisode(transcript);
-
-	if (chunks.length === 0) {
-		timer.done('no chunks, skipping');
-		return;
-	}
-
-	console.log(`  ${chunks.length} chunks to embed`);
-
-	// Embed in batches
-	const vectors = [];
-	for (let i = 0; i < chunks.length; i += EMBED_BATCH_SIZE) {
-		const batch = chunks.slice(i, i + EMBED_BATCH_SIZE);
-		const texts = batch.map((c) => c.text);
-
-		const res = await fetch(`${baseUrl}/ai/run/${EMBED_MODEL}`, {
-			method: 'POST',
-			headers: {
-				Authorization: `Bearer ${apiToken}`,
-				'Content-Type': 'application/json',
-				'User-Agent': 'roe-pipeline',
-			},
-			body: JSON.stringify({ text: texts }),
-		});
-
-		if (!res.ok) {
-			const body = await res.text();
-			throw new Error(`Embedding API error ${res.status}: ${body}`);
-		}
-
-		const json = await res.json();
-		const embeddings = json.result?.data;
-		if (!Array.isArray(embeddings) || embeddings.length !== batch.length) {
-			throw new Error(`Embedding API returned ${embeddings?.length ?? 0} vectors for ${batch.length} inputs`);
-		}
-
-		for (let j = 0; j < batch.length; j++) {
-			vectors.push({
-				id: batch[j].id,
-				values: embeddings[j],
-				metadata: {
-					episode_id: batch[j].episode_id,
-					title: batch[j].title,
-					start_ms: batch[j].start_ms,
-					end_ms: batch[j].end_ms,
-					text: batch[j].text,
-				},
-			});
-		}
-
-		console.log(`  Embedded ${Math.min(i + EMBED_BATCH_SIZE, chunks.length)}/${chunks.length}`);
-	}
-
-	// Upsert to Vectorize in batches
-	for (let i = 0; i < vectors.length; i += UPSERT_BATCH_SIZE) {
-		const batch = vectors.slice(i, i + UPSERT_BATCH_SIZE);
-		const ndjson = batch.map((v) => JSON.stringify(v)).join('\n');
-
-		const res = await fetch(`${baseUrl}/vectorize/v2/indexes/${VECTORIZE_INDEX}/upsert`, {
-			method: 'POST',
-			headers: {
-				Authorization: `Bearer ${apiToken}`,
-				'Content-Type': 'application/x-ndjson',
-				'User-Agent': 'roe-pipeline',
-			},
-			body: ndjson,
-		});
-
-		if (!res.ok) {
-			const body = await res.text();
-			throw new Error(`Vectorize upsert error ${res.status}: ${body}`);
-		}
-
-		console.log(`  Upserted ${Math.min(i + UPSERT_BATCH_SIZE, vectors.length)}/${vectors.length}`);
-	}
-
-	timer.done(`${vectors.length} vectors`);
+	timer.done(`${count} vectors${stale.length ? `, ${stale.length} old ones deleted` : ''}`);
 }
 
 // ── Step 6: Generate summary ───────────────────────────────────────────
@@ -607,55 +531,14 @@ async function generateSummary(episodeId, force, includeReviewed) {
 		return;
 	}
 
-	// Read transcript
-	const transcriptPath = path.join(transcriptsDir, `${episodeId}.json`);
-	const transcript = JSON.parse(fs.readFileSync(transcriptPath, 'utf-8'));
-	const transcriptText = transcript.segments.map((s) => s.text).join('\n');
-
-	// Fetch sunrise/sunset
-	const dateStr = parseEpisodeDate(episodeId);
-	let sunData = null;
-	if (dateStr) {
-		console.log(`  Fetching sunrise/sunset for ${dateStr}...`);
-		sunData = await fetchSunriseSunset(dateStr);
-		if (sunData) {
-			console.log(`  Sunrise: ${sunData.sunrise} PT, Sunset: ${sunData.sunset} PT`);
-		}
-	}
-
-	// Generate summary using shared function
+	// The Worker's summary (roe-pipeline/src/summary.js), written in one request
+	const transcript = readTranscript(episodeId);
+	const segments = transcript?.segments || [];
 	console.log('  Generating title + summary...');
-	const { title, summary, guests } = await generateSummaryFromText(transcriptText, { dateStr, sunData });
+	const result = await summarizeEpisode(episodeId, segments, transcript?.meta?.audio_ms ?? segments.at(-1)?.end_ms);
+	saveSummary(episodeId, result, db);
 
-	if (title) {
-		console.log(`  Title: ${title}`);
-	}
-	console.log(`  Summary: ${(summary || '').slice(0, 100)}...`);
-	if (guests.length > 0) {
-		console.log(`  Guests: ${guests.join(', ')}`);
-	}
-
-	// Update D1. New AI guests go back in the admin page's review queue
-	// (this only changes anything with --include-reviewed).
-	const unreview = guests.length > 0 ? ', guests_reviewed = 0' : '';
-	if (title) {
-		runSQL(`UPDATE episodes SET title = '${escapeSQL(title)}', summary = '${escapeSQL(summary)}'${unreview} WHERE id = '${escapeSQL(episodeId)}'`, db);
-	} else {
-		runSQL(`UPDATE episodes SET summary = '${escapeSQL(summary)}'${unreview} WHERE id = '${escapeSQL(episodeId)}'`, db);
-	}
-
-	// Insert guests (idempotent: clear first, then insert)
-	if (guests.length > 0) {
-		runSQL(`DELETE FROM episode_guests WHERE episode_id = '${escapeSQL(episodeId)}'`, db);
-		for (const guest of guests) {
-			const name = guest.trim();
-			if (name) {
-				runSQL(`INSERT OR IGNORE INTO episode_guests (episode_id, guest_name) VALUES ('${escapeSQL(episodeId)}', '${escapeSQL(name)}')`, db);
-			}
-		}
-	}
-
-	timer.done();
+	timer.done(result.skipped ? 'transcript too thin to summarize; an existing summary is kept' : undefined);
 }
 
 // ── Step 7: Detect guest-interview start (guest_start_ms) ──────────────
@@ -690,17 +573,16 @@ function detectGuestStartStep(episodeId, force, includeReviewed) {
 	}
 
 	// Read transcript segments (written by the transcribe step)
-	const transcriptPath = path.join(transcriptsDir, `${episodeId}.json`);
-	if (!fs.existsSync(transcriptPath)) {
+	const transcript = readTranscript(episodeId);
+	if (!transcript) {
 		logWarn(`[${episodeId}] transcript not found, skipping guest-start detection`);
 		timer.done('no transcript, skipping');
 		return;
 	}
-	const transcript = JSON.parse(fs.readFileSync(transcriptPath, 'utf-8'));
 	const segments = transcript.segments || [];
 
 	// Duration guard: skip episodes shorter than the 50-minute detection window
-	const durationMs = segments.length > 0 ? segments[segments.length - 1].end_ms : 0;
+	const durationMs = transcript.meta?.audio_ms ?? (segments.length > 0 ? segments[segments.length - 1].end_ms : 0);
 	if (durationMs && durationMs < MIN_START_MS) {
 		timer.done(`episode shorter than 50min (${durationMs}ms), skipping`);
 		return;
@@ -775,6 +657,7 @@ function uploadAudio(mp3Path, episodeId, force) {
 // ── CLI ────────────────────────────────────────────────────────────────
 
 export const STEPS = ['transcribe', 'seed-db', 'embeddings', 'summary', 'guest-start', 'upload-audio'];
+const ENGINES = ['whisper.cpp', 'openai'];
 
 function usage(problem) {
 	if (problem) console.error(`${problem}\n`);
@@ -787,6 +670,9 @@ function usage(problem) {
 	console.error('  --include-reviewed       Also redo a reviewed episode\'s title, summary, guests and');
 	console.error('                           interview time (left alone otherwise, even with --force)');
 	console.error('  --local                  Use the local D1 copy and R2 (embeddings are skipped)');
+	console.error('  --engine whisper.cpp|openai  How to transcribe (default whisper.cpp; openai is the');
+	console.error('                           Cloudflare pipeline\'s code, about $0.72 for a two-hour show)');
+	console.error('  --accept-short           Seed a transcript that stops early or has holes at the end');
 	console.error('');
 	console.error(`Steps, in order: ${STEPS.join(', ')}`);
 	process.exit(1);
@@ -802,7 +688,7 @@ function parseSteps(flag, value) {
 }
 
 function parseArgs(args) {
-	const opts = { force: new Set(), skip: new Set(), episodeId: null, mp3Path: null, includeReviewed: false, local: false };
+	const opts = { force: new Set(), skip: new Set(), episodeId: null, mp3Path: null, includeReviewed: false, local: false, engine: 'whisper.cpp', acceptShort: false };
 
 	for (let i = 0; i < args.length; i++) {
 		const arg = args[i];
@@ -815,6 +701,11 @@ function parseArgs(args) {
 			opts.includeReviewed = true;
 		} else if (arg === '--local') {
 			opts.local = true;
+		} else if (arg === '--engine') {
+			opts.engine = args[++i];
+			if (!ENGINES.includes(opts.engine)) usage(`--engine is one of: ${ENGINES.join(', ')}`);
+		} else if (arg === '--accept-short') {
+			opts.acceptShort = true;
 		} else if (arg.startsWith('-')) {
 			usage(`Unknown option: ${arg}`);
 		} else if (opts.mp3Path) {
@@ -859,22 +750,23 @@ async function main() {
 	if (skip.size > 0) console.log(`  Skipping:   ${[...skip].join(', ')}`);
 	if (includeReviewed) console.log('  Reviewed:   redo their title, summary, guests and interview time too');
 	if (opts.local) console.log('  Database:   local D1 copy');
+	if (!skip.has('transcribe')) console.log(`  Engine:     ${opts.engine}`);
 
 	const totalStart = Date.now();
 
 	// Step 1: Prerequisites (only for the tools the un-skipped steps need)
-	checkPrerequisites(skip);
+	checkPrerequisites(skip, opts.engine);
 
 	// Step 2: Transcribe
 	if (!skip.has('transcribe')) {
-		transcribe(mp3Path, episodeId, force.has('transcribe'));
+		await transcribe(mp3Path, episodeId, force.has('transcribe'), opts.engine);
 	} else {
 		console.log('\n[TRANSCRIBE] Skipped');
 	}
 
 	// Step 3: Seed D1
 	if (!skip.has('seed-db')) {
-		seedDB(episodeId, force.has('seed-db'));
+		seedDB(episodeId, force.has('seed-db'), mp3Path, opts.acceptShort);
 	} else {
 		console.log('\n[SEED-DB] Skipped');
 	}

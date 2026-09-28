@@ -13,15 +13,13 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import {
-	loadEnv, escapeSQL, runSQL, queryJSON, transcriptsDir,
-	parseEpisodeDate, fetchSunriseSunset,
-} from './lib.js';
-import { buildSummarySystemPrompt } from './prompts.js';
+import { loadEnv, escapeSQL, runSQL, queryJSON, transcriptsDir } from './lib.js';
+import { composeSummary, neutralTitle } from '../roe-pipeline/src/summary.js';
 
 loadEnv();
 
 const OPTIONS = new Set(['--local', '--force', '--include-reviewed', '--dry-run', '--help', '-h']);
+const RETRY_WAITS_MS = [2_000, 8_000, 20_000]; // for "slow down" (429) and OpenAI hiccups
 
 function usage(exitCode = 0) {
 	const log = exitCode ? console.error : console.log;
@@ -37,55 +35,47 @@ function usage(exitCode = 0) {
 }
 
 /**
- * Generate a summary from transcript text using GPT-4o-mini.
- * Exported for process-episode.js to reuse.
+ * The Worker's summary (roe-pipeline/src/summary.js): the same prompt, the
+ * thin-transcript skip, hosts left out of the guests, guests checked against
+ * the transcript, and a cut-off or unreadable reply refused. A rate limit or an
+ * OpenAI hiccup is retried a few times. Exported for process-episode.js.
  */
-export async function generateSummaryFromText(text, { dateStr, sunData } = {}) {
+export async function summarizeEpisode(episodeId, segments, durationMs) {
 	const apiKey = process.env.OPENAI_API_KEY;
-	if (!apiKey) {
-		throw new Error('OPENAI_API_KEY environment variable is required');
+	if (!apiKey) throw new Error('OPENAI_API_KEY environment variable is required');
+	for (let attempt = 0; ; attempt++) {
+		try {
+			return await composeSummary(episodeId, segments, apiKey, durationMs);
+		} catch (err) {
+			const retryable = err.status === 429 || err.status >= 500 || err.name === 'TimeoutError' || !err.status;
+			if (err.permanent || !retryable || attempt >= RETRY_WAITS_MS.length) throw err;
+			console.warn(`    ${err.message.split('\n')[0]}; trying again in ${RETRY_WAITS_MS[attempt] / 1000} s`);
+			await new Promise((r) => setTimeout(r, RETRY_WAITS_MS[attempt]));
+		}
 	}
+}
 
-	const systemPrompt = buildSummarySystemPrompt({ dateStr, sunData });
-
-	const res = await fetch('https://api.openai.com/v1/chat/completions', {
-		method: 'POST',
-		headers: {
-			'Content-Type': 'application/json',
-			Authorization: `Bearer ${apiKey}`,
-		},
-		body: JSON.stringify({
-			model: 'gpt-4o-mini',
-			messages: [
-				{ role: 'system', content: systemPrompt },
-				{ role: 'user', content: `Summarize this Roll Over Easy episode transcript:\n\n${text}` },
-			],
-			temperature: 0.5,
-			max_tokens: 400,
-			response_format: { type: 'json_object' },
-		}),
-	});
-
-	if (!res.ok) {
-		const body = await res.text();
-		throw new Error(`OpenAI API error ${res.status}: ${body}`);
+/**
+ * Write a summary to D1 in one request: title, summary and guests together, so
+ * a failure can't leave half of them. New AI guests go back in the admin page's
+ * review queue. A transcript too thin to summarize leaves an existing summary
+ * (e.g. one written by hand) alone, and only swaps a raw-ID title for a neutral one.
+ */
+export function saveSummary(episodeId, { title, summary, guests, skipped }, target) {
+	const id = escapeSQL(episodeId);
+	if (skipped) {
+		runSQL(`UPDATE episodes SET title = '${escapeSQL(neutralTitle(episodeId))}' WHERE id = '${id}' AND title = id AND (summary IS NULL OR TRIM(summary) = '')`, target);
+		return;
 	}
-
-	const data = await res.json();
-	const content = data.choices?.[0]?.message?.content?.trim();
-	if (!content) {
-		throw new Error(`OpenAI returned no message content (choices: ${JSON.stringify(data.choices)?.slice(0, 200)})`);
+	const names = [...new Set(guests.map((g) => g.trim()).filter(Boolean))];
+	const statements = [
+		`UPDATE episodes SET title = '${escapeSQL(title)}', summary = '${escapeSQL(summary)}'${names.length ? ', guests_reviewed = 0' : ''} WHERE id = '${id}'`,
+	];
+	if (names.length > 0) {
+		statements.push(`DELETE FROM episode_guests WHERE episode_id = '${id}'`);
+		statements.push(`INSERT OR IGNORE INTO episode_guests (episode_id, guest_name) VALUES ${names.map((n) => `('${id}', '${escapeSQL(n)}')`).join(', ')}`);
 	}
-	try {
-		const parsed = JSON.parse(content);
-		return {
-			title: parsed.title?.trim() || null,
-			summary: parsed.summary?.trim() || content,
-			guests: Array.isArray(parsed.guests) ? parsed.guests : [],
-		};
-	} catch {
-		return { title: null, summary: content, guests: [] };
-	}
+	runSQL(statements.join(';\n'), target);
 }
 
 async function main() {
@@ -149,30 +139,9 @@ async function main() {
 			continue;
 		}
 
-		const transcriptText = segments.map((s) => s.text).join('\n');
-
-		// Fetch sunrise/sunset for this episode's date
-		const dateStr = parseEpisodeDate(episode_id);
-		let sunData = null;
-		if (dateStr) {
-			console.log(`  Fetching sunrise/sunset for ${dateStr}...`);
-			sunData = await fetchSunriseSunset(dateStr);
-			if (sunData) {
-				console.log(`    Sunrise: ${sunData.sunrise} PT, Sunset: ${sunData.sunset} PT`);
-			} else {
-				console.log('    Could not fetch sunrise/sunset data, continuing without it.');
-			}
-		}
-
+		const durationMs = transcript.meta?.audio_ms ?? segments.at(-1)?.end_ms;
 		console.log(`  Generating title + summary for ${episode_id}...`);
-		const { title, summary, guests } = await generateSummaryFromText(transcriptText, { dateStr, sunData });
-		if (title) {
-			console.log(`    Title: ${title}`);
-		}
-		console.log(`    Summary: ${(summary || '').slice(0, 80)}...`);
-		if (guests.length > 0) {
-			console.log(`    Guests: ${guests.join(', ')}`);
-		}
+		const result = await summarizeEpisode(episode_id, segments, durationMs);
 
 		// A long run can outlast a review done in the admin page meanwhile: check again
 		const [now] = queryJSON(`SELECT guests_reviewed FROM episodes WHERE id = '${escapeSQL(episode_id)}'`, { isLocal });
@@ -180,34 +149,7 @@ async function main() {
 			console.log('    Reviewed while this ran: left alone');
 			continue;
 		}
-
-		// Update D1. New AI guests go back in the admin page's review queue.
-		const unreview = guests.length > 0 ? ', guests_reviewed = 0' : '';
-		if (title) {
-			runSQL(
-				`UPDATE episodes SET title = '${escapeSQL(title)}', summary = '${escapeSQL(summary)}'${unreview} WHERE id = '${escapeSQL(episode_id)}'`,
-				{ isLocal }
-			);
-		} else {
-			runSQL(
-				`UPDATE episodes SET summary = '${escapeSQL(summary)}'${unreview} WHERE id = '${escapeSQL(episode_id)}'`,
-				{ isLocal }
-			);
-		}
-
-		// Insert guests
-		if (guests.length > 0) {
-			runSQL(`DELETE FROM episode_guests WHERE episode_id = '${escapeSQL(episode_id)}'`, { isLocal });
-			for (const guest of guests) {
-				const name = guest.trim();
-				if (name) {
-					runSQL(
-						`INSERT OR IGNORE INTO episode_guests (episode_id, guest_name) VALUES ('${escapeSQL(episode_id)}', '${escapeSQL(name)}')`,
-						{ isLocal }
-					);
-				}
-			}
-		}
+		saveSummary(episode_id, result, { isLocal });
 
 		generated++;
 	}

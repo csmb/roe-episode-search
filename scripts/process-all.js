@@ -36,7 +36,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { discoverEpisodes } from './discover-episodes.js';
 import { STEPS } from './process-episode.js';
-import { queryJSON, projectRoot, transcriptsDir } from './lib.js';
+import { queryJSON, projectRoot, transcriptsDir, probeDurationMs } from './lib.js';
+import { checkCoverage } from '../roe-pipeline/src/coverage.js';
 
 const progressPath = path.join(projectRoot, 'scripts', 'batch-progress.json');
 const processEpisodeScript = path.join(projectRoot, 'scripts', 'process-episode.js');
@@ -69,7 +70,7 @@ function saveProgress(progress) {
 
 // ── Quality gates ──────────────────────────────────────────────────────
 
-function checkQuality(episodeId) {
+function checkQuality(episodeId, filePath) {
 	const warnings = [];
 
 	// Check transcript
@@ -84,6 +85,13 @@ function checkQuality(episodeId) {
 	if (segments.length < MIN_SEGMENTS) {
 		return { pass: false, errors: [`Only ${segments.length} segments (minimum ${MIN_SEGMENTS}) — likely failed transcription`] };
 	}
+
+	// Does it cover the recording? New transcripts record it (transcript-file.js);
+	// older files are measured against the recording now. A show that stops at 45
+	// minutes has ~750 lines and passed the line count alone.
+	const coverage = checkCoverage(segments, transcript.meta?.audio_ms || probeDurationMs(filePath));
+	if (!coverage.ok) return { pass: false, errors: coverage.problems.map((p) => `Coverage: ${p}`) };
+	if (transcript.meta?.holes?.length) warnings.push(`${transcript.meta.holes.length} hole(s) of 5+ minutes (on the re-transcribe list)`);
 
 	const longSegments = segments.filter((s) => s.text.length > MAX_SEGMENT_CHARS);
 	if (longSegments.length > 0) {
@@ -333,7 +341,7 @@ function main() {
 		// Phase 2 only if the transcript passes the gate
 		let quality = null;
 		if (!lastError) {
-			quality = checkQuality(episode.episodeId);
+			quality = checkQuality(episode.episodeId, episode.filePath);
 			if (quality.pass) {
 				lastError = runEpisodeStep(phase2);
 			}

@@ -112,7 +112,7 @@ export async function composeSummary(episodeId, segments, openaiApiKey, duration
     sunData = await fetchSunriseSunset(dateStr);
   }
 
-  // System prompt. The local scripts keep their own copy (scripts/prompts.js), which has drifted.
+  // System prompt. The local scripts use this function too (scripts/generate-summaries.js).
   const systemLines = [
     'You summarize transcripts from "Roll Over Easy," a live morning radio show on BFF.fm broadcast from the Ferry Building in San Francisco.',
     '',

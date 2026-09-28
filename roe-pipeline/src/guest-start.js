@@ -1,12 +1,8 @@
 /**
  * Guest-interview start detection for the Cloudflare ingest pipeline.
  *
- * NOTE: the pure detectGuestStart() below is kept identical to
- * scripts/guest-start.js (the local pipeline / backfill copy). roe-pipeline
- * deploys independently as a Worker, so it carries its own self-contained copy
- * rather than importing across the package boundary. If you change the
- * algorithm, change both — roe-pipeline/test/guest-start.test.js asserts they
- * stay in sync.
+ * The local scripts use this detectGuestStart() too (scripts/guest-start.js
+ * re-exports it), so both pipelines pick the same interview time.
  *
  * Algorithm:
  *   1. Only look at segments after 50 minutes (3,000,000ms)
