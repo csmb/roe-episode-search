@@ -335,10 +335,34 @@ export function fakeFetch({
   return fn;
 }
 
-/** Workers AI and Vectorize stand-ins that record what they were given. */
+/**
+ * Workers AI and Vectorize stand-ins that record what they were given. The
+ * Vectorize one keeps its vectors (starting with `ids`), logs every write in
+ * order in `calls`, and is as strict as the REST API about batch sizes.
+ */
 export function makeAI() {
   return { runs: 0, async run(_model, { text }) { this.runs++; return { data: text.map(() => [0.1, 0.2, 0.3]) }; } };
 }
-export function makeVectorize() {
-  return { upserted: [], async upsert(vectors) { this.upserted.push(...vectors); return { count: vectors.length }; } };
+export function makeVectorize(ids = []) {
+  const store = new Map(ids.map(id => [id, { id }]));
+  return {
+    store, upserted: [], deleted: [], calls: [],
+    async upsert(vectors) {
+      this.calls.push(['upsert', vectors.map(v => v.id)]);
+      this.upserted.push(...vectors);
+      for (const v of vectors) store.set(v.id, v);
+      return { mutationId: `m${this.calls.length}` };
+    },
+    async deleteByIds(ids) {
+      if (ids.length > 100) throw new Error(`delete_by_ids takes at most 100 IDs (got ${ids.length})`);
+      this.calls.push(['delete', [...ids]]);
+      this.deleted.push(...ids);
+      for (const id of ids) store.delete(id);
+      return { mutationId: `m${this.calls.length}` };
+    },
+    async getByIds(ids) {
+      if (ids.length > 20) throw new Error(`get_by_ids takes at most 20 IDs (got ${ids.length})`);
+      return ids.filter(id => store.has(id)).map(id => store.get(id));
+    },
+  };
 }

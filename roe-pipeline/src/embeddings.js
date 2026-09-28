@@ -14,6 +14,7 @@ const WINDOW_SEC = 45;
 const STEP_SEC = 35;
 const EMBED_BATCH_SIZE = 100;
 const UPSERT_BATCH_SIZE = 1000;
+const DELETE_BATCH_SIZE = 100; // delete_by_ids takes at most 100 IDs (a 1,000-ID call got a 400 in June)
 
 function isAscii(text) {
   return /^[\x00-\x7F]*$/.test(text);
@@ -104,4 +105,60 @@ export async function generateEmbeddings(ai, vectorize, episodeId, segments, dur
   }
 
   return vectors.length;
+}
+
+/**
+ * Is `id` one of this episode's vector IDs: exactly "<episodeId>:<digits>"?
+ * A same-date episode's IDs ("…_07-56-07:0" next to "…_07-30-00:0"), a longer
+ * ID that starts the same way, or a malformed suffix never match.
+ */
+export function isEpisodeVectorId(episodeId, id) {
+  if (typeof episodeId !== 'string' || episodeId === '' || typeof id !== 'string') return false;
+  const prefix = `${episodeId}:`;
+  return id.startsWith(prefix) && /^\d+$/.test(id.slice(prefix.length));
+}
+
+/**
+ * Delete some of one episode's vectors, at most 100 IDs a call. Every ID is
+ * checked against the episode before the first call and again right before its
+ * own call, so another episode's vector is never deleted, whatever was passed.
+ *
+ * @returns {Promise<number>} how many IDs were deleted
+ */
+export async function deleteEpisodeVectors(vectorize, episodeId, ids) {
+  const unique = [...new Set(ids)];
+  const notOurs = id => !isEpisodeVectorId(episodeId, id);
+  const refuse = id => new PermanentError(`Refusing to delete ${id}: it isn't one of ${episodeId}'s vectors`);
+  if (unique.some(notOurs)) throw refuse(unique.find(notOurs));
+  for (let i = 0; i < unique.length; i += DELETE_BATCH_SIZE) {
+    const batch = unique.slice(i, i + DELETE_BATCH_SIZE);
+    if (batch.some(notOurs)) throw refuse(batch.find(notOurs));
+    await withTimeout(vectorize.deleteByIds(batch), TIMEOUT_MS.ai, 'Vectorize delete');
+    console.log(`  Deleted ${i + batch.length}/${unique.length} vectors`);
+  }
+  return unique.length;
+}
+
+/**
+ * Embed an episode, then delete its other vectors. Every window is embedded
+ * and upserted before anything is deleted, so search never goes without the
+ * episode, and a failed embed changes nothing. Then the old IDs the new windows
+ * don't have are deleted: only this episode's, whatever `oldIds` holds.
+ *
+ * The Worker doesn't need it (it only embeds an episode that has no vectors
+ * yet); the local scripts pass the IDs they found by listing the index.
+ *
+ * @param {string[]} [oldIds] - the vector IDs the episode may have now
+ * @returns {Promise<{upserted: number, deleted: number, ids: string[]}>} ids: the episode's vectors now
+ */
+export async function replaceEmbeddings(ai, vectorize, episodeId, segments, durationMs, oldIds = []) {
+  const ids = chunkSegments(episodeId, segments, durationMs).map(c => c.id);
+  const keep = new Set(ids);
+  const stale = [...new Set(oldIds)].filter(id => isEpisodeVectorId(episodeId, id) && !keep.has(id));
+  if (keep.size === 0 && stale.length > 0) {
+    throw new PermanentError(`${episodeId} has nothing to embed: refusing to delete its ${stale.length} vectors`);
+  }
+  const upserted = await generateEmbeddings(ai, vectorize, episodeId, segments, durationMs);
+  const deleted = await deleteEpisodeVectors(vectorize, episodeId, stale);
+  return { upserted, deleted, ids };
 }
