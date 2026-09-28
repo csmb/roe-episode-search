@@ -507,6 +507,8 @@ async function generateEmbeddings(episodeId) {
 		timer.done('--local: Vectorize has no local copy, skipping');
 		return;
 	}
+	// These calls go to Cloudflare's API directly, not through lib.js's test-run check
+	if (process.env.ROE_PERSIST_TO) throw new Error('ROE_PERSIST_TO is set (a test run): refusing to write embeddings to production');
 
 	const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
 	const apiToken = process.env.CLOUDFLARE_API_TOKEN;
