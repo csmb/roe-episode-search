@@ -141,7 +141,7 @@ The map endpoint is intentionally the cheapest possible architecture for the dat
 
 - **One round-trip.** Hundreds of points fit comfortably in a single JSON payload, so there's no need for viewport-based loading or vector tiles.
 - **No server-side rendering.** The worker just hands back the static HTML; all rendering happens in the browser against the JSON.
-- **No cache layer.** D1 reads at the edge are fast enough for the query volume; if traffic grew, the next step would be putting Cloudflare Cache in front of `/api/map-places`, not restructuring the data.
+- **Browser cache only.** `/api/map-places` (about 1 MB) is sent with `Cache-Control: public, max-age=3600`, so a repeat visit within the hour costs no download and no queries. D1 reads at the edge are fast enough for the query volume; if traffic grew, the next step would be putting Cloudflare Cache in front of it, not restructuring the data.
 
 ### Scripts
 
