@@ -89,6 +89,18 @@ cd roe-pipeline && npm run deploy
 cd roe-pipeline && npm test
 ```
 
+### Test the scripts on a scratch D1
+Scripts with `--local` use the local D1 copy (and local R2). With `ROE_PERSIST_TO=<dir>` that copy,
+the transcripts and the backups all live in `<dir>` (transcripts in `<dir>/transcripts`), and
+`lib.js` refuses any `--remote` wrangler call or Vectorize write, so a test can't touch production
+or your own local state:
+```
+export ROE_PERSIST_TO=/tmp/roe-test
+(cd roe-search && npx wrangler d1 execute roe-episodes --local --persist-to $ROE_PERSIST_TO --file=../schema.sql)
+# …copy rows in (production SELECTs are fine), then e.g.:
+node scripts/delete-episode.js <id> --local --yes
+```
+
 ### Process a single episode (local pipeline)
 ```
 node scripts/process-episode.js "/path/to/Roll Over Easy 2026-03-27.mp3"
@@ -96,9 +108,11 @@ node scripts/process-episode.js "/path/to/Roll Over Easy 2026-03-27.mp3"
 #          --include-reviewed, --local (the local D1 copy)
 ```
 An episode whose guests were reviewed (`guests_reviewed = 1`) keeps its title, summary, guests and
-interview time, even with `--force`, unless `--include-reviewed` is given; the same goes for
-`generate-summaries.js`, `backfill-guest-start.js` and `process-all.js`. The interview time is only
-filled in when empty unless its step is forced. A mistyped option or step name stops the script.
+interview time, even with `--force`, unless `--include-reviewed` is given (new AI guests then go
+back to the admin page's review queue); the same goes for `generate-summaries.js`,
+`backfill-guest-start.js` and `process-all.js`. The interview time is only filled in when empty
+unless its step is forced. Forcing `transcribe` also forces `seed-db`, so D1 gets the new
+transcript. A mistyped option or step name stops the script.
 
 ### Batch process episodes (local pipeline)
 ```
