@@ -51,6 +51,38 @@ test('the listing follows the cursor to the end, whatever order the index lists 
 	assert.deepEqual(cf.ops(), ['list', 'list', 'list']);
 });
 
+test('a listing that comes back short stops, rather than leave vectors nobody deletes', async () => {
+	const cf = stand({ ids: [...idsOf(A, 1500), ...idsOf(B, 1000)] });
+	// A page that says there's more but gives no cursor
+	globalThis.fetch = async (url, init) => {
+		const res = await cf.fetch(url, init);
+		if (!String(url).includes('/list')) return res;
+		const body = await res.json();
+		body.result.nextCursor = null;
+		return new Response(JSON.stringify(body));
+	};
+	await assert.rejects(listAllVectorIds(remoteVectorize()), /says there is more but gives no cursor/);
+	// Fewer IDs than the count the first page gave
+	globalThis.fetch = async (url, init) => {
+		const res = await cf.fetch(url, init);
+		if (!String(url).includes('/list')) return res;
+		const body = await res.json();
+		body.result.totalCount += 5;
+		return new Response(JSON.stringify(body));
+	};
+	await assert.rejects(listAllVectorIds(remoteVectorize()), /gave 2500 of the 2505 IDs it said the index holds/);
+	// A page sent twice counts once
+	let pages = 0;
+	globalThis.fetch = async (url, init) => {
+		const res = await cf.fetch(url, init);
+		if (!String(url).includes('/list') || ++pages !== 2) return res;
+		const body = await res.json();
+		body.result.vectors = [...body.result.vectors, ...body.result.vectors.slice(0, 3)];
+		return new Response(JSON.stringify(body));
+	};
+	assert.equal((await listAllVectorIds(remoteVectorize())).length, 2500);
+});
+
 test('a snapshot groups by episode: a same-date neighbour, a longer ID or a malformed one never joins', async () => {
 	const odd = [`${A}:12x`, `${A}:1:2`, 'no-colon', ':5'];
 	stand({ ids: [...idsOf(A, 3), ...idsOf(B, 2), `${A}0:5`, ...odd] });

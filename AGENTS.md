@@ -167,10 +167,11 @@ node scripts/generate-embeddings.js --only <id>,<id> --yes       # re-embed some
 node scripts/generate-embeddings.js --all --orphans --yes        # the whole index (~$1.20 of Workers AI)
 ```
 A vector's ID is `<episode-id>:<window start ms>`, and the only way to find an episode's vectors is
-to list the whole index (about 100 requests; the Worker's binding can't list), so each script lists
-it once and keeps that snapshot up to date as it writes (`scripts/vector-ids.js`; generate-embeddings
-lists again for its closing check), and matches IDs with `isEpisodeVectorId` (exactly
-`<id>:<digits>`, never a same-date neighbour). `replaceEmbeddings` (roe-pipeline/src/embeddings.js)
+to list the whole index (about 100 requests; the Worker's binding can't list), so each script run
+lists it once and keeps that snapshot up to date as it writes (`scripts/vector-ids.js`; a merge's
+process-episode run lists again, and generate-embeddings again for its closing check), and matches
+IDs with `isEpisodeVectorId` (exactly `<id>:<digits>`, never a same-date neighbour). A listing that
+comes back short of the count the index gave stops the script. `replaceEmbeddings` (roe-pipeline/src/embeddings.js)
 upserts every window before it deletes anything, and deletes 100 IDs a call. Vectorize applies
 writes from a queue (under 30 s as a rule), so a listing right after a write may not show it;
 generate-embeddings waits for the queue before its closing check. Cloudflare allows 1,200 API

@@ -31,19 +31,26 @@ export function chunkEpisode(transcript) {
 	return chunkSegments(episode_id, segments, transcript.meta?.audio_ms).map((c) => ({ ...c, episode_id, title }));
 }
 
-/** Every vector ID in the index, in the order the index lists them (not by ID). */
+/**
+ * Every vector ID in the index, in the order the index lists them (not by ID).
+ * A listing that comes back short of the count its first page gave throws: an
+ * ID left out is a vector the caller would never delete.
+ */
 export async function listAllVectorIds(vectorize) {
-	const ids = [];
-	const seen = new Set();
+	const ids = new Set();
+	const cursors = new Set();
 	let cursor = null;
+	let total = null;
 	do {
 		const page = await vectorize.listIds({ count: LIST_PAGE, cursor });
-		ids.push(...page.ids);
-		if (page.nextCursor && seen.has(page.nextCursor)) throw new Error('The Vectorize listing sent the same page twice; try again');
-		seen.add(page.nextCursor);
+		total ??= page.totalCount;
+		for (const id of page.ids) ids.add(id);
+		if (page.nextCursor && cursors.has(page.nextCursor)) throw new Error('The Vectorize listing sent the same page twice; try again');
+		cursors.add(page.nextCursor);
 		cursor = page.nextCursor;
 	} while (cursor);
-	return ids;
+	if (total != null && ids.size < total) throw new Error(`The Vectorize listing gave ${ids.size} of the ${total} IDs it said the index holds; try again`);
+	return [...ids];
 }
 
 /** The episode an ID names: everything before its last ':' ('' when the ID isn't "<episode>:<digits>"). */

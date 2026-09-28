@@ -105,6 +105,42 @@ test('a 429, a 5xx or no answer is tried again, 3 tries in all; a 400 is not', a
 	assert.equal(cf.requests.length, 12);
 });
 
+test('a write or Workers AI call only gets the tries that fit in its budget, so none is left going after it fails', async () => {
+	const cf = stand({ ids: idsOf(A, 1) });
+	const hangs = (op) => (url, init) => (String(url).endsWith(op)
+		? new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason)))
+		: cf.fetch(url, init));
+	const vectorize = remoteVectorize();
+	const saved = pacing.budgetMs;
+	pacing.budgetMs = 150;
+	try {
+		const started = Date.now();
+		globalThis.fetch = hangs('/upsert');
+		await assert.rejects(outsideTestRun(() => vectorize.upsert([{ id: `${A}:5000`, values: [1, 1] }])), /Vectorize upsert failed: The operation was aborted due to timeout/);
+		globalThis.fetch = hangs('/delete_by_ids');
+		await assert.rejects(outsideTestRun(() => vectorize.deleteByIds([`${A}:0`])), /Vectorize delete failed/);
+		globalThis.fetch = hangs('/ai/run/@cf/baai/bge-base-en-v1.5');
+		await assert.rejects(remoteAI().run('@cf/baai/bge-base-en-v1.5', { text: ['hi'] }), /Workers AI failed/);
+		assert.ok(Date.now() - started < 2_000, `three calls with a 150 ms budget took ${Date.now() - started} ms`);
+		const sent = cf.requests.length;
+		await new Promise((r) => setTimeout(r, 300));
+		assert.equal(cf.requests.length, sent, 'no try after the budget ran out');
+		assert.equal(vectorize.lastMutation, null);
+
+		// A quick failure inside the budget is still tried again
+		globalThis.fetch = cf.fetch;
+		pacing.budgetMs = 5_000;
+		cf.failNext(503);
+		await outsideTestRun(() => vectorize.upsert([{ id: `${A}:5000`, values: [1, 1] }]));
+		assert.ok(cf.index.has(`${A}:5000`));
+		// Reads have no budget: a read's tries aren't cut short
+		cf.failNext(503, 503);
+		assert.equal((await vectorize.info()).vectorCount, 2);
+	} finally {
+		pacing.budgetMs = saved;
+	}
+});
+
 test('one process starts at most one request every pacing.gapMs, from any caller', async () => {
 	const cf = stand({ ids: idsOf(A, 1) });
 	pacing.gapMs = 60;
