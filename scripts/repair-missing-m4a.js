@@ -23,7 +23,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { escapeSQL, wranglerExec, runSQL, queryJSON, projectRoot, parseEpisodeDate, convertAudio } from './lib.js';
+import { loadEnv, escapeSQL, wranglerExec, runSQL, queryJSON, projectRoot, parseEpisodeDate, convertAudio } from './lib.js';
 
 const R2_BUCKET = 'roe-audio';
 const R2_PUBLIC_URL = 'https://pub-e95bd2be3f9d4147b2955503d75e50c1.r2.dev';
@@ -72,21 +72,9 @@ async function main() {
 		? new Set(process.argv[onlyArg + 1].split(',').map((s) => s.trim()))
 		: null;
 
-	// Read the project .env directly and let it OVERRIDE the shell
-	// environment — a stale CLOUDFLARE_API_TOKEN exported from a shell
-	// profile otherwise wins (lib.js loadEnv never overrides) and the R2
-	// API calls fail with an authentication error.
-	const env = {};
-	const envPath = path.join(projectRoot, '.env');
-	if (fs.existsSync(envPath)) {
-		for (const line of fs.readFileSync(envPath, 'utf-8').split('\n')) {
-			const trimmed = line.trim();
-			if (!trimmed || trimmed.startsWith('#')) continue;
-			const eq = trimmed.indexOf('=');
-			if (eq === -1) continue;
-			env[trimmed.slice(0, eq)] = trimmed.slice(eq + 1);
-		}
-	}
+	// .env wins over a stale key in the shell (see loadEnv)
+	loadEnv();
+	const env = process.env;
 	if (!env.CLOUDFLARE_ACCOUNT_ID || !env.CLOUDFLARE_API_TOKEN) {
 		console.error('Missing CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_API_TOKEN in .env');
 		process.exit(1);
