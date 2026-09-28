@@ -1,123 +1,72 @@
 #!/usr/bin/env node
 
+/**
+ * Transcribe every show in an archive folder that has no transcript yet, with
+ * OpenAI Whisper (transcribe.js). The folder is read by discover-episodes.js:
+ * one file per date, shows split into several files skipped and listed, and
+ * names it can't read listed too. A show that fails is reported and the rest
+ * go on; running this again resumes each show from its last saved chunk, so
+ * nothing is paid for twice.
+ *
+ * Usage:
+ *   node scripts/transcribe-all.js <audio-directory> [--max <n>]
+ *
+ * Needs OPENAI_API_KEY (in .env). About $0.72 for a two-hour show.
+ */
+
 import fs from 'node:fs';
 import path from 'node:path';
-import { transcribeFile } from './transcribe.js';
-import { parseEpisodeId } from './process-episode.js';
+import { discoverEpisodes } from './discover-episodes.js';
+import { transcribeAndSave } from './transcribe.js';
+import { loadEnv, parseFlags } from './lib.js';
+import { readTranscript } from './transcript-file.js';
 
-const AUDIO_EXTENSIONS = new Set(['.mp3', '.m4a', '.wav', '.ogg', '.flac', '.aac', '.wma']);
-const MAX_RETRIES = 2;
-
-function usage() {
-	console.error('Usage: node scripts/transcribe-all.js <audio-directory>');
-	console.error('');
-	console.error('Transcribes all audio files in the directory.');
-	console.error('Skips files that already have a transcript in transcripts/.');
-	console.error('');
-	console.error('Environment: OPENAI_API_KEY must be set.');
-	process.exit(1);
-}
+const USAGE = 'Usage: node scripts/transcribe-all.js <audio-directory> [--max <n>]';
 
 async function main() {
-	const audioDir = process.argv[2];
-	if (!audioDir) usage();
-
-	const resolvedDir = path.resolve(audioDir);
-	if (!fs.existsSync(resolvedDir)) {
-		console.error(`Directory not found: ${resolvedDir}`);
+	loadEnv();
+	const { flags, rest } = parseFlags(process.argv.slice(2), { '--max': 'value' }, USAGE);
+	if (rest.length !== 1) {
+		console.error(USAGE);
+		process.exit(1);
+	}
+	const max = flags.max === undefined ? Infinity : Number(flags.max);
+	if (!(max > 0)) {
+		console.error(`--max needs a positive number\n\n${USAGE}`);
+		process.exit(1);
+	}
+	if (!process.env.OPENAI_API_KEY) {
+		console.error('OPENAI_API_KEY is not set (add it to .env)');
 		process.exit(1);
 	}
 
-	const transcriptsDir = path.resolve(path.dirname(decodeURIComponent(new URL(import.meta.url).pathname)), '..', 'transcripts');
-	fs.mkdirSync(transcriptsDir, { recursive: true });
-
-	// Find all audio files
-	const files = fs.readdirSync(resolvedDir)
-		.filter((f) => AUDIO_EXTENSIONS.has(path.extname(f).toLowerCase()))
-		.sort();
-
-	if (files.length === 0) {
-		console.log(`No audio files found in ${resolvedDir}`);
-		process.exit(0);
+	const audioDir = path.resolve(rest[0]);
+	if (!fs.existsSync(audioDir)) {
+		console.error(`Directory not found: ${audioDir}`);
+		process.exit(1);
 	}
 
-	// Determine which need transcribing
-	const pending = [];
-	const skipped = [];
-	for (const file of files) {
-		// Canonical ID (roll-over-easy_YYYY-MM-DD_HH-MM-SS), matching the local
-		// whisper.cpp pipeline — so transcripts produced here are found by
-		// process-all.js / discover-episodes.js instead of re-transcribed.
-		const episodeId = parseEpisodeId(file);
-		if (!episodeId) {
-			console.warn(`  Skipping "${file}": can't work out its episode ID from the name.`);
-			skipped.push(file);
-			continue;
-		}
-		const transcriptPath = path.join(transcriptsDir, `${episodeId}.json`);
-		if (fs.existsSync(transcriptPath)) {
-			skipped.push(file);
-		} else {
-			pending.push(file);
-		}
-	}
+	const { episodes, multiPart, unparseable } = discoverEpisodes(audioDir);
+	const pending = episodes.filter((e) => !readTranscript(e.episodeId)).slice(0, max);
+	console.log(`\n${episodes.length} shows, ${episodes.length - episodes.filter((e) => !readTranscript(e.episodeId)).length} already transcribed; transcribing ${pending.length}`);
+	if (multiPart.length > 0) console.log(`Skipped, split into parts: ${multiPart.map((m) => m.date).join(', ')}`);
+	if (unparseable.length > 0) console.log(`Skipped, names it can't read: ${unparseable.length}`);
 
-	console.log(`Found ${files.length} audio files`);
-	console.log(`  Already transcribed: ${skipped.length}`);
-	console.log(`  To transcribe: ${pending.length}`);
-	console.log();
-
-	if (pending.length === 0) {
-		console.log('Nothing to do!');
-		process.exit(0);
-	}
-
-	let succeeded = 0;
-	let failed = 0;
 	const failures = [];
-
-	for (let i = 0; i < pending.length; i++) {
-		const file = pending[i];
-		const episodeId = parseEpisodeId(file);
-		const audioPath = path.join(resolvedDir, file);
-		const outputPath = path.join(transcriptsDir, `${episodeId}.json`);
-
-		console.log(`[${i + 1}/${pending.length}] ${file}`);
-
-		let lastError;
-		for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-			try {
-				if (attempt > 0) console.log(`  Retry ${attempt}/${MAX_RETRIES}...`);
-
-				const transcript = await transcribeFile(audioPath, episodeId, episodeId);
-				fs.writeFileSync(outputPath, JSON.stringify(transcript, null, 2));
-				console.log(`  Done: ${transcript.segments.length} segments`);
-				succeeded++;
-				lastError = null;
-				break;
-			} catch (err) {
-				lastError = err;
-				console.error(`  Error: ${err.message}`);
-			}
+	for (const [i, ep] of pending.entries()) {
+		console.log(`\n[${i + 1}/${pending.length}] ${path.basename(ep.filePath)} → ${ep.episodeId}`);
+		try {
+			const { transcript, reasons } = await transcribeAndSave(ep.filePath, ep.episodeId);
+			console.log(`  Done: ${transcript.segments.length} lines${reasons.length ? `; on the re-transcribe list: ${reasons.join('; ')}` : ''}`);
+		} catch (err) {
+			console.error(`  FAILED: ${err.message.split('\n')[0]} (run again to resume it)`);
+			failures.push(ep.episodeId);
 		}
-
-		if (lastError) {
-			console.error(`  FAILED after ${MAX_RETRIES + 1} attempts, skipping.`);
-			failed++;
-			failures.push(file);
-		}
-
-		console.log();
 	}
 
-	console.log('=== Summary ===');
-	console.log(`Succeeded: ${succeeded}`);
-	console.log(`Failed: ${failed}`);
-	console.log(`Previously done: ${skipped.length}`);
-	if (failures.length > 0) {
-		console.log(`\nFailed files:`);
-		failures.forEach((f) => console.log(`  - ${f}`));
-	}
+	console.log(`\n=== Done: ${pending.length - failures.length} transcribed, ${failures.length} failed ===`);
+	for (const id of failures) console.log(`  - ${id}`);
+	if (failures.length > 0) process.exit(1);
 }
 
 main().catch((err) => {
