@@ -247,11 +247,51 @@ test('three failures in a row stop the run', async () => {
 	globalThis.fetch = async (url, init) => (String(url).includes('/ai/run/') ? new Response('{}', { status: 401 }) : cf.fetch(url, init));
 	const vectorize = remoteVectorize();
 	const plan = await makePlan({ vectorize, d1: memoryD1(d1, cf), episodes: 'all', keepLines: true, log: quiet });
+	const dir = runDir();
 	await assert.rejects(
-		outsideTestRun(() => applyPlan(plan, { ai: remoteAI(), vectorize, d1: memoryD1(d1, cf), dir: runDir(), log: quiet })),
-		/3 episodes failed in a row, so the run stopped \(the last: Workers AI error 401/,
+		outsideTestRun(() => applyPlan(plan, { ai: remoteAI(), vectorize, d1: memoryD1(d1, cf), dir, log: quiet })),
+		new RegExp(`3 failed in a row, so the run stopped \\(the last: Workers AI error 401.*carry on with --resume "${dir}"`),
 	);
 	assert.deepEqual(cf.ops().filter((op) => op === 'upsert' || op === 'delete_by_ids'), []);
+});
+
+test('an episode that fails halfway through its deletes keeps a backup of everything, after --resume too', async () => {
+	const { d1, expected, index } = world();
+	const stale = Array.from({ length: 150 }, (_, i) => `${A}:${7_000_001 + i}`);
+	const cf = stand({ ids: [...index, ...stale] });
+	let deletes = 0;
+	globalThis.fetch = async (url, init) => (String(url).endsWith('/delete_by_ids') && ++deletes === 2
+		? new Response('{"success":false}', { status: 400 })
+		: cf.fetch(url, init));
+	const vectorize = remoteVectorize();
+	const dir = runDir();
+	const plan = await makePlan({ vectorize, d1: memoryD1(d1, cf), episodes: [A], keepLines: true, log: quiet });
+	const first = await outsideTestRun(() => applyPlan(plan, { ai: remoteAI(), vectorize, d1: memoryD1(d1, cf), dir, log: quiet }));
+	assert.deepEqual(first.failed.map((f) => f.id), [A]);
+	assert.equal(ofEpisode(cf, A).length, expected[A].length + 52 + 1, 'every window upserted, 100 of the 152 stale ones deleted before the failure (and the ID of another form)');
+	const backup = path.join(dir, 'deleted-vectors', `${A}.ndjson`);
+	const savedIds = () => new Set(fs.readFileSync(backup, 'utf-8').trim().split('\n').map((l) => JSON.parse(l).id));
+	assert.equal(savedIds().size, 152, 'the 150 and the 2 stale ones, before anything went');
+
+	const again = await makePlan({ vectorize, d1: memoryD1(d1, cf), episodes: [A], keepLines: true, log: quiet });
+	const second = await outsideTestRun(() => applyPlan(again, { ai: remoteAI(), vectorize, d1: memoryD1(d1, cf), dir, done: doneIn(dir), log: quiet }));
+	assert.deepEqual(second.embedded, [A]);
+	assert.deepEqual(ofEpisode(cf, A), sorted([...expected[A], `${A}:12x`]));
+	assert.equal(savedIds().size, 152, 'the first 100 deleted are still in the backup');
+});
+
+test('an orphan that fails is logged, and the run goes on', async () => {
+	const { d1, index } = world();
+	const cf = stand({ ids: index });
+	const db = memoryD1(d1, cf);
+	db.existing = () => {
+		throw new Error('made-up D1 outage');
+	};
+	const vectorize = remoteVectorize();
+	const plan = await makePlan({ vectorize, d1: db, episodes: [], keepLines: true, log: quiet });
+	const results = await outsideTestRun(() => applyPlan(plan, { ai: remoteAI(), vectorize, d1: db, dir: runDir(), orphans: true, log: quiet }));
+	assert.deepEqual(results.failed.map((f) => [f.id, f.error]), [[B, 'made-up D1 outage'], [G, 'made-up D1 outage']]);
+	assert.equal(ofEpisode(cf, B).length, 5, 'nothing deleted without the check');
 });
 
 test('the check finds another writer\'s change, and tells the run\'s own writes still in the queue', async () => {

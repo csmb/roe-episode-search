@@ -235,15 +235,31 @@ export async function applyPlan(plan, { ai, vectorize, d1, dir, orphans = false,
 	const backups = path.join(dir, 'deleted-vectors');
 	fs.mkdirSync(backups, { recursive: true });
 	const record = (entry) => fs.appendFileSync(path.join(dir, 'progress.ndjson'), `${JSON.stringify({ ...entry, at: new Date().toISOString() })}\n`);
+	// Appended, never overwritten: an episode redone after a failure midway keeps the backup of what already went
 	const backUp = async (episodeId, ids) => {
 		const saved = ids.length > 0 ? await vectorize.getByIds(ids) : [];
-		if (saved.length > 0) fs.writeFileSync(path.join(backups, `${episodeId}.ndjson`), vectorsNdjson(saved));
+		if (saved.length > 0) fs.appendFileSync(path.join(backups, `${episodeId}.ndjson`), vectorsNdjson(saved));
 		return saved.length;
 	};
 	const results = { embedded: [], failed: [], refused: [], skipped: [], orphansDeleted: [], orphansKept: [] };
 
-	const todo = plan.plans.filter((p) => !done.has(p.id) && !p.refused);
+	// A failure is logged and the run goes on; FAILURES_IN_A_ROW of them stop it
 	let failuresInARow = 0;
+	const attempt = async (id, work) => {
+		try {
+			await work();
+			failuresInARow = 0;
+		} catch (err) {
+			log(`  FAILED: ${err.message}`);
+			record({ id, failed: err.message });
+			results.failed.push({ id, error: err.message });
+			if (++failuresInARow >= FAILURES_IN_A_ROW) {
+				throw new Error(`${failuresInARow} failed in a row, so the run stopped (the last: ${err.message}). Fix the cause, then carry on with --resume "${dir}"`);
+			}
+		}
+	};
+
+	const todo = plan.plans.filter((p) => !done.has(p.id) && !p.refused);
 	for (const p of plan.plans) {
 		if (done.has(p.id)) {
 			results.skipped.push(p.id);
@@ -254,7 +270,7 @@ export async function applyPlan(plan, { ai, vectorize, d1, dir, orphans = false,
 			continue;
 		}
 		log(`\n[${todo.indexOf(p) + 1}/${todo.length}] ${p.id}: ${n(p.listed)} listed, ${n(p.expected.length)} windows (+${n(p.add.length)} -${n(p.remove.length)})`);
-		try {
+		await attempt(p.id, async () => {
 			const listed = plan.snapshot.forEpisode(p.id);
 			const old = [...listed, ...staleVectors(p.id)];
 			const keep = new Set(p.expected);
@@ -264,31 +280,25 @@ export async function applyPlan(plan, { ai, vectorize, d1, dir, orphans = false,
 			plan.snapshot.replace(p.id, ids);
 			record({ id: p.id, listed: listed.length, expected: ids.length, upserted, deleted, backedUp, mutationId: vectorize.lastMutation?.mutationId ?? null });
 			results.embedded.push(p.id);
-			failuresInARow = 0;
-		} catch (err) {
-			log(`  FAILED: ${err.message}`);
-			record({ id: p.id, failed: err.message });
-			results.failed.push({ id: p.id, error: err.message });
-			if (++failuresInARow >= FAILURES_IN_A_ROW) {
-				throw new Error(`${failuresInARow} episodes failed in a row, so the run stopped (the last: ${err.message}). Fix the cause, then carry on with --resume`);
-			}
-		}
+		});
 	}
 
 	for (const orphan of orphans ? plan.orphans : []) {
 		if (done.has(orphan.id)) continue;
-		// Checked again just before: an episode published since the D1 read is no orphan
-		if (d1.existing([orphan.id]).has(orphan.id)) {
-			log(`\n${orphan.id}: in D1 now, so its ${n(orphan.ids.length)} vectors are left alone`);
-			results.orphansKept.push(orphan.id);
-			continue;
-		}
-		log(`\n${orphan.id}: not in D1, deleting its ${n(orphan.ids.length)} vectors`);
-		const backedUp = await backUp(orphan.id, orphan.ids);
-		const deleted = await deleteEpisodeVectors(vectorize, orphan.id, orphan.ids);
-		plan.snapshot.drop(orphan.id);
-		record({ orphan: orphan.id, deleted, backedUp, mutationId: vectorize.lastMutation?.mutationId ?? null });
-		results.orphansDeleted.push(orphan.id);
+		await attempt(orphan.id, async () => {
+			// Checked again just before: an episode published since the D1 read is no orphan
+			if (d1.existing([orphan.id]).has(orphan.id)) {
+				log(`\n${orphan.id}: in D1 now, so its ${n(orphan.ids.length)} vectors are left alone`);
+				results.orphansKept.push(orphan.id);
+				return;
+			}
+			log(`\n${orphan.id}: not in D1, deleting its ${n(orphan.ids.length)} vectors`);
+			const backedUp = await backUp(orphan.id, orphan.ids);
+			const deleted = await deleteEpisodeVectors(vectorize, orphan.id, orphan.ids);
+			plan.snapshot.drop(orphan.id);
+			record({ orphan: orphan.id, deleted, backedUp, mutationId: vectorize.lastMutation?.mutationId ?? null });
+			results.orphansDeleted.push(orphan.id);
+		});
 	}
 	return results;
 }
