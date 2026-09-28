@@ -55,3 +55,10 @@ describe('parseEpisodeId', () => {
     expect(parseEpisodeId('Roll Over Easy 2026-10-01 100%.mp3')).toBe('roll-over-easy_2026-10-01_07-30-00');
   });
 });
+
+describe('parseEpisodeId, rules from the local scripts', () => {
+  it('reads rec_YYYYMMDD_HHMM recorder names', () => {
+    expect(parseEpisodeId('rec_20200416_0730.mp3')).toBe('roll-over-easy_2020-04-16_07-30-00');
+  });
+});
+

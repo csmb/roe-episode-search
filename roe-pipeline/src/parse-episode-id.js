@@ -95,6 +95,13 @@ export function parseEpisodeId(key) {
     return `roll-over-easy_${y}-${m}-${d}_07-30-00`;
   }
 
+  // rec_YYYYMMDD_HHMM
+  const recStampMatch = stem.match(/^rec_(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})/);
+  if (recStampMatch) {
+    const [, y, m, d] = recStampMatch;
+    return `roll-over-easy_${y}-${m}-${d}_07-30-00`;
+  }
+
   // rec_(YYYY_MM_DD)_N
   const recYMDMatch = stem.match(/^rec_\((\d{4})_(\d{2})_(\d{2})\)_/);
   if (recYMDMatch) {
