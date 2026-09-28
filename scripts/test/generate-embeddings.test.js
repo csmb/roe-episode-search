@@ -294,6 +294,21 @@ test('an orphan that fails is logged, and the run goes on', async () => {
 	assert.equal(ofEpisode(cf, B).length, 5, 'nothing deleted without the check');
 });
 
+test('when the last write leaves nothing to look for and another writer passes it, the check waits only briefly', async () => {
+	const { d1, index } = world();
+	const cf = stand({ ids: index, queued: true });
+	const vectorize = remoteVectorize();
+	const plan = await makePlan({ vectorize, d1: memoryD1(d1, cf), episodes: [C], keepLines: true, log: quiet });
+	const results = await outsideTestRun(() => applyPlan(plan, { ai: remoteAI(), vectorize, d1: memoryD1(d1, cf), dir: runDir(), log: quiet }));
+	assert.equal(vectorize.lastMutation.kind, 'upsert', 'C only re-upserts IDs the index had: nothing to probe');
+	cf.otherWrite(() => {}); // another writer's mutation, after ours
+	cf.apply();
+	const started = Date.now();
+	const report = await verifyRun(plan, results, { vectorize, log: quiet, wait: { pollMs: 5, timeoutMs: 60_000 }, noProbeWaitMs: 50 });
+	assert.ok(Date.now() - started < 5_000, `waited ${Date.now() - started} ms`);
+	assert.equal(report.ok, true, JSON.stringify(report));
+});
+
 test('the check finds another writer\'s change, and tells the run\'s own writes still in the queue', async () => {
 	const { d1, expected, index } = world();
 	const cf = stand({ ids: index, queued: true });

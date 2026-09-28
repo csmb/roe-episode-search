@@ -202,7 +202,8 @@ function printPlan(plan, s, { yes, orphans, log }) {
 		}
 	}
 	const r = s.run;
-	const what = `${yes ? 'This run' : 'A run with --yes'} ${yes ? 'embeds' : 'would embed'} ${n(r.windows)} windows of ${n(r.episodes)} episodes (about ${(r.tokens / 1e6).toFixed(1)} M tokens, $${r.usd.toFixed(2)} of Workers AI)`;
+	const cost = r.usd >= 0.01 ? `$${r.usd.toFixed(2)}` : 'under $0.01';
+	const what = `${yes ? 'This run' : 'A run with --yes'} ${yes ? 'embeds' : 'would embed'} ${n(r.windows)} windows of ${n(r.episodes)} episodes (about ${(r.tokens / 1e6).toFixed(1)} M tokens, ${cost} of Workers AI)`;
 	const deletes = `${yes ? 'deletes' : 'would delete'} ${n(r.deletes)} vectors they don't make${orphans ? ` and ${n(r.orphanDeletes)} of episodes not in D1` : (s.orphans.length ? ' (the vectors of episodes not in D1 only with --orphans)' : '')}, backed up first`;
 	log(`\n${what}, and ${deletes}.`);
 }
@@ -356,12 +357,20 @@ export function compareWithPlan(plan, results, afterIds, { done = new Set() } = 
 	return report;
 }
 
-/** Wait for the run's last write to be applied, then list the index again and compare (again later while writes are still showing up). */
-export async function verifyRun(plan, results, { vectorize, done = new Set(), log = console.log, wait = {}, relists = 3, relistWaitMs = 30_000 } = {}) {
+/**
+ * Wait for the run's last write to be applied, then list the index again and
+ * compare (again later while writes are still showing up). When the last write
+ * leaves nothing to look for (an upsert of IDs the index had), only its
+ * mutation ID can say it was applied, which another writer's can hide: the
+ * wait is then short, and the listings decide.
+ */
+export async function verifyRun(plan, results, { vectorize, done = new Set(), log = console.log, wait = {}, noProbeWaitMs = 2 * 60_000, relists = 3, relistWaitMs = 30_000 } = {}) {
 	if (vectorize.lastMutation) {
 		log('\nWaiting for Vectorize to apply the last write...');
+		const check = appliedCheck(vectorize.lastMutation, new Set(plan.before));
+		const probe = check.deletedIds?.length || check.newIds?.length;
 		try {
-			await waitUntilApplied(vectorize, appliedCheck(vectorize.lastMutation, new Set(plan.before)), wait);
+			await waitUntilApplied(vectorize, check, probe ? wait : { ...wait, timeoutMs: Math.min(wait.timeoutMs ?? Infinity, noProbeWaitMs) });
 		} catch (err) {
 			log(`  ${err.message}; checking anyway`);
 		}
@@ -474,7 +483,8 @@ async function main() {
 	log(`\nEmbedded ${results.embedded.length} episodes; ${results.failed.length} failed; ${results.refused.length} refused; ${results.orphansDeleted.length} orphan IDs deleted.`);
 	for (const f of results.failed) log(`  FAILED ${f.id}: ${f.error}`);
 
-	if (!vectorize.lastMutation) {
+	// A resumed run checks the episodes done before it too, even when it has nothing left to write
+	if (!vectorize.lastMutation && done.size === 0) {
 		log('Nothing was written, so there is nothing to check.');
 	} else {
 		const report = await verifyRun(plan, results, { vectorize, done, log });

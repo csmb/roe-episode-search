@@ -99,6 +99,8 @@ function readme({ episodeId, dir, rows, vectors, listed, hasTranscript, audioFil
 	} else if (vectors.length > 0) {
 		vectorLine = `  vectors.ndjson  its ${vectors.length} search vectors: every ID in the index starting "${episodeId}:"` +
 			(listed > vectors.length ? ` (${listed} were listed; ${listed - vectors.length} went before they could be read)` : '');
+	} else if (listed > 0) {
+		vectorLine = `  (no search vectors saved: ${listed} were listed under "${episodeId}:", but all went before they could be read)`;
 	}
 	return [
 		`Backup of ${episodeId}, taken ${new Date().toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })} ${reason}.`,
