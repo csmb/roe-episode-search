@@ -25,6 +25,10 @@
  *   --time-limit <hours>    Stop after this many hours (finishes current episode first)
  *   --force step1,step2     Redo these process-episode.js steps even if already done
  *   --include-reviewed      Also redo reviewed episodes' titles, summaries, guests and interview times
+ *
+ * --force and --include-reviewed apply to the episodes this run processes: new
+ * ones and ones a run left unfinished. An episode complete on the site is never
+ * re-run; use process-episode.js for that.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -32,10 +36,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { discoverEpisodes } from './discover-episodes.js';
 import { STEPS } from './process-episode.js';
-import { queryJSON } from './lib.js';
+import { queryJSON, projectRoot, transcriptsDir } from './lib.js';
 
-const projectRoot = path.resolve(path.dirname(decodeURIComponent(new URL(import.meta.url).pathname)), '..');
-const transcriptsDir = path.join(projectRoot, 'transcripts');
 const progressPath = path.join(projectRoot, 'scripts', 'batch-progress.json');
 const processEpisodeScript = path.join(projectRoot, 'scripts', 'process-episode.js');
 
@@ -127,9 +129,10 @@ export function episodeRuns(filePath, { force = [], includeReviewed = false } = 
 	if (force.includes('transcribe')) phase1.push('--force', 'transcribe');
 
 	// Phase 2: the remaining steps. Transcription is skipped explicitly so
-	// --force can't redo it.
+	// --force can't redo it; a new transcript is seeded again.
 	const phase2 = [processEpisodeScript, filePath, '--skip', 'transcribe'];
 	const forced = force.filter((s) => s !== 'transcribe');
+	if (force.includes('transcribe') && !forced.includes('seed-db')) forced.push('seed-db');
 	if (forced.length > 0) phase2.push('--force', forced.join(','));
 	if (includeReviewed) phase2.push('--include-reviewed');
 	return [phase1, phase2];

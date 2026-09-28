@@ -7,7 +7,8 @@
  *   node scripts/generate-summaries.js [--local] [--force] [--include-reviewed] [--dry-run]
  *
  * Episodes whose guests were reviewed by hand keep their title, summary and
- * guests, even with --force, unless --include-reviewed is given.
+ * guests, even with --force, unless --include-reviewed is given (new guests
+ * then go back to the admin page's review queue).
  */
 
 import fs from 'node:fs';
@@ -173,15 +174,23 @@ async function main() {
 			console.log(`    Guests: ${guests.join(', ')}`);
 		}
 
-		// Update D1
+		// A long run can outlast a review done in the admin page meanwhile: check again
+		const [now] = queryJSON(`SELECT guests_reviewed FROM episodes WHERE id = '${escapeSQL(episode_id)}'`, { isLocal });
+		if (now?.guests_reviewed && !includeReviewed) {
+			console.log('    Reviewed while this ran: left alone');
+			continue;
+		}
+
+		// Update D1. New AI guests go back in the admin page's review queue.
+		const unreview = guests.length > 0 ? ', guests_reviewed = 0' : '';
 		if (title) {
 			runSQL(
-				`UPDATE episodes SET title = '${escapeSQL(title)}', summary = '${escapeSQL(summary)}' WHERE id = '${escapeSQL(episode_id)}'`,
+				`UPDATE episodes SET title = '${escapeSQL(title)}', summary = '${escapeSQL(summary)}'${unreview} WHERE id = '${escapeSQL(episode_id)}'`,
 				{ isLocal }
 			);
 		} else {
 			runSQL(
-				`UPDATE episodes SET summary = '${escapeSQL(summary)}' WHERE id = '${escapeSQL(episode_id)}'`,
+				`UPDATE episodes SET summary = '${escapeSQL(summary)}'${unreview} WHERE id = '${escapeSQL(episode_id)}'`,
 				{ isLocal }
 			);
 		}

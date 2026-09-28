@@ -21,8 +21,10 @@
  *
  * An episode whose guests were reviewed by hand (guests_reviewed = 1) keeps its
  * title, summary, guests and interview time, even with --force, unless
- * --include-reviewed is given. The interview time is only filled in when empty,
- * unless guest-start is forced. A mistyped option or step name stops the run.
+ * --include-reviewed is given (new guests then go back to the review queue).
+ * The interview time is only filled in when empty, unless guest-start is
+ * forced. Forcing transcribe also forces seed-db, so D1 gets the new
+ * transcript. A mistyped option or step name stops the run.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -649,11 +651,13 @@ async function generateSummary(episodeId, force, includeReviewed) {
 		console.log(`  Guests: ${guests.join(', ')}`);
 	}
 
-	// Update D1
+	// Update D1. New AI guests go back in the admin page's review queue
+	// (this only changes anything with --include-reviewed).
+	const unreview = guests.length > 0 ? ', guests_reviewed = 0' : '';
 	if (title) {
-		runSQL(`UPDATE episodes SET title = '${escapeSQL(title)}', summary = '${escapeSQL(summary)}' WHERE id = '${escapeSQL(episodeId)}'`, db);
+		runSQL(`UPDATE episodes SET title = '${escapeSQL(title)}', summary = '${escapeSQL(summary)}'${unreview} WHERE id = '${escapeSQL(episodeId)}'`, db);
 	} else {
-		runSQL(`UPDATE episodes SET summary = '${escapeSQL(summary)}' WHERE id = '${escapeSQL(episodeId)}'`, db);
+		runSQL(`UPDATE episodes SET summary = '${escapeSQL(summary)}'${unreview} WHERE id = '${escapeSQL(episodeId)}'`, db);
 	}
 
 	// Insert guests (idempotent: clear first, then insert)
@@ -862,11 +866,15 @@ async function main() {
 		process.exit(1);
 	}
 	const { skip, force, includeReviewed } = opts;
+	// A new transcript has to replace the one in D1 too, or the search vectors
+	// (always rebuilt from the local file) stop matching the site's lines
+	const reseed = force.has('transcribe') && !skip.has('seed-db') && !force.has('seed-db');
+	if (reseed) force.add('seed-db');
 
 	console.log('=== Roll Over Easy — Episode Processing Pipeline ===');
 	console.log(`  File:       ${path.basename(mp3Path)}`);
 	console.log(`  Episode ID: ${episodeId}`);
-	console.log(`  Force:      ${force.size > 0 ? [...force].join(', ') : 'none'}`);
+	console.log(`  Force:      ${force.size > 0 ? [...force].join(', ') : 'none'}${reseed ? ' (seed-db because transcribe is)' : ''}`);
 	if (skip.size > 0) console.log(`  Skipping:   ${[...skip].join(', ')}`);
 	if (includeReviewed) console.log('  Reviewed:   redo their title, summary, guests and interview time too');
 	if (opts.local) console.log('  Database:   local D1 copy');
