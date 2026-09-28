@@ -17,6 +17,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { parseEpisodeDate } from './lib.js';
 import { parseEpisodeId } from './process-episode.js';
 
 // Files that are not ROE episodes
@@ -50,14 +51,6 @@ function isMultiPart(files) {
 	const originals = files.filter((f) => !DUPLICATE.test(f.filename));
 	return originals.some((f) => PART_NUMBER.test(f.filename))
 		&& new Set(originals.map((f) => f.fileSize)).size > 1;
-}
-
-/**
- * Extract the date portion (YYYY-MM-DD) from a canonical episode ID.
- */
-function episodeDate(episodeId) {
-	const match = episodeId.match(/(\d{4}-\d{2}-\d{2})/);
-	return match ? match[1] : null;
 }
 
 /**
@@ -110,7 +103,7 @@ export function discoverEpisodes(audioDir, opts = {}) {
 		const episodeId = parseEpisodeId(filePath);
 
 		// parseEpisodeId returns null for names it can't read
-		const date = episodeId ? episodeDate(episodeId) : null;
+		const date = episodeId ? parseEpisodeDate(episodeId) : null;
 		if (!date) {
 			unparseable.push(filename);
 			continue;
