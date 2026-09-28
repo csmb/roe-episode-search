@@ -2,15 +2,37 @@
  * Workers AI and Vectorize bindings for Node scripts, over Cloudflare's REST
  * API, so a script can run the Worker's own embeddings code
  * (roe-pipeline/src/embeddings.js) instead of keeping a copy of it. The same
- * idea as remote-d1.js for D1.
+ * idea as remote-d1.js for D1. Vectorize also gets what the Worker's binding
+ * can't do: list the index's IDs (vector-ids.js).
+ *
+ * Cloudflare allows 1,200 API requests per 5 minutes per user, and going over
+ * blocks every call (wrangler's too) for 5 minutes. So a process sends at most
+ * about 3 requests a second, and a 429, a 5xx or no answer is tried again (3
+ * tries in all) before it fails.
  *
  * In a test run (ROE_PERSIST_TO) the Vectorize writes are refused: the index
- * has no local copy, so they could only reach production.
+ * has no local copy, so they could only reach production. Reads are allowed.
  */
 
 import { VECTORIZE_INDEX } from './lib.js';
 
 const TIMEOUT_MS = 60_000;
+const GET_BATCH_SIZE = 20; // get_by_ids takes at most 20 IDs (21 gets a 400)
+
+// How far apart one process's requests start, and how long to wait before
+// each retry. Tests set them to 0.
+export const pacing = { gapMs: 340, retryWaitsMs: [2_000, 10_000] };
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+let nextTurn = 0;
+
+/** Wait until this request may start: pacing.gapMs after the one before, from any caller. */
+async function waitTurn() {
+	const now = Date.now();
+	const at = Math.max(now, nextTurn);
+	nextTurn = at + pacing.gapMs;
+	if (at > now) await sleep(at - now);
+}
 
 function api() {
 	const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
@@ -23,9 +45,29 @@ function api() {
 }
 
 async function call(what, url, init) {
-	const res = await fetch(url, { ...init, signal: AbortSignal.timeout(TIMEOUT_MS) });
-	if (!res.ok) throw new Error(`${what} error ${res.status}: ${(await res.text()).slice(0, 300)}`);
-	return (await res.json()).result;
+	for (let attempt = 1; ; attempt++) {
+		const retryWait = pacing.retryWaitsMs[attempt - 1];
+		await waitTurn();
+		let res;
+		try {
+			res = await fetch(url, { ...init, signal: AbortSignal.timeout(TIMEOUT_MS) });
+		} catch (err) {
+			// No answer (the network, or the time limit)
+			if (retryWait === undefined) throw new Error(`${what} failed: ${err.message}`);
+			console.warn(`  ${what} failed (${err.message}); trying again in ${retryWait / 1000} s`);
+			await sleep(retryWait);
+			continue;
+		}
+		if (res.ok) return (await res.json()).result;
+		const body = (await res.text()).slice(0, 300);
+		if ((res.status === 429 || res.status >= 500) && retryWait !== undefined) {
+			console.warn(`  ${what} error ${res.status}; trying again in ${retryWait / 1000} s`);
+			await sleep(retryWait);
+			continue;
+		}
+		const limit = res.status === 429 ? ' (Cloudflare\'s API limit, 1,200 requests per 5 minutes: wait 5 minutes)' : '';
+		throw new Error(`${what} error ${res.status}${limit}: ${body}`);
+	}
 }
 
 function refuseInTestRun(what) {
@@ -46,26 +88,57 @@ export function remoteAI() {
 	};
 }
 
-/** Like the Worker's env.VECTORIZE, plus deleteByIds for the vectors a new transcript no longer has. */
+/**
+ * Like the Worker's env.VECTORIZE (upsert, deleteByIds, getByIds), plus listIds
+ * and info. `lastMutation` is the last write this one sent ({mutationId, kind,
+ * ids, sentAt}), for vector-ids.js's waitUntilApplied.
+ */
 export function remoteVectorize(index = VECTORIZE_INDEX) {
-	return {
+	const indexUrl = (op) => `${api().base}/vectorize/v2/indexes/${index}/${op}`;
+	const send = (what, op, contentType, body) => call(what, indexUrl(op), {
+		method: 'POST',
+		headers: { ...api().headers, 'Content-Type': contentType },
+		body,
+	});
+
+	const vectorize = {
+		lastMutation: null,
+
 		async upsert(vectors) {
 			refuseInTestRun('write to');
-			const { base, headers } = api();
-			return call('Vectorize upsert', `${base}/vectorize/v2/indexes/${index}/upsert`, {
-				method: 'POST',
-				headers: { ...headers, 'Content-Type': 'application/x-ndjson' },
-				body: vectors.map((v) => JSON.stringify(v)).join('\n'),
-			});
+			const result = await send('Vectorize upsert', 'upsert', 'application/x-ndjson', vectors.map((v) => JSON.stringify(v)).join('\n'));
+			vectorize.lastMutation = { mutationId: result?.mutationId ?? null, kind: 'upsert', ids: vectors.map((v) => v.id), sentAt: new Date().toISOString() };
+			return result;
 		},
+
 		async deleteByIds(ids) {
 			refuseInTestRun('delete from');
-			const { base, headers } = api();
-			return call('Vectorize delete', `${base}/vectorize/v2/indexes/${index}/delete_by_ids`, {
-				method: 'POST',
-				headers: { ...headers, 'Content-Type': 'application/json' },
-				body: JSON.stringify({ ids }),
-			});
+			const result = await send('Vectorize delete', 'delete_by_ids', 'application/json', JSON.stringify({ ids }));
+			vectorize.lastMutation = { mutationId: result?.mutationId ?? null, kind: 'delete', ids: [...ids], sentAt: new Date().toISOString() };
+			return result;
+		},
+
+		/** One page (at most 1,000) of the index's IDs, in the index's own order, not by ID. A read. */
+		async listIds({ count = 1000, cursor = null } = {}) {
+			const query = new URLSearchParams({ count: String(count) });
+			if (cursor) query.set('cursor', cursor);
+			const page = await call('Vectorize list', `${indexUrl('list')}?${query}`, { headers: api().headers });
+			return { ids: page.vectors.map((v) => v.id), nextCursor: page.isTruncated ? page.nextCursor : null, totalCount: page.totalCount };
+		},
+
+		/** The vectors ({id, values, metadata}) that exist for these IDs, 20 a request; missing IDs are left out. A read. */
+		async getByIds(ids) {
+			const found = [];
+			for (let i = 0; i < ids.length; i += GET_BATCH_SIZE) {
+				found.push(...await send('Vectorize get', 'get_by_ids', 'application/json', JSON.stringify({ ids: ids.slice(i, i + GET_BATCH_SIZE) })));
+			}
+			return found;
+		},
+
+		/** {dimensions, vectorCount, processedUpToMutation, processedUpToDatetime}. A read. */
+		async info() {
+			return call('Vectorize info', indexUrl('info'), { headers: api().headers });
 		},
 	};
+	return vectorize;
 }
