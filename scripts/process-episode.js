@@ -90,6 +90,14 @@ const WHISPER_MODEL_CANDIDATES = [
 ];
 const WHISPER_MODEL_PATH = WHISPER_MODEL_CANDIDATES.find((p) => fs.existsSync(p)) || WHISPER_MODEL_CANDIDATES[0];
 
+// The models the repair driver can choose (process-episode itself uses large-v3).
+// large-v3-turbo ran 2-3 times faster on this Mac with the same agreement with
+// OpenAI's transcripts (2026-09-27, four 25-29 minute stretches).
+export const WHISPER_MODELS = {
+	'large-v3': WHISPER_MODEL_PATH,
+	'large-v3-turbo': path.join(os.homedir(), '.cache', 'whisper-cpp', 'ggml-large-v3-turbo.bin'),
+};
+
 const VAD_MODEL_PATH = path.join(os.homedir(), '.cache', 'whisper-cpp', 'ggml-silero-v6.2.0.bin');
 
 // The spelling-hint prompt is the Worker's (roe-pipeline/src/whisper-prompt.js):
@@ -120,13 +128,13 @@ function whisperOptions(noGpu) {
  * model and one pass of it), under a hard time limit, before any real work.
  * Returns what went wrong, or null.
  */
-export function whisperStartProblem(noGpu = false) {
+export function whisperStartProblem(noGpu = false, modelPath = WHISPER_MODEL_PATH) {
 	const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'roe-whisper-test-'));
 	const { gpuArgs, env } = whisperOptions(noGpu);
 	try {
 		const wavPath = path.join(tmpDir, 'silence.wav');
 		execFileSync('ffmpeg', ['-nostdin', '-y', '-f', 'lavfi', '-i', 'anullsrc=r=16000:cl=mono', '-t', '1', wavPath], { stdio: 'pipe' });
-		execFileSync('whisper-cli', [...gpuArgs, '-m', WHISPER_MODEL_PATH, '--language', 'en', '-nt', wavPath], {
+		execFileSync('whisper-cli', [...gpuArgs, '-m', modelPath, '--language', 'en', '-nt', wavPath], {
 			encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], env, timeout: WHISPER_TEST_LIMIT_MS, killSignal: 'SIGKILL',
 		});
 		return null;
@@ -254,8 +262,9 @@ function transcribeWithWhisperCpp(mp3Path, episodeId, noGpu) {
  * whisper.cpp on this machine, then the Worker's cleaning
  * (roe-pipeline/src/clean-segments.js). Returns the transcript without saving
  * it: repair-archive.js checks a new transcript before it replaces the old one.
+ * `modelPath` is a ggml model file (WHISPER_MODELS); the transcript's meta names it.
  */
-export function whisperCppTranscript(mp3Path, episodeId, noGpu = false) {
+export function whisperCppTranscript(mp3Path, episodeId, noGpu = false, { modelPath = WHISPER_MODEL_PATH } = {}) {
 	const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'roe-whisper-'));
 	const audioMs = probeDurationMs(mp3Path);
 	const { gpuArgs, env } = whisperOptions(noGpu);
@@ -275,7 +284,7 @@ export function whisperCppTranscript(mp3Path, episodeId, noGpu = false) {
 		try {
 			execFileSync('whisper-cli', [
 				...gpuArgs,
-				'-m', WHISPER_MODEL_PATH,
+				'-m', modelPath,
 				'--language', 'en',
 				'--output-json-full',
 				'--output-file', whisperOutput,
@@ -314,7 +323,7 @@ export function whisperCppTranscript(mp3Path, episodeId, noGpu = false) {
 			audioMs,
 			audioFile: mp3Path,
 			engine: 'whisper.cpp',
-			model: path.basename(WHISPER_MODEL_PATH, '.bin'),
+			model: path.basename(modelPath, '.bin'),
 			settings: { language: 'en', prompt_sha1: PROMPT_SHA1, max_context: 0, carry_initial_prompt: true, vad: true, suppress_nst: true, gpu: !noGpu },
 			removedByCleaning: parsed.length - segments.length,
 		});
