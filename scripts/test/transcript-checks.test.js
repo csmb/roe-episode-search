@@ -9,7 +9,7 @@ import path from 'node:path';
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'roe-test-'));
 after(() => fs.rmSync(tmp, { recursive: true, force: true }));
 process.env.ROE_PERSIST_TO ??= tmp; // a test run: no keys from .env
-const { OLD_PROMPT_TERMS, isOldPromptEcho, isAnyPromptEcho, countWords, junkLines, realLines, checkNewTranscript, scanEpisode } = await import('../transcript-checks.js');
+const { OLD_PROMPT_TERMS, isOldPromptEcho, isAnyPromptEcho, countWords, junkLines, realLines, checkNewTranscript, scanEpisode, sameShowShare } = await import('../transcript-checks.js');
 
 const MIN = 60_000;
 // A line every 4 s from `fromMs` to `toMs`, each with different words
@@ -78,6 +78,21 @@ test('each check can fail it: coverage, loops, words, another recording, junk le
 	assert.match(problems(transcript(good, 120 * MIN), { siteAudioMs: 113 * MIN }), /the site's audio 113\.0 min .*a different recording/);
 	assert.match(problems(transcript(good, 120 * MIN), { siteAudioMs: null }), /length of the site's audio is unknown/);
 	assert.match(problems(transcript([...good, { start_ms: 119.6 * MIN, end_ms: 119.7 * MIN, text: 'ආයුබෝවන් සුභ උදෑසනක්' }], 120 * MIN)), /1 wrong-language or prompt-echo line left/);
+});
+
+test('the same show: most of the live transcript\'s distinctive words, or refused', () => {
+	const vocab = (prefix, n) => Array.from({ length: n }, (_, i) => `${prefix}${String.fromCharCode(97 + (i % 26))}${String.fromCharCode(97 + Math.floor(i / 26))}word`);
+	const said = (words, fromMs) => words.flatMap((w, i) => [0, 1].map((k) => ({ start_ms: fromMs + (2 * i + k) * 4000, end_ms: fromMs + (2 * i + k) * 4000 + 3000, text: `we said ${w} again ${i}` })));
+	const show = vocab('ferry', 40);
+	const other = vocab('bakery', 40);
+	assert.equal(sameShowShare(said(show, 0), said(show, 0)), 1);
+	assert.equal(sameShowShare(said(show, 0), said([...show.slice(0, 20), ...other.slice(0, 20)], 0)), 0.5);
+	assert.equal(sameShowShare(said(show.slice(0, 10), 0), said(other, 0)), null); // too few words to tell
+	const old = [...said(show, 0), ...talk(10 * MIN, 119 * MIN)];
+	const wrong = [...said(other, 0), ...talk(10 * MIN, 119.5 * MIN, 'a whole new line of talk')];
+	const r = checkNewTranscript(transcript(wrong, 120 * MIN), { oldLines: old, siteAudioMs: 120 * MIN });
+	assert.match(r.problems.join(' | '), /only 0% of the live transcript's distinctive words: another show\?/);
+	assert.ok(checkNewTranscript(transcript([...said(show, 0), ...talk(10 * MIN, 119.5 * MIN)], 120 * MIN), { oldLines: old, siteAudioMs: 120 * MIN }).ok);
 });
 
 test('the scan names what is wrong with an episode on the site', () => {

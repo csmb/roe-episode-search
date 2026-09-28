@@ -104,6 +104,21 @@ export const SITE_AUDIO_SLACK_MS = 5_000;
 // old transcripts have them: a local transcript of a fine show can have fewer words.
 // In the engine test it had 86-111% of OpenAI's words for the same stretch.
 export const MIN_WORD_SHARE = 0.8;
+// The same show? The share of the live transcript's distinctive words (6+ letters,
+// said twice or more) the new one has too. The four trial transcripts had 97-99% of
+// their own show's; against 84 other shows they had 42-62% (2026-09-27).
+export const MIN_SAME_SHOW = 0.7;
+const SAME_SHOW_MIN_WORDS = 30; // fewer distinctive words than this: too few to tell
+
+/** The share of the old lines' distinctive words the new ones have (null: too few to tell). */
+export function sameShowShare(oldLines, newLines) {
+	const counts = new Map();
+	for (const l of realLines(oldLines)) for (const w of l.text.toLowerCase().match(/[a-z]{6,}/g) ?? []) counts.set(w, (counts.get(w) ?? 0) + 1);
+	const distinctive = [...counts].filter(([, n]) => n >= 2).map(([w]) => w);
+	if (distinctive.length < SAME_SHOW_MIN_WORDS) return null;
+	const now = new Set(newLines.flatMap((l) => l.text.toLowerCase().match(/[a-z]{6,}/g) ?? []));
+	return distinctive.filter((w) => now.has(w)).length / distinctive.length;
+}
 
 /**
  * Is a new transcript good enough to replace the one on the site?
@@ -114,6 +129,8 @@ export const MIN_WORD_SHARE = 0.8;
  *   prompt echoes and wrong-language lines not counted);
  * - its recording is as long as the audio the site plays, within 5 s (else
  *   every time in it would be off);
+ * - it has at least `minSameShow` (70%) of the live transcript's distinctive
+ *   words (the same show, not another recording of about the same length);
  * - no wrong-language or prompt-echo lines are left in it.
  * Holes of 5+ minutes are noted for review, not refused: whisper.cpp leaves a
  * long song out.
@@ -124,7 +141,7 @@ export const MIN_WORD_SHARE = 0.8;
  * @param {number|null} against.siteAudioMs - the length of the audio the site plays (or will: a joined show's)
  * @returns {{ok: boolean, problems: string[], notes: string[], facts: object}}
  */
-export function checkNewTranscript(transcript, { oldLines, siteAudioMs, minWordShare = MIN_WORD_SHARE }) {
+export function checkNewTranscript(transcript, { oldLines, siteAudioMs, minWordShare = MIN_WORD_SHARE, minSameShow = MIN_SAME_SHOW }) {
 	const segments = transcript.segments ?? [];
 	const audioMs = transcript.meta?.audio_ms ?? null;
 	const problems = [];
@@ -153,6 +170,11 @@ export function checkNewTranscript(transcript, { oldLines, siteAudioMs, minWordS
 		problems.push(`its recording is ${minutes(audioMs)} min, the site's audio ${minutes(siteAudioMs)} min (${(offMs / 1000).toFixed(1)} s apart): a different recording`);
 	}
 
+	const sameShow = sameShowShare(oldLines, segments);
+	if (sameShow != null && sameShow < minSameShow) {
+		problems.push(`it has only ${Math.round(sameShow * 100)}% of the live transcript's distinctive words: another show?`);
+	}
+
 	const junk = segments.filter((s) => isMostlyNonLatin(s.text) || isAnyPromptEcho(s.text)).length;
 	if (junk > 0) problems.push(`${junk} wrong-language or prompt-echo line${junk === 1 ? '' : 's'} left in it`);
 
@@ -170,6 +192,7 @@ export function checkNewTranscript(transcript, { oldLines, siteAudioMs, minWordS
 			site_audio_ms: siteAudioMs,
 			holes: holes.length,
 			loops: loops.length,
+			same_show: sameShow,
 		},
 	};
 }
