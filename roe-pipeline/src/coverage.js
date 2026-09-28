@@ -13,7 +13,7 @@
 import { findGaps, MIN_GAP_MS } from './gap-retry.js';
 
 export const MIN_COVERAGE = 0.9;
-const OVERRUN_MS = 30_000; // the last line may run a little past the audio
+export const OVERRUN_MS = 30_000; // the last line may run a little past the audio
 
 const minutes = ms => `${(ms / 60_000).toFixed(1)} min`;
 

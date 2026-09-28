@@ -46,8 +46,8 @@ export async function listAllVectorIds(vectorize) {
 	return ids;
 }
 
-/** The episode an ID names: everything before its last ':' ('' when that isn't "<episode>:<digits>"). */
-function episodeOf(id) {
+/** The episode an ID names: everything before its last ':' ('' when the ID isn't "<episode>:<digits>"). */
+export function episodeOf(id) {
 	const at = id.lastIndexOf(':');
 	const episode = at > 0 ? id.slice(0, at) : '';
 	return episode && !episode.includes(':') && isEpisodeVectorId(episode, id) ? episode : '';
