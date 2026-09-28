@@ -21,7 +21,10 @@
  * raw MP3 upload in R2.
  *
  * For each redo:
- *   1. the audio (joined, or fetched from R2, into transcripts/.repair/audio/)
+ *   1. the audio (joined, or fetched from R2, into transcripts/.repair/audio/),
+ *      which has to be the recording the site plays (within 5 s; for a join,
+ *      the site has to be playing the part the worklist names) before anything
+ *      is transcribed
  *   2. a transcript into transcripts/.repair/staging/, never over the live file:
  *      by default whisper.cpp with large-v3-turbo on the GPU (free, about 0.06-
  *      0.09x the show's length), or --engine openai (the pipeline's code, about
@@ -29,21 +32,24 @@
  *   3. checks: it covers the recording, no Whisper loops, at least
  *      --min-word-share of the old D1 transcript's words (loop repeats, echoes
  *      and wrong-language lines not counted; whisper.cpp leaves song lyrics
- *      out), its recording within 5 s of the site's audio, no junk lines left.
- *      Holes of 5+ minutes are noted for review, not refused (long songs).
+ *      out) and --min-same-show of its distinctive words (the same show), no
+ *      junk lines left. Holes of 5+ minutes are noted for review, not refused
+ *      (long songs).
  *      A whisper.cpp transcript that fails is made once more with the other
  *      model (--retry-model), then with OpenAI only with --fallback-openai and
  *      within --max-cost. A show that still fails is set aside for the owner
  *      (nothing on the site changes) and the run goes on; three set aside in a
  *      row stop it.
  *   Then, one episode at a time:
- *   4. a backup (episode-backup.js; with the .m4a for a join), which keeps the
- *      old local transcript and restore.sql
+ *   4. the site's audio measured again (still what the transcript was checked
+ *      against), then a backup (episode-backup.js; with the .m4a for a join),
+ *      which keeps the old local transcript and restore.sql
  *   5. the old local transcript's search window IDs kept as stale, and the new
  *      transcript installed in transcripts/
  *   6. process-episode.js --skip transcribe,summary,guest-start,upload-audio
- *      --force seed-db (a join also forces upload-audio): the seed (one D1
- *      import), then the embeddings step (skipped with --local)
+ *      --force seed-db: the seed (one D1 import), then the embeddings step
+ *      (skipped with --local). A join's run uploads its audio after the seed
+ *      instead, its times move, and then its embeddings step runs on its own.
  *   7. checks on D1: every line in and found by keyword search, duration_ms
  *      the recording's length, and the title, summary, guests, reviewed flag,
  *      interview time, audio and place quotes as they were (a join's times
@@ -75,6 +81,7 @@
  *   --max-cost <dollars>    the most this run may spend on OpenAI (default 0)
  *   --parallel <n>          shows transcribed at once (default 1; they share the GPU); publishing is one at a time
  *   --min-word-share <x>    the share of the old transcript's words a new one needs (default 0.8)
+ *   --min-same-show <x>     the share of the old transcript's distinctive words it needs (default 0.7)
  *   --trial-dir <dir>       the T rows' transcripts (default transcripts/.trial-2026-09-27)
  *   --retry-failed          try again the shows an earlier run set aside
  *   --local                 the local D1 copy and R2 (Vectorize is left alone)
@@ -86,12 +93,12 @@ import path from 'node:path';
 
 import { ARCHIVE_DIR, R2_PUBLIC_URL, escapeSQL, loadEnv, parseFlags, probeDurationMs, projectRoot, queryJSON, runSQL, transcriptsDir } from './lib.js';
 import { joinParts } from '../roe-pipeline/src/mp3-join.js';
-import { cleanEpisode, DEFAULT_RULES } from './clean-junk-lines.js';
+import { cleanEpisode, DEFAULT_RULES, embeddingsRun } from './clean-junk-lines.js';
 import { backupEpisode } from './episode-backup.js';
 import { chunkEpisode } from './generate-embeddings.js';
 import { WHISPER_MODELS, whisperStartProblem } from './process-episode.js';
 import { downloadR2Object, siteAudioKey, siteAudioMs } from './site-audio.js';
-import { MIN_WORD_SHARE, SITE_AUDIO_SLACK_MS, checkNewTranscript, junkLines } from './transcript-checks.js';
+import { MIN_SAME_SHOW, MIN_WORD_SHARE, SITE_AUDIO_SLACK_MS, checkNewTranscript, junkLines } from './transcript-checks.js';
 import { readTranscript, writeTranscript } from './transcript-file.js';
 
 const SCRIPT = path.join(projectRoot, 'scripts', 'repair-archive.js');
@@ -176,6 +183,7 @@ export function parseWorklist(text) {
 	for (const col of ['date', 'act', 'src', 'file']) {
 		if (!header.includes(col)) throw new Error(`The worklist has no "${col}" column (it has: ${header.join(', ')})`);
 	}
+	const seen = new Set();
 	return lines.slice(1).map((line, i) => {
 		const f = csvFields(line);
 		const row = Object.fromEntries(header.map((h, j) => [h, (f[j] ?? '').trim()]));
@@ -183,10 +191,18 @@ export function parseWorklist(text) {
 		if (!/^\d{4}-\d{2}-\d{2}$/.test(row.date)) throw new Error(`${where}: the date should be YYYY-MM-DD`);
 		if (!ACTS[row.act]) throw new Error(`${where}: act "${row.act}" isn't one of ${Object.keys(ACTS).join(', ')}`);
 		if (!SOURCES.includes(row.src)) throw new Error(`${where}: src "${row.src}" isn't one of ${SOURCES.join(', ')}`);
+		// A show's length sets its OpenAI estimate, so the cost cap depends on it
+		const showMin = row.show_min === '' || row.show_min == null ? null : Number(row.show_min);
+		if (showMin !== null && !(Number.isFinite(showMin) && showMin > 0)) throw new Error(`${where}: show_min "${row.show_min}" isn't a length in minutes`);
+		if (showMin === null && ['redo', 'join'].includes(ACTS[row.act])) throw new Error(`${where}: a redo needs show_min (its length in minutes)`);
+		const id = row.id || `roll-over-easy_${row.date}_07-30-00`;
+		// One row per show: they share a progress record, a backup and a log (named by date)
+		if (seen.has(id) || seen.has(row.date)) throw new Error(`${where}: ${row.date} is on the worklist twice`);
+		seen.add(id).add(row.date);
 		return {
 			...row,
-			id: row.id || `roll-over-easy_${row.date}_07-30-00`,
-			show_min: row.show_min ? Number(row.show_min) : null,
+			id,
+			show_min: showMin,
 			rev: row.rev === '1',
 			gs_min: row.gs_min ? Number(row.gs_min) : null,
 		};
@@ -263,6 +279,17 @@ export function otherModel(modelPath) {
 	return modelPath;
 }
 
+/**
+ * whisper.cpp's time limit for a model, as a multiple of the show's length: ten times
+ * its slowest measured speed (at least 1x), and never more than process-episode's own
+ * (4x on the GPU, 8x on the CPU). A stuck large-v3-turbo run then stops after about
+ * 2 hours, not 8. Undefined (process-episode's limit) for a model not measured.
+ */
+export function whisperTimeFactor(modelPath, noGpu = false) {
+	const speed = WHISPER_SPEED[path.basename(modelPath, '.bin')]?.[noGpu ? 'cpu' : 'gpu'];
+	return speed ? Math.min(noGpu ? 8 : 4, Math.max(1, Math.ceil(speed[1] * 10))) : undefined;
+}
+
 /** How long whisper.cpp takes for `minutes` of audio: [low, high] minutes, or null if not measured. */
 export function whisperMinutes(minutes, modelPath, noGpu = false) {
 	const speed = WHISPER_SPEED[path.basename(modelPath, '.bin')]?.[noGpu ? 'cpu' : 'gpu'];
@@ -282,11 +309,15 @@ export function attemptPlan(plan, { engine, model, retryModel, fallbackOpenai })
 	return steps;
 }
 
-/** The process-episode.js run that publishes a checked transcript (node arguments). */
+/**
+ * The process-episode.js run that publishes a checked transcript (node arguments):
+ * the seed and the embeddings. A join's seed is followed by its audio upload instead,
+ * and its embeddings run on their own once its times have moved.
+ */
 export function publishRun(plan, audio, { isLocal = false } = {}) {
 	const join = plan.action === 'join';
 	return [PROCESS_EPISODE, audio, '--episode-id', plan.id,
-		'--skip', join ? 'transcribe,summary,guest-start' : 'transcribe,summary,guest-start,upload-audio',
+		'--skip', join ? 'transcribe,embeddings,summary,guest-start' : 'transcribe,summary,guest-start,upload-audio',
 		'--force', join ? 'seed-db,upload-audio' : 'seed-db',
 		...(isLocal ? ['--local'] : [])];
 }
@@ -486,7 +517,7 @@ async function runJob(job) {
 		transcript = await transcribeFile(file, plan.id);
 	} else {
 		const { whisperCppTranscript } = await import('./process-episode.js');
-		transcript = whisperCppTranscript(file, plan.id, job.noGpu, { modelPath: job.model });
+		transcript = whisperCppTranscript(file, plan.id, job.noGpu, { modelPath: job.model, timeFactor: job.timeFactor ?? undefined });
 	}
 
 	// What the site will play: the joined show for a join (the upload replaces the site's audio)
@@ -565,12 +596,14 @@ class Run {
 		const from = fs.fstatSync(fd).size;
 		return new Promise((resolve) => {
 			const c = spawn(process.execPath, [...process.execArgv, ...args], { stdio: ['ignore', fd, fd], env });
+			activeChildren.add(c);
 			c.on('error', (err) => {
 				fs.appendFileSync(log, `${err.message}\n`);
 				resolve(1);
 			});
 			c.on('exit', (code, signal) => resolve(code ?? (signal ? 1 : 0)));
 		}).then((code) => {
+			for (const c of activeChildren) if (c.exitCode !== null || c.signalCode !== null) activeChildren.delete(c);
 			fs.closeSync(fd);
 			const output = fs.readFileSync(log).subarray(from).toString('utf-8');
 			return { code, output };
@@ -608,6 +641,17 @@ class Run {
 	async prepare(plan) {
 		const r = this.rec(plan);
 		const steps = attemptPlan(plan, this.opts);
+		// Tries an earlier run made with other engines or models don't count against these
+		const stepsKey = steps.map((s) => `${s.engine}${s.model ? `:${path.basename(s.model, '.bin')}` : ''}`).join(',');
+		if (r.steps !== stepsKey) {
+			if (r.attempts.length > 0) {
+				r.earlier_attempts = [...(r.earlier_attempts ?? []), ...r.attempts];
+				r.attempts = [];
+				this.note(plan, `new tries (${stepsKey.replace(/,/g, ', then ')}): the earlier ones are kept in its record`);
+			}
+			r.steps = stepsKey;
+			this.save();
+		}
 		// A try an earlier run was stopped in the middle of runs again (OpenAI carries on
 		// from its last chunk), unless it got as far as its transcript
 		const unfinished = r.attempts.at(-1);
@@ -650,7 +694,7 @@ class Run {
 			let reserved = 0; // this try's OpenAI estimate, counted against --max-cost
 			if (step.engine === 'openai') {
 				const cost = openaiCost(minutesLeft(plan));
-				if (this.spent + cost > this.opts.maxCost) {
+				if (!Number.isFinite(cost) || this.spent + cost > this.opts.maxCost) {
 					if (r.attempts.length > 0) {
 						this.setAside(plan, `its local transcripts failed the checks, and OpenAI ($${cost.toFixed(2)}) would take this run past --max-cost $${this.opts.maxCost.toFixed(2)} ($${this.spent.toFixed(2)} spent)`);
 					} else {
@@ -670,7 +714,7 @@ class Run {
 			Object.assign(r, { state: 'transcribing', stage: 'transcribe', updated_at: attempt.started_at });
 			this.save();
 			this.note(plan, step.engine === 'trial' ? 'installing the trial transcript' : `transcribing (${step.engine}${attempt.model ? `, ${attempt.model}` : ''}${step.engine === 'openai' ? `, about $${openaiCost(minutesLeft(plan)).toFixed(2)}` : ''}); log: ${logPath(plan.date)}`);
-			const job = { plan, engine: step.engine, model: step.model ?? null, noGpu: this.opts.noGpu, isLocal: this.opts.local };
+			const job = { plan, engine: step.engine, model: step.model ?? null, timeFactor: step.model ? whisperTimeFactor(step.model, this.opts.noGpu) : null, noGpu: this.opts.noGpu, isLocal: this.opts.local };
 			const { code, output } = await this.child(plan, [SCRIPT, '--job', JSON.stringify(job)]);
 			attempt.finished_at = new Date().toISOString();
 			if (code === AUDIO_PROBLEM) {
@@ -695,7 +739,7 @@ class Run {
 		const transcript = readJSON(stagingPath(plan.id));
 		const result = readJSON(resultPath(plan.id));
 		const oldLines = queryJSON(`SELECT start_ms, end_ms, text FROM transcript_segments WHERE episode_id = '${escapeSQL(plan.id)}' ORDER BY start_ms, id`, this.db);
-		const verdict = checkNewTranscript(transcript, { oldLines, siteAudioMs: result.site_audio_ms, minWordShare: this.opts.minWordShare });
+		const verdict = checkNewTranscript(transcript, { oldLines, siteAudioMs: result.site_audio_ms, minWordShare: this.opts.minWordShare, minSameShow: this.opts.minSameShow });
 		if (plan.action === 'join') {
 			// The site has to be playing the part the worklist says, or the times would move by the wrong amount
 			const part = result.audio_facts.parts.find((p) => p.n === plan.join.sitePart);
@@ -720,8 +764,15 @@ class Run {
 		const result = readJSON(resultPath(plan.id));
 		const isLocal = this.opts.local;
 
-		// 1. Backup, once per repair: a rerun after a failure keeps the first one (the true "before")
+		// 1. Backup, once per repair: a rerun after a failure keeps the first one (the true "before").
+		// Before it, the site's audio is measured again: the transcript was checked against it,
+		// maybe runs ago, and a join's times move on the strength of the site playing part N.
 		if (!r.backup) {
+			const siteMs = await siteAudioMs(plan.id, { isLocal });
+			const expected = plan.join ? result.audio_facts.parts.find((p) => p.n === plan.join.sitePart).ms : transcript.meta.audio_ms;
+			if (!siteMs || Math.abs(siteMs - expected) > SITE_AUDIO_SLACK_MS) {
+				return this.fail(plan, 'publish', `the site's audio is ${siteMs ? `${minutes(siteMs)} min` : 'missing'} now, not the ${minutes(expected)} min ${plan.join ? `of part ${plan.join.sitePart}` : 'the transcript was made from'}: has the episode changed since? Nothing was written`);
+			}
 			const backup = await backupEpisode(plan.id, { isLocal, reason: 'before its transcript was redone (repair-archive.js)', withAudio: plan.action === 'join' });
 			r.backup = backup.dir;
 			this.save();
@@ -739,11 +790,15 @@ class Run {
 			this.note(plan, `installed transcripts/${plan.id}.json${oldIds.length ? ` (the old file's ${oldIds.length} window IDs kept as stale)` : ''}`);
 		}
 
-		// 3. Seed (and for a join, upload the joined audio), then the embeddings step
-		this.note(plan, `publishing: process-episode.js ${publishRun(plan, result.audio, { isLocal }).slice(2).join(' ')}`);
-		const { code, output } = await this.child(plan, publishRun(plan, result.audio, { isLocal }));
-		if (code !== 0) return this.fail(plan, 'publish', `process-episode.js failed (${lastError(output) || `exit ${code}`}; see ${logPath(plan.date)}). D1 has the old transcript or the new one, never part of one; run this again to finish, or restore ${path.join(r.backup, 'restore.sql')}`);
-		if (isLocal) this.note(plan, 'embeddings skipped: --local (Vectorize has no local copy)');
+		// 3. The seed, then the embeddings step. A join uploads its audio right after the seed
+		// and moves its times before its embeddings, so the window in which the site has the new
+		// transcript with the old audio and times is as short as it can be.
+		const run = publishRun(plan, result.audio, { isLocal });
+		this.note(plan, `publishing: process-episode.js ${run.slice(2).join(' ')}`);
+		const seeded = await this.child(plan, run);
+		if (seeded.code !== 0) {
+			return this.fail(plan, 'publish', `process-episode.js failed (${lastError(seeded.output) || `exit ${seeded.code}`}; see ${logPath(plan.date)}). D1 has the old transcript or the new one, never part of one; run this again to finish, or undo it with ${path.join(r.backup, 'README.txt')}`);
+		}
 
 		// 4. A join's times move by the parts that now come first
 		let shiftMs = 0;
@@ -759,7 +814,14 @@ class Run {
 				if (gs != null) this.shifted.push(`${plan.date}: ${line}`);
 			}
 			this.save();
+			if (!isLocal) {
+				const embedded = await this.child(plan, embeddingsRun(plan.id));
+				if (embedded.code !== 0) {
+					return this.fail(plan, 'publish', `the embeddings step failed (${lastError(embedded.output) || `exit ${embedded.code}`}; see ${logPath(plan.date)}). The new transcript, audio and times are in; run this again to finish`);
+				}
+			}
 		}
+		if (isLocal) this.note(plan, 'embeddings skipped: --local (Vectorize has no local copy)');
 
 		// 5. D1 as expected?
 		const problems = await this.afterChecks(plan, transcript, result, before, shiftMs);
@@ -863,7 +925,17 @@ class Run {
 	async go(plans) {
 		const todo = [];
 		for (const plan of plans) {
-			const r = this.progress.episodes[plan.id];
+			let r = this.progress.episodes[plan.id];
+			// The worklist asks for something else now: start afresh (what an earlier run staged
+			// or made ready was for the old act)
+			if (r?.act && r.act !== plan.act) {
+				if (fs.existsSync(stagingPath(plan.id))) fs.renameSync(stagingPath(plan.id), path.join(repairDir(), 'staging', `${plan.id}.rejected-act-${r.act}.json`));
+				for (const f of [resultPath(plan.id), audioPath(plan.id), audioFactsPath(plan.id)]) fs.rmSync(f, { force: true });
+				this.progress.episodes[plan.id] = { date: plan.date, act: plan.act, attempts: [], previous: { act: r.act, state: r.state, backup: r.backup ?? null, updated_at: r.updated_at ?? null } };
+				this.save();
+				this.note(plan, `the worklist's act is ${plan.act} now, ${r.act} before (${r.state}): starting afresh`);
+				r = this.progress.episodes[plan.id];
+			}
 			if (['published', 'done', 'skipped'].includes(r?.state)) {
 				console.log(`[${stamp()}] ${plan.date} already ${r.state}: skipped`);
 				continue;
@@ -995,7 +1067,7 @@ function dryRun(plans, run) {
 	const what = { redo: 'redo', join: 'join + redo', trial: 'install the trial', lines: 'delete junk lines', duration: 'fix duration_ms', skip: 'leave alone' };
 	for (const plan of plans) {
 		const r = run.progress.episodes[plan.id];
-		const done = ['published', 'done', 'skipped', 'set-aside'].includes(r?.state);
+		const done = ['published', 'done', 'skipped', ...(o.retryFailed ? [] : ['set-aside'])].includes(r?.state);
 		const transcribes = TRANSCRIBED.has(plan.action) && plan.action !== 'trial';
 		const todo = transcribes && !done && !fs.existsSync(stagingPath(plan.id));
 		const cost = transcribes ? openaiCost(minutesLeft(plan)) : 0;
@@ -1039,10 +1111,61 @@ const USAGE = `Usage: node scripts/repair-archive.js --worklist <file.csv> [--dr
   --model <name|file> --retry-model <name|file> --no-gpu  whisper.cpp (default ${DEFAULT_MODEL}, then the other; models: ${Object.keys(WHISPER_MODELS).join(', ')})
   --engine openai | --fallback-openai                     OpenAI for every show, or for a show whose local tries fail (paid)
   --max-cost <dollars>                                    the most this run may spend on OpenAI (default 0)
-  --parallel <n>  --min-word-share <x>  --trial-dir <dir>  --retry-failed  --local`;
+  --parallel <n>  --min-word-share <x>  --min-same-show <x>  --trial-dir <dir>  --retry-failed  --local`;
 
 function listOf(value) {
 	return value ? value.split(',').map((s) => s.trim()).filter(Boolean) : null;
+}
+
+const lockPath = () => path.join(repairDir(), 'run.lock');
+const activeChildren = new Set(); // the transcription and publishing processes running now
+
+function isRunning(pid) {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (err) {
+		return err.code === 'EPERM';
+	}
+}
+
+/**
+ * Take transcripts/.repair/run.lock for this process, or say who holds it. The
+ * lock of a run that is gone (killed, or the Mac shut down) is taken over. It
+ * goes when this process ends; Ctrl-C (or a kill) also stops its transcriptions.
+ */
+function takeLock() {
+	fs.mkdirSync(repairDir(), { recursive: true });
+	const mine = JSON.stringify({ pid: process.pid, started_at: new Date().toISOString() });
+	for (let attempt = 0; attempt < 2; attempt++) {
+		try {
+			fs.writeFileSync(lockPath(), mine, { flag: 'wx' });
+		} catch (err) {
+			if (err.code !== 'EEXIST') throw err;
+			let held = null;
+			try {
+				held = JSON.parse(fs.readFileSync(lockPath(), 'utf-8'));
+			} catch { /* unreadable: a stopped run's */ }
+			if (held && isRunning(held.pid)) return { heldBy: held };
+			fs.rmSync(lockPath(), { force: true });
+			continue;
+		}
+		const release = () => {
+			try {
+				if (fs.readFileSync(lockPath(), 'utf-8') === mine) fs.rmSync(lockPath());
+			} catch { /* already gone */ }
+		};
+		process.on('exit', release);
+		for (const [signal, code] of Object.entries({ SIGINT: 130, SIGTERM: 143, SIGHUP: 129 })) {
+			process.once(signal, () => {
+				for (const c of activeChildren) c.kill('SIGTERM');
+				console.error(`\n[${stamp()}] Stopped (${signal}). Run the same command again to carry on.`);
+				process.exit(code);
+			});
+		}
+		return { heldBy: null };
+	}
+	return { heldBy: { pid: '?', started_at: '?' } };
 }
 
 /** Start caffeinate so the Mac doesn't sleep while this run lasts (macOS only). */
@@ -1068,11 +1191,15 @@ async function main() {
 	const { flags, rest } = parseFlags(argv, {
 		'--worklist': 'value', '--only': 'value', '--except': 'value', '--acts': 'value', '--dry-run': 'flag',
 		'--engine': 'value', '--model': 'value', '--retry-model': 'value', '--no-gpu': 'flag', '--fallback-openai': 'flag',
-		'--max-cost': 'value', '--parallel': 'value', '--min-word-share': 'value', '--trial-dir': 'value',
+		'--max-cost': 'value', '--parallel': 'value', '--min-word-share': 'value', '--min-same-show': 'value', '--trial-dir': 'value',
 		'--retry-failed': 'flag', '--local': 'flag',
 	}, USAGE);
 	const stop = (problem) => {
 		console.error(`${problem}\n\n${USAGE}`);
+		process.exit(1);
+	};
+	const quit = (problem) => {
+		console.error(problem);
 		process.exit(1);
 	};
 	if (rest.length > 0 || !flags.worklist) stop('--worklist is needed');
@@ -1100,10 +1227,15 @@ async function main() {
 		maxCost: number('max-cost', 0, (v) => v >= 0),
 		parallel: number('parallel', 1, (v) => Number.isInteger(v) && v >= 1),
 		minWordShare: number('min-word-share', MIN_WORD_SHARE, (v) => v >= 0 && v <= 2),
+		minSameShow: number('min-same-show', MIN_SAME_SHOW, (v) => v >= 0 && v <= 1),
 		retryFailed: !!flags['retry-failed'],
 		local: !!flags.local,
 	};
 	if (process.env.ROE_PERSIST_TO && !opts.local && !flags['dry-run']) stop('ROE_PERSIST_TO is set (a test run): add --local');
+	// A --local run's state, staging and installed transcripts live in transcripts/, so without a
+	// test folder of its own it would mix with the real repair's (and a later production run would
+	// skip what it had "published" locally)
+	if (opts.local && !process.env.ROE_PERSIST_TO && !flags['dry-run']) stop('--local needs ROE_PERSIST_TO=<folder>: a test run keeps its transcripts, backups and repair state there');
 	if (opts.fallbackOpenai && opts.engine !== 'whisper.cpp') stop('--fallback-openai goes with --engine whisper.cpp');
 
 	const rows = parseWorklist(fs.readFileSync(path.resolve(flags.worklist), 'utf-8'));
@@ -1119,30 +1251,38 @@ async function main() {
 		.filter((r) => (!only || only.includes(r.date)) && !except.has(r.date) && (!acts || acts.includes(r.act)))
 		.map((r) => planRow(r, { trialDir }));
 	const run = new Run(opts);
+	const database = opts.local ? 'local' : 'production';
+	if (run.progress.database && run.progress.database !== database) quit(`${progressPath()} belongs to a run on the ${run.progress.database} database, not the ${database} one`);
 
 	if (flags['dry-run']) return dryRun(plans, run);
+
+	// One run at a time: two would each rewrite the progress file, and could transcribe one show twice
+	const lock = takeLock();
+	if (lock.heldBy) quit(`Another repair run is going (pid ${lock.heldBy.pid}, started ${lock.heldBy.started_at}); ${lockPath()} says so`);
+	run.progress.database = database;
 
 	// Before anything changes: every episode is in D1 (a typo would otherwise be transcribed first),
 	// the audio is there, and the engine can run
 	const listed = plans.filter((p) => p.action !== 'skip').map((p) => `'${escapeSQL(p.id)}'`);
 	const inD1 = new Set(listed.length ? queryJSON(`SELECT id FROM episodes WHERE id IN (${listed.join(', ')})`, { isLocal: opts.local }).map((r) => r.id) : []);
 	const notInD1 = plans.filter((p) => p.action !== 'skip' && !inD1.has(p.id)).map((p) => p.id);
-	if (notInD1.length > 0) stop(`Not in the ${opts.local ? 'local' : 'production'} database: ${notInD1.join(', ')}`);
+	if (notInD1.length > 0) quit(`Not in the ${opts.local ? 'local' : 'production'} database: ${notInD1.join(', ')}`);
+	const finished = opts.retryFailed ? ['published'] : ['published', 'set-aside'];
 	const toTranscribe = plans.filter((p) => TRANSCRIBED.has(p.action) && p.action !== 'trial'
-		&& !['published', 'set-aside'].includes(run.progress.episodes[p.id]?.state) && !fs.existsSync(stagingPath(p.id)));
+		&& !finished.includes(run.progress.episodes[p.id]?.state) && !fs.existsSync(stagingPath(p.id)));
 	const missing = plans.flatMap((p) => (p.audio?.kind === 'archive' ? [p.audio.file] : p.audio?.kind === 'join' ? p.audio.parts.map((x) => x.file) : []))
 		.filter((f) => !fs.existsSync(f));
-	if (missing.length > 0) stop(`Audio missing from the archive:\n  ${missing.join('\n  ')}`);
-	if ((opts.engine === 'openai' || opts.fallbackOpenai) && toTranscribe.length > 0 && !process.env.OPENAI_API_KEY) stop('OPENAI_API_KEY is not set (add it to .env)');
+	if (missing.length > 0) quit(`Audio missing from the archive:\n  ${missing.join('\n  ')}`);
+	if ((opts.engine === 'openai' || opts.fallbackOpenai) && toTranscribe.length > 0 && !process.env.OPENAI_API_KEY) quit('OPENAI_API_KEY is not set (add it to .env)');
 	keepAwake();
 	const models = opts.engine === 'whisper.cpp' ? ` (${[...new Set([opts.model, opts.retryModel])].map((m) => path.basename(m, '.bin')).join(', then ')}${opts.fallbackOpenai ? ', then OpenAI' : ''}${opts.noGpu ? '; on the CPU' : ''})` : '';
 	console.log(`[${stamp()}] ${plans.length} episodes from ${path.basename(flags.worklist)} on ${opts.local ? 'the local D1 copy' : 'PRODUCTION'}; engine ${opts.engine}${models}, ${opts.parallel} at a time; OpenAI cap $${opts.maxCost.toFixed(2)}`);
 	if (opts.engine === 'whisper.cpp' && toTranscribe.length > 0) {
 		// L9's start-up test, for each model, before the first show
 		for (const m of new Set([opts.model, opts.retryModel])) {
-			if (!fs.existsSync(m)) stop(`The whisper.cpp model isn't there: ${m}`);
+			if (!fs.existsSync(m)) quit(`The whisper.cpp model isn't there: ${m}`);
 			const problem = whisperStartProblem(opts.noGpu, m);
-			if (problem) stop(`${problem}.\nCheck that no whisper-cli is left running (pgrep -fl whisper-cli), then try again${opts.noGpu ? '' : ' with --no-gpu'}.`);
+			if (problem) quit(`${problem}.\nCheck that no whisper-cli is left running (pgrep -fl whisper-cli), then try again${opts.noGpu ? '' : ' with --no-gpu'}.`);
 		}
 		console.log(`[${stamp()}] whisper.cpp starts`);
 	}

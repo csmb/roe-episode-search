@@ -11,7 +11,7 @@ after(() => fs.rmSync(tmp, { recursive: true, force: true }));
 process.env.ROE_PERSIST_TO ??= tmp; // a test run: no keys from .env
 const {
 	csvFields, parseWorklist, planRow, joinPartNumbers, sitePartNumber, openaiCost, attemptPlan, publishRun,
-	shiftStatements, ftsSamples, resolveModel, otherModel, whisperMinutes, stamp,
+	shiftStatements, ftsSamples, resolveModel, otherModel, whisperMinutes, whisperTimeFactor, stamp,
 } = await import('../repair-archive.js');
 const { WHISPER_MODELS } = await import('../process-episode.js');
 
@@ -42,7 +42,13 @@ test('the worklist: typed rows with the episode ID, and a bad row stops the run'
 	assert.throws(() => parseWorklist(`${HEADER}\n2014-1-16,W,A,x.mp3`), /the date should be YYYY-MM-DD/);
 	assert.throws(() => parseWorklist(`${HEADER}\n2014-01-16,W,Q,x.mp3`), /src "Q" isn't one of/);
 	assert.throws(() => parseWorklist('date,act,file\n'), /no "src" column/);
-	assert.equal(parseWorklist(`${HEADER},id\n2016-03-24,W,A,2016-03-24.mp3,,,,,,,,roll-over-easy_2016-03-24_07-56-07`)[0].id, 'roll-over-easy_2016-03-24_07-56-07');
+	assert.equal(parseWorklist(`${HEADER},id\n2016-03-24,W,A,2016-03-24.mp3,,120,,,,,,roll-over-easy_2016-03-24_07-56-07`)[0].id, 'roll-over-easy_2016-03-24_07-56-07');
+	// A length the cost cap can use, and one row per show
+	assert.throws(() => parseWorklist(`${HEADER}\n2014-01-16,W,A,x.mp3,,~120`), /show_min "~120" isn't a length in minutes/);
+	assert.throws(() => parseWorklist(`${HEADER}\n2014-01-16,J,J,parts 1+2,,0`), /show_min "0" isn't a length/);
+	assert.throws(() => parseWorklist(`${HEADER}\n2014-01-16,O,R,R2 m4a`), /a redo needs show_min/);
+	assert.equal(parseWorklist(`${HEADER}\n2026-04-30,L,E,R2 raw mp3`)[0].show_min, null);
+	assert.throws(() => parseWorklist(`${HEADER}\n2014-01-16,W,A,x.mp3,,120\n2014-01-16,L,A,x.mp3,,120`), /2014-01-16 is on the worklist twice/);
 });
 
 test('each act and source gets its plan and audio', () => {
@@ -100,13 +106,19 @@ test('models: large-v3-turbo by default, the other one for the second try; the G
 	assert.equal(Math.round(hi), 90);
 	assert.equal(Math.round(whisperMinutes(100, WHISPER_MODELS['large-v3'], true)[1]), 260);
 	assert.equal(whisperMinutes(100, WHISPER_MODELS['large-v3-turbo'], true), null); // not measured on the CPU
+	// The time limit: ten times the slowest measured speed, within process-episode's own
+	assert.equal(whisperTimeFactor(WHISPER_MODELS['large-v3-turbo']), 1);
+	assert.equal(whisperTimeFactor(WHISPER_MODELS['large-v3']), 3);
+	assert.equal(whisperTimeFactor(WHISPER_MODELS['large-v3'], true), 8);
+	assert.equal(whisperTimeFactor(WHISPER_MODELS['large-v3-turbo'], true), undefined);
 });
 
 test('publishing: a forced seed with summary and interview time left alone; a join also replaces the audio', () => {
 	const redo = publishRun({ id: 'e1', action: 'redo' }, '/a.mp3');
 	assert.match(redo[0], /scripts\/process-episode\.js$/);
 	assert.deepEqual(redo.slice(1), ['/a.mp3', '--episode-id', 'e1', '--skip', 'transcribe,summary,guest-start,upload-audio', '--force', 'seed-db']);
-	assert.deepEqual(publishRun({ id: 'e2', action: 'join' }, '/j.mp3', { isLocal: true }).slice(1), ['/j.mp3', '--episode-id', 'e2', '--skip', 'transcribe,summary,guest-start', '--force', 'seed-db,upload-audio', '--local']);
+	// A join: the seed and the audio upload; its embeddings run on their own once its times have moved
+	assert.deepEqual(publishRun({ id: 'e2', action: 'join' }, '/j.mp3', { isLocal: true }).slice(1), ['/j.mp3', '--episode-id', 'e2', '--skip', 'transcribe,embeddings,summary,guest-start', '--force', 'seed-db,upload-audio', '--local']);
 });
 
 test('a join\'s times move once: each update only lands on the value the backup had', () => {
