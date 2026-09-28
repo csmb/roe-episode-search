@@ -14,10 +14,11 @@ process.env.ROE_PERSIST_TO ??= tmp; // a test run: no keys from .env
 process.env.CLOUDFLARE_ACCOUNT_ID = 'test-account';
 process.env.CLOUDFLARE_API_TOKEN = 'test-token';
 const { remoteVectorize, pacing } = await import('../remote-cloudflare.js');
-const { listAllVectorIds, vectorIdSnapshot, waitUntilApplied, appliedCheck, chunkEpisode, vectorsNdjson } = await import('../vector-ids.js');
+const { listAllVectorIds, vectorIdSnapshot, waitUntilApplied, appliedCheck, chunkEpisode, vectorsNdjson, listing } = await import('../vector-ids.js');
 const { chunkSegments } = await import('../../roe-pipeline/src/embeddings.js');
 pacing.gapMs = 0;
 pacing.retryWaitsMs = [0, 0];
+listing.retryWaitsMs = [0, 0];
 
 const A = 'roll-over-easy_2016-03-24_07-30-00';
 const B = 'roll-over-easy_2016-03-24_07-56-07'; // the same date: the real pair from the 3/24/2016 merge
@@ -103,6 +104,14 @@ test('a cursor Vectorize rejects partway through (40052) starts the listing agai
 	globalThis.fetch = async (url, init) => (String(url).includes('/list') && ++lists ? new Response(JSON.stringify({ success: false, errors: [{ code: 40004, message: 'count must be 1-1000' }] }), { status: 400 }) : cf.fetch(url, init));
 	await assert.rejects(listAllVectorIds(remoteVectorize()), /40004/);
 	assert.equal(lists, 1);
+	// It waits before each new listing, longer each time
+	listing.retryWaitsMs = [40, 80];
+	lists = 0;
+	globalThis.fetch = async (url, init) => (String(url).includes('/list') && String(url).includes('cursor=') && ++lists ? corrupted() : cf.fetch(url, init));
+	const started = Date.now();
+	await assert.rejects(listAllVectorIds(remoteVectorize()), /40052/);
+	assert.ok(Date.now() - started >= 120, `waited ${Date.now() - started} ms`);
+	listing.retryWaitsMs = [0, 0];
 });
 
 test('a snapshot groups by episode: a same-date neighbour, a longer ID or a malformed one never joins', async () => {

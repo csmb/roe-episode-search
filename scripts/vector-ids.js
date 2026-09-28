@@ -18,7 +18,11 @@
 import { chunkSegments, isEpisodeVectorId } from '../roe-pipeline/src/embeddings.js';
 
 const LIST_PAGE = 1000; // the most one list request returns
-const LIST_TRIES = 3; // listings started, when Vectorize rejects its own cursor partway through
+// When Vectorize rejects its own cursor partway through a listing, the waits
+// before listing again from the top: it seems to happen while it applies a batch
+// of writes (three quick retries all failed right after another episode's writes
+// on 2026-09-28), so give its queue time to finish. Tests set these to 0.
+export const listing = { retryWaitsMs: [30_000, 60_000, 120_000, 240_000] };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -40,15 +44,18 @@ export function chunkEpisode(transcript) {
  * Vectorize sometimes rejects the cursor it has just handed out ("List vectors
  * cursor appears to be corrupted", code 40052: a repair run stopped on it on
  * 2026-09-28, and the next listing was fine). A new listing takes a new
- * snapshot, so the listing then starts again from the top.
+ * snapshot, so the listing then starts again from the top, after a wait that
+ * grows each time (listing.retryWaitsMs).
  */
 export async function listAllVectorIds(vectorize) {
 	for (let attempt = 1; ; attempt++) {
 		try {
 			return await listOnce(vectorize);
 		} catch (err) {
-			if (attempt >= LIST_TRIES || !/\b40052\b|cursor appears to be corrupted/i.test(err.message)) throw err;
-			console.warn(`  Vectorize rejected its own listing cursor; listing again from the start (${attempt + 1} of ${LIST_TRIES})`);
+			const wait = listing.retryWaitsMs[attempt - 1];
+			if (wait === undefined || !/\b40052\b|cursor appears to be corrupted/i.test(err.message)) throw err;
+			console.warn(`  Vectorize rejected its own listing cursor; listing again from the start in ${wait / 1000} s (try ${attempt + 1} of ${listing.retryWaitsMs.length + 1})`);
+			await sleep(wait);
 		}
 	}
 }
