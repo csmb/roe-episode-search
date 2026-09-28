@@ -965,10 +965,18 @@ async function handleAdminApi(url, env, request) {
 	if (path === 'guest/rename' && request.method === 'POST') {
 		try {
 			const body = await request.json();
-			const { old_name, new_name } = body;
+			const old_name = body.old_name;
+			const new_name = String(body.new_name ?? '').trim();
 			if (!old_name || !new_name) return json({ error: 'Missing old_name or new_name' }, 400, request);
-			await env.DB.prepare('UPDATE episode_guests SET guest_name = ?1 WHERE guest_name = ?2')
-				.bind(new_name, old_name).run();
+			if (new_name === old_name) return json({ ok: true }, 200, request);
+			// Add the new name, then drop the old, in one transaction. An episode that
+			// already lists both spellings keeps one row; an UPDATE would hit the
+			// (episode_id, guest_name) key there and fail the whole rename.
+			await env.DB.batch([
+				env.DB.prepare('INSERT OR IGNORE INTO episode_guests (episode_id, guest_name) SELECT episode_id, ?1 FROM episode_guests WHERE guest_name = ?2')
+					.bind(new_name, old_name),
+				env.DB.prepare('DELETE FROM episode_guests WHERE guest_name = ?1').bind(old_name),
+			]);
 			return json({ ok: true }, 200, request);
 		} catch (err) {
 			console.error('/api/admin/guest/rename failed', err);
@@ -979,11 +987,14 @@ async function handleAdminApi(url, env, request) {
 	if (path === 'guest/delete' && request.method === 'POST') {
 		try {
 			const body = await request.json();
-			const { guest_name } = body;
+			const { guest_name, episode_id } = body;
 			if (!guest_name) return json({ error: 'Missing guest_name' }, 400, request);
-			await env.DB.prepare('DELETE FROM episode_guests WHERE guest_name = ?1')
-				.bind(guest_name).run();
-			return json({ ok: true }, 200, request);
+			// From one episode (a review-queue card), or from every episode (All Guests)
+			const statement = episode_id
+				? env.DB.prepare('DELETE FROM episode_guests WHERE guest_name = ?1 AND episode_id = ?2').bind(guest_name, episode_id)
+				: env.DB.prepare('DELETE FROM episode_guests WHERE guest_name = ?1').bind(guest_name);
+			const { meta } = await statement.run();
+			return json({ ok: true, removed: meta?.changes ?? null }, 200, request);
 		} catch (err) {
 			console.error('/api/admin/guest/delete failed', err);
 			return json({ error: 'Delete failed' }, 500, request);

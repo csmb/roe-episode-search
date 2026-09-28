@@ -848,7 +848,9 @@ function renderQueue() {
 
 // ── Guest row component ────────────────────────────────────────────────
 
-function makeGuestRow(name, count, onSuccess) {
+// A guest in All Guests (count = their episodes: rename and × act on every one),
+// or on a review-queue card (episodeId: × removes them from that episode only).
+function makeGuestRow(name, count, onSuccess, episodeId = null) {
 	const row = document.createElement('div');
 	row.className = 'guest-row';
 
@@ -877,13 +879,15 @@ function makeGuestRow(name, count, onSuccess) {
 	const renameBtn = document.createElement('button');
 	renameBtn.className = 'btn-rename';
 	renameBtn.textContent = 'rename';
-	renameBtn.setAttribute('aria-label', 'Rename ' + name);
+	renameBtn.setAttribute('aria-label', 'Rename ' + name + ' on every episode');
+	renameBtn.title = 'Rename on every episode';
 
 	const deleteBtn = document.createElement('button');
 	deleteBtn.className = 'btn-delete';
 	deleteBtn.textContent = '×';
-	deleteBtn.setAttribute('aria-label', 'Delete ' + name);
-	deleteBtn.title = 'Delete';
+	const removeFrom = episodeId ? 'this episode' : 'every episode';
+	deleteBtn.setAttribute('aria-label', 'Remove ' + name + ' from ' + removeFrom);
+	deleteBtn.title = 'Remove from ' + removeFrom;
 
 	actions.appendChild(renameBtn);
 	actions.appendChild(deleteBtn);
@@ -933,8 +937,9 @@ function makeGuestRow(name, count, onSuccess) {
 
 	// Delete handler
 	deleteBtn.onclick = async () => {
+		if (!episodeId && !confirm('Remove ' + name + ' from all ' + count + ' episode' + (count !== 1 ? 's' : '') + '?')) return;
 		try {
-			await apiPost('/api/admin/guest/delete', { guest_name: name });
+			await apiPost('/api/admin/guest/delete', episodeId ? { guest_name: name, episode_id: episodeId } : { guest_name: name });
 			onSuccess();
 		} catch (e) {
 			showError('Delete failed: ' + e.message);
@@ -972,7 +977,7 @@ function makeEpisodeCard(ep) {
 		const guestList = document.createElement('div');
 		guestList.className = 'ep-guests';
 		for (const guestName of ep.guests) {
-			guestList.appendChild(makeGuestRow(guestName, null, loadAndRender));
+			guestList.appendChild(makeGuestRow(guestName, null, loadAndRender, ep.id));
 		}
 		card.appendChild(guestList);
 	} else {
