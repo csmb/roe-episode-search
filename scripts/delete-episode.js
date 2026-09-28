@@ -63,6 +63,7 @@ export function deleteEpisode(episodeId, { isLocal = false, deleteAudio = false,
 
 	// ── Step 1: Back up (nothing is deleted if this fails) ───────────────
 	console.log('\n=== Step 1/5: Back up ===');
+	if (backup) console.log(`  Already backed up: ${backup.dir}`);
 	backup ??= backupEpisode(episodeId, { isLocal, reason: reason ?? 'before delete-episode.js deleted it' });
 
 	// ── Step 2: Delete from Vectorize ────────────────────────────────────

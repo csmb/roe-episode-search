@@ -154,6 +154,7 @@ All scripts are in `scripts/` and run locally with Node.js:
 | `discover-episodes.js` | Scan an audio directory, parse filenames, deduplicate by date. |
 | `clean-hallucinations.js` | Remove hallucinated repeated-phrase segments from D1. |
 | `delete-episode.js` | Back up an episode, then remove it from D1 and Vectorize (a dry run without `--yes`; `--delete-audio` also removes its .m4a). |
+| `merge-episode.js` | Merge a same-date duplicate into the canonical episode: backs up both, gives the canonical the duplicate's transcript and `--mp3` as its audio (refused if the transcript runs past the MP3's end), keeps reviewed titles, summaries, guests and interview times, then deletes the duplicate. |
 | `episode-backup.js` | Back up one episode (D1 rows, search vectors, local transcript) with restore SQL and a README, in `transcripts/.backups/`. |
 | `repair-missing-m4a.js` | Make and upload the .m4a for episodes that only have their MP3. |
 | `redo-places.js` | Redo one episode's places and their sentiment with the pipeline's own code (`--no-places` for every episode that has none). |
