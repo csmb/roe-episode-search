@@ -145,9 +145,11 @@ export function wranglerExec(args, opts = {}) {
 			// --json wrangler prints its error (as JSON) on stdout
 			const out = `${err.stdout ?? ''}`.trim();
 			if (out && !err.message.includes(out)) err.message += `\n${out.slice(0, 2000)}`;
-			if (attempt === 1 && refusedBeforeRunning(err.message)) {
-				console.warn(`  Cloudflare turned the call away (code 7403) before running it; trying again in ${REFUSED_RETRY_WAIT_MS / 1000} s`);
-				Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, REFUSED_RETRY_WAIT_MS);
+			const code = refusedBeforeRunning(err.message);
+			const wait = REFUSED_RETRY_WAITS_MS[attempt - 1];
+			if (code && wait !== undefined) {
+				console.warn(`  Cloudflare turned the call away (code ${code}) before running it; trying again in ${wait / 1000} s (try ${attempt + 1} of ${REFUSED_RETRY_WAITS_MS.length + 1})`);
+				Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, wait);
 				continue;
 			}
 			throw err;
@@ -155,17 +157,24 @@ export function wranglerExec(args, opts = {}) {
 	}
 }
 
-const REFUSED_RETRY_WAIT_MS = 5_000;
+// 6.6 minutes in all: longer than a login's last minutes, after which wrangler renews it
+export const REFUSED_RETRY_WAITS_MS = [5_000, 30_000, 60_000, 120_000, 180_000];
 
 /**
- * Whether Cloudflare turned a wrangler call away before running it: "The given
- * account is not valid or is not authorized to access this service" (code
- * 7403). It came once on 2026-09-28, on the first call after hours of quiet,
- * while the same login worked a moment later. Nothing ran, so the call (a write
- * included) is safe to send again, once.
+ * Whether Cloudflare turned a wrangler call away before running it, and with
+ * which code: "The given account is not valid or is not authorized to access
+ * this service" (7403) or "Authentication error" (10000), while the same login
+ * works a moment later. On 2026-09-28 the first came twice right after wrangler
+ * renewed its hourly login (09:46 and 15:59), and the second 5 minutes before
+ * the login's hour was up (17:55), with the clock right. Nothing ran, so the
+ * call (a write included) is safe to send again; a login that is really gone
+ * fails every try.
+ * @returns {7403|10000|null}
  */
 export function refusedBeforeRunning(output) {
-	return /\b7403\b/.test(output) && /not valid or is not authorized/i.test(output);
+	if (/\b7403\b/.test(output) && /not valid or is not authorized/i.test(output)) return 7403;
+	if (/\b10000\b/.test(output) && /Authentication error/i.test(output)) return 10000;
+	return null;
 }
 
 export function queryJSON(sql, { isLocal = false } = {}) {
