@@ -18,11 +18,12 @@
 import { chunkSegments, isEpisodeVectorId } from '../roe-pipeline/src/embeddings.js';
 
 const LIST_PAGE = 1000; // the most one list request returns
-// When Vectorize rejects its own cursor partway through a listing, the waits
-// before listing again from the top: it seems to happen while it applies a batch
-// of writes (three quick retries all failed right after another episode's writes
-// on 2026-09-28), so give its queue time to finish. Tests set these to 0.
-export const listing = { retryWaitsMs: [30_000, 60_000, 120_000, 240_000] };
+// When Vectorize rejects its own cursor (40052), the waits before asking for the
+// same page again (pageRetryWaitsMs), then, if that page never comes, before
+// listing again from the top (retryWaitsMs). Tests set these to 0.
+export const listing = { pageRetryWaitsMs: [1_000, 2_000, 4_000, 8_000, 15_000], retryWaitsMs: [30_000, 60_000, 120_000, 240_000] };
+
+const cursorRejected = (err) => /\b40052\b|cursor appears to be corrupted/i.test(err.message);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -42,10 +43,14 @@ export function chunkEpisode(transcript) {
  * ID left out is a vector the caller would never delete.
  *
  * Vectorize sometimes rejects the cursor it has just handed out ("List vectors
- * cursor appears to be corrupted", code 40052: a repair run stopped on it on
- * 2026-09-28, and the next listing was fine). A new listing takes a new
- * snapshot, so the listing then starts again from the top, after a wait that
- * grows each time (listing.retryWaitsMs).
+ * cursor appears to be corrupted", code 40052), at a random page, for a while
+ * after writes: its servers seem to disagree, and a cursor one hands out another
+ * turns down. On 2026-09-28 two repair publishes in a row ran out of whole
+ * listings that way (18:24-18:42), while listings that asked for the refused
+ * page again a second later all got through (1-3 repeats each). So a refused
+ * page is asked for again first (listPage); if it never comes, the listing
+ * starts again from the top, after a wait that grows each time
+ * (listing.retryWaitsMs).
  */
 export async function listAllVectorIds(vectorize) {
 	for (let attempt = 1; ; attempt++) {
@@ -53,8 +58,21 @@ export async function listAllVectorIds(vectorize) {
 			return await listOnce(vectorize);
 		} catch (err) {
 			const wait = listing.retryWaitsMs[attempt - 1];
-			if (wait === undefined || !/\b40052\b|cursor appears to be corrupted/i.test(err.message)) throw err;
+			if (wait === undefined || !cursorRejected(err)) throw err;
 			console.warn(`  Vectorize rejected its own listing cursor; listing again from the start in ${wait / 1000} s (try ${attempt + 1} of ${listing.retryWaitsMs.length + 1})`);
+			await sleep(wait);
+		}
+	}
+}
+
+/** One page of a listing; a page refused with 40052 is asked for again (listing.pageRetryWaitsMs). */
+async function listPage(vectorize, cursor) {
+	for (let attempt = 0; ; attempt++) {
+		try {
+			return await vectorize.listIds({ count: LIST_PAGE, cursor });
+		} catch (err) {
+			const wait = listing.pageRetryWaitsMs[attempt];
+			if (wait === undefined || !cursorRejected(err)) throw err;
 			await sleep(wait);
 		}
 	}
@@ -66,7 +84,7 @@ async function listOnce(vectorize) {
 	let cursor = null;
 	let total = null;
 	do {
-		const page = await vectorize.listIds({ count: LIST_PAGE, cursor });
+		const page = await listPage(vectorize, cursor);
 		total ??= page.totalCount;
 		for (const id of page.ids) ids.add(id);
 		if (page.nextCursor && cursors.has(page.nextCursor)) throw new Error('The Vectorize listing sent the same page twice; try again');

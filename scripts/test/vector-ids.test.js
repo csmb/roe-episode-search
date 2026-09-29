@@ -19,6 +19,7 @@ const { chunkSegments } = await import('../../roe-pipeline/src/embeddings.js');
 pacing.gapMs = 0;
 pacing.retryWaitsMs = [0, 0];
 listing.retryWaitsMs = [0, 0];
+listing.pageRetryWaitsMs = [0, 0];
 
 const A = 'roll-over-easy_2016-03-24_07-30-00';
 const B = 'roll-over-easy_2016-03-24_07-56-07'; // the same date: the real pair from the 3/24/2016 merge
@@ -84,21 +85,42 @@ test('a listing that comes back short stops, rather than leave vectors nobody de
 	assert.equal((await listAllVectorIds(remoteVectorize())).length, 2500);
 });
 
-test('a cursor Vectorize rejects partway through (40052) starts the listing again, at most 3 times', async () => {
+const corrupted = () => new Response(JSON.stringify({ result: null, success: false,
+	errors: [{ code: 40052, message: 'List vectors cursor appears to be corrupted' }] }), { status: 400 });
+
+test('a page Vectorize refuses (40052) is asked for again, without starting the listing over', async () => {
 	const ids = [...idsOf(A, 1500), ...idsOf(B, 1000)]; // 3 pages a listing
 	const cf = stand({ ids });
-	const corrupted = () => new Response(JSON.stringify({ result: null, success: false,
-		errors: [{ code: 40052, message: 'List vectors cursor appears to be corrupted' }] }), { status: 400 });
-	// The first listing's second page is refused, as on 2026-09-28; a new listing goes through
-	let lists = 0;
-	globalThis.fetch = async (url, init) => (String(url).includes('/list') && ++lists === 2 ? corrupted() : cf.fetch(url, init));
+	// The second page is refused twice, then given, as on 2026-09-28 (1-3 repeats a listing)
+	let firsts = 0;
+	let refused = 0;
+	globalThis.fetch = async (url, init) => {
+		if (!String(url).includes('/list')) return cf.fetch(url, init);
+		if (!String(url).includes('cursor=')) firsts++;
+		else if (refused < 2) { refused++; return corrupted(); }
+		return cf.fetch(url, init);
+	};
+	listing.pageRetryWaitsMs = [30, 60];
+	const started = Date.now();
 	assert.deepEqual(sorted(await listAllVectorIds(remoteVectorize())), sorted(ids));
-	assert.equal(lists, 5);
+	assert.ok(Date.now() - started >= 90, `waited ${Date.now() - started} ms`);
+	assert.deepEqual([firsts, refused], [1, 2]); // the listing never started over
+	listing.pageRetryWaitsMs = [0, 0];
+});
+
+test('a page refused every time starts the listing again, at most 3 times', async () => {
+	const ids = [...idsOf(A, 1500), ...idsOf(B, 1000)]; // 3 pages a listing
+	const cf = stand({ ids });
+	// The second page is refused 3 times (the first try and 2 repeats): a new listing goes through
+	let lists = 0;
+	globalThis.fetch = async (url, init) => (String(url).includes('/list') && [2, 3, 4].includes(++lists) ? corrupted() : cf.fetch(url, init));
+	assert.deepEqual(sorted(await listAllVectorIds(remoteVectorize())), sorted(ids));
+	assert.equal(lists, 7);
 	// Refused every time: the third listing's error reaches the caller
 	lists = 0;
 	globalThis.fetch = async (url, init) => (String(url).includes('/list') && String(url).includes('cursor=') && ++lists ? corrupted() : cf.fetch(url, init));
 	await assert.rejects(listAllVectorIds(remoteVectorize()), /40052/);
-	assert.equal(lists, 3);
+	assert.equal(lists, 9);
 	// Any other listing error isn't retried
 	lists = 0;
 	globalThis.fetch = async (url, init) => (String(url).includes('/list') && ++lists ? new Response(JSON.stringify({ success: false, errors: [{ code: 40004, message: 'count must be 1-1000' }] }), { status: 400 }) : cf.fetch(url, init));
