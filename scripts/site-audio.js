@@ -67,13 +67,33 @@ export async function siteAudioMs(episodeId, { isLocal = false } = {}) {
 	}
 }
 
+// On 2026-09-30 at 01:21 an ffprobe of 2019-07-18's .m4a hung until its time limit and stopped a
+// repair run, while the same URL answered in a second a few minutes later. So each try has its
+// own limit, and a failed one is made again after these waits. A missing object (404) is an
+// answer, not a failure. Tests set these lower.
+export const probing = { timeoutMs: 60_000, retryWaitsMs: [10_000, 30_000, 60_000] };
+
 /** ffprobe a URL (it reads only the start of a faststart .m4a); null for a missing object. */
-export function probeUrlMs(url) {
+export async function probeUrlMs(url) {
+	for (let attempt = 0; ; attempt++) {
+		try {
+			return await probeUrlOnce(url);
+		} catch (err) {
+			const wait = probing.retryWaitsMs[attempt];
+			if (wait === undefined) throw err;
+			console.warn(`  ${err.message}; trying again in ${wait / 1000} s`);
+			await new Promise((resolve) => setTimeout(resolve, wait));
+		}
+	}
+}
+
+function probeUrlOnce(url) {
 	return new Promise((resolve, reject) => {
-		execFile('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', url], { timeout: 120_000 }, (err, stdout, stderr) => {
+		execFile('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', url], { timeout: probing.timeoutMs }, (err, stdout, stderr) => {
 			if (err) {
 				if (/404|Not Found/i.test(`${stderr}`)) return resolve(null);
-				return reject(new Error(`ffprobe ${url}: ${`${stderr}`.trim().split('\n').at(-1) || err.message}`));
+				const why = `${stderr}`.trim().split('\n').at(-1) || (err.killed ? `no answer in ${probing.timeoutMs / 1000} s` : err.message);
+				return reject(new Error(`ffprobe ${url}: ${why}`));
 			}
 			const seconds = parseFloat(stdout);
 			if (!Number.isFinite(seconds) || seconds <= 0) return reject(new Error(`ffprobe could not read the length of ${url}`));
