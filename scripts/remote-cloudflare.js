@@ -25,8 +25,11 @@ const GET_BATCH_SIZE = 20; // get_by_ids takes at most 20 IDs (21 gets a 400)
 // How far apart one process's requests start, how long to wait before each
 // retry, and how long a write or Workers AI call may take in all, retries
 // included: embeddings.js gives each of those PIPELINE_TIMEOUT_MS.ai (60 s),
-// then counts it failed. Tests set them lower.
-export const pacing = { gapMs: 340, retryWaitsMs: [2_000, 10_000], budgetMs: PIPELINE_TIMEOUT_MS.ai - 5_000 };
+// then counts it failed, so a write only gets the retries that fit. Reads get
+// them all: from 23:30 on 2026-09-29, Vectorize answered 13 list and get
+// requests with 504s over four hours, and one read needed its last spare try.
+// Tests set them lower.
+export const pacing = { gapMs: 340, retryWaitsMs: [2_000, 10_000, 30_000, 60_000], budgetMs: PIPELINE_TIMEOUT_MS.ai - 5_000 };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let nextTurn = 0;

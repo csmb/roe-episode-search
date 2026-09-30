@@ -14,6 +14,7 @@ process.env.CLOUDFLARE_ACCOUNT_ID = 'test-account';
 process.env.CLOUDFLARE_API_TOKEN = 'test-token';
 const { remoteAI, remoteVectorize, pacing } = await import('../remote-cloudflare.js');
 const { deleteEpisodeVectors, replaceEmbeddings } = await import('../../roe-pipeline/src/embeddings.js');
+const DEFAULT_RETRY_WAITS_MS = [...pacing.retryWaitsMs];
 pacing.gapMs = 0;
 pacing.retryWaitsMs = [0, 0];
 
@@ -186,4 +187,10 @@ test('every request carried the key and a time limit, and went to the account\'s
 	assert.equal(cf.requests.length, 5);
 	assert.ok(cf.requests.every((r) => r.auth && r.hasTimeout));
 	assert.ok(cf.requests.every((r) => r.path.startsWith('vectorize/v2/indexes/roe-transcripts/')));
+});
+
+test('by default a read outlasts a minute and a half of 5xx answers; a write still stops at its budget', () => {
+	assert.ok(DEFAULT_RETRY_WAITS_MS.length >= 4, JSON.stringify(DEFAULT_RETRY_WAITS_MS));
+	assert.ok(DEFAULT_RETRY_WAITS_MS.reduce((a, b) => a + b, 0) >= 90_000);
+	assert.ok(pacing.budgetMs < 60_000); // writes and Workers AI: under embeddings.js's 60 s
 });
