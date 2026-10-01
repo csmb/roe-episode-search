@@ -179,7 +179,8 @@ describe('applyWordCorrections', () => {
   });
 
   it('leaves real words and already-right spellings alone, and changes nothing a second time', () => {
-    for (const text of ["It sold Drew's hints last night", '193 soldiers, women and children', 'Suldrew at Bay to Breakers', 'the soldering iron']) {
+    for (const text of ["It sold Drew's hints last night", '193 soldiers, women and children', 'Suldrew at Bay to Breakers', 'the soldering iron',
+      "i've not been to toy soldier", 'the Toy Soldier espresso machine', 'after Soldier Boy', 'are those soldier boys']) {
       expect(applyWordCorrections(text)).toBe(text);
     }
     const once = applyWordCorrections('Soul Drew ran Beta Breakers');

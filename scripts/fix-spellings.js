@@ -33,7 +33,7 @@ import path from 'node:path';
 
 import { escapeSQL, loadEnv, parseFlags, queryJSON, runSQLFile } from './lib.js';
 import { newBackupDir } from './episode-backup.js';
-import { WORD_CORRECTIONS } from '../roe-pipeline/src/clean-segments.js';
+import { WORD_CORRECTIONS, correctionPattern } from '../roe-pipeline/src/clean-segments.js';
 
 const USAGE = 'Usage: node scripts/fix-spellings.js [--skip <key>,…] [--yes] [--local]';
 const EXAMPLES = 3; // per correction, in the list
@@ -45,12 +45,10 @@ export function candidateSQL(keys = Object.keys(WORD_CORRECTIONS)) {
 	return `SELECT id, episode_id, text FROM transcript_segments WHERE ${where} ORDER BY episode_id, start_ms, id`;
 }
 
-const wordRe = (key, flags) => new RegExp(`\\b${key}\\b`, flags);
-
 /** The corrections in `keys` applied to a text, in the list's order, exactly as applyWordCorrections does. */
 export function correctWith(text, keys = Object.keys(WORD_CORRECTIONS)) {
 	for (const key of Object.keys(WORD_CORRECTIONS)) {
-		if (keys.includes(key)) text = text.replace(wordRe(key, 'gi'), WORD_CORRECTIONS[key]);
+		if (keys.includes(key)) text = text.replace(correctionPattern(key), WORD_CORRECTIONS[key]);
 	}
 	return text;
 }
@@ -69,7 +67,7 @@ export function spellingChanges(rows, keys = Object.keys(WORD_CORRECTIONS)) {
 	for (const r of rows) {
 		const text = correctWith(r.text, keys);
 		if (text === r.text) continue;
-		changes.push({ id: r.id, episode_id: r.episode_id, old: r.text, new: text, keys: keys.filter((k) => wordRe(k, 'i').test(r.text)) });
+		changes.push({ id: r.id, episode_id: r.episode_id, old: r.text, new: text, keys: keys.filter((k) => correctionPattern(k).test(r.text)) });
 	}
 	return changes;
 }

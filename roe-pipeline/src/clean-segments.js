@@ -46,9 +46,20 @@ export const WORD_CORRECTIONS = {
   'beta-breakers': 'Bay to Breakers',
 };
 
+// Corrections that need more than whole words. "soldier" is Suldrew, the
+// listener, except in "Toy Soldier" (a coffee shop) and "Soldier Boy" (a
+// rapper): the owner, 2026-09-30, "it's mainly just to capture when we talk
+// about him, the individual, not businesses or whatnot".
+const CORRECTION_PATTERNS = {
+  soldier: '(?<!\\btoy\\s)\\bsoldier\\b(?!\\s+boys?\\b)',
+};
+
+/** Where a correction applies in a text: its key as whole words, or its own pattern. */
+export const correctionPattern = (key) => new RegExp(CORRECTION_PATTERNS[key] ?? `\\b${key}\\b`, 'gi');
+
 export function applyWordCorrections(text) {
   for (const [wrong, right] of Object.entries(WORD_CORRECTIONS)) {
-    text = text.replace(new RegExp(`\\b${wrong}\\b`, 'gi'), right);
+    text = text.replace(correctionPattern(wrong), right);
   }
   return text;
 }
