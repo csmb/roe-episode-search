@@ -53,6 +53,7 @@ roe-episode-search/
 │   ├── transcript-checks.js   # The checks those three share (and the old prompt's terms)
 │   ├── fill-interview-times.js  # After a repair: empty, 60:00 or sign-off interview times from the detector (dry run unless --yes)
 │   ├── reanchor-place-quotes.js # After a repair: place-quote times moved to where the quotes are now (dry run unless --yes)
+│   ├── fix-spellings.js       # The word corrections applied to D1's existing lines (dry run unless --yes)
 │   ├── repaired-episodes.js   # What those two share: --only / --from-repair / --all, D1 lines a page at a time
 │   ├── test/                  # node:test files for the scripts' own logic
 │   ├── archive/               # Retired one-off scripts, reference only (see its README)

@@ -30,10 +30,20 @@ export function isPromptEcho(text) {
   return hits / items.length >= 0.6;
 }
 
-// Names Whisper consistently mishears. Keys are lowercase; replacements are
-// case-sensitive. Both pipelines apply these (the scripts through lib.js).
-const WORD_CORRECTIONS = {
+// Names Whisper consistently mishears. Keys are lowercase and match whole words
+// (a phrase too); replacements are case-sensitive. Both pipelines apply these
+// (the scripts through lib.js), and scripts/fix-spellings.js applies them to the
+// lines D1 already has. The owner's corrections of 2026-09-30: it's "Suldrew"
+// and "Bay to Breakers" ("sold Drew" is left out: it is also real speech).
+export const WORD_CORRECTIONS = {
   soldier: 'Suldrew',
+  soldrew: 'Suldrew',
+  'soul drew': 'Suldrew',
+  'sol drew': 'Suldrew',
+  soldru: 'Suldrew',
+  'beta breakers': 'Bay to Breakers',
+  'beta breaker': 'Bay to Breakers',
+  'beta-breakers': 'Bay to Breakers',
 };
 
 export function applyWordCorrections(text) {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { cleanSegments, dropRepeatedLines, findLoops, isMostlyNonLatin, isPromptEcho } from '../src/clean-segments.js';
+import { applyWordCorrections, cleanSegments, dropRepeatedLines, findLoops, isMostlyNonLatin, isPromptEcho } from '../src/clean-segments.js';
 
 describe('cleanSegments', () => {
   it('removes zero-duration segments', () => {
@@ -163,5 +163,27 @@ describe('findLoops', () => {
     const loop = lines(120, () => 'Good vibrations.', { startSec: 1440 });
     const { loops } = findLoops([...talk(480), ...loop]);
     expect(loops).toEqual([{ startMs: 1_440_000, endMs: 1_799_500, removed: 119, top: 'Good vibrations.' }]);
+  });
+});
+
+describe('applyWordCorrections', () => {
+  it('spells Suldrew and Bay to Breakers the way the show does (lines from the 2014-2026 transcripts)', () => {
+    expect(applyWordCorrections('Hey, Soul Drew.')).toBe('Hey, Suldrew.');
+    expect(applyWordCorrections('Do we give Sol Drew his flowers yet')).toBe('Do we give Suldrew his flowers yet');
+    expect(applyWordCorrections('Still hello to Soldru.')).toBe('Still hello to Suldrew.');
+    expect(applyWordCorrections("Soldrew's daily drawing")).toBe("Suldrew's daily drawing");
+    expect(applyWordCorrections('Good morning, Soldier.')).toBe('Good morning, Suldrew.');
+    expect(applyWordCorrections('the excitement around Beta Breakers')).toBe('the excitement around Bay to Breakers');
+    expect(applyWordCorrections('Oh, a Beta Breaker shirt, too.')).toBe('Oh, a Bay to Breakers shirt, too.');
+    expect(applyWordCorrections('the only beta-breakers one we have')).toBe('the only Bay to Breakers one we have');
+  });
+
+  it('leaves real words and already-right spellings alone, and changes nothing a second time', () => {
+    for (const text of ["It sold Drew's hints last night", '193 soldiers, women and children', 'Suldrew at Bay to Breakers', 'the soldering iron']) {
+      expect(applyWordCorrections(text)).toBe(text);
+    }
+    const once = applyWordCorrections('Soul Drew ran Beta Breakers');
+    expect(once).toBe('Suldrew ran Bay to Breakers');
+    expect(applyWordCorrections(once)).toBe(once);
   });
 });
