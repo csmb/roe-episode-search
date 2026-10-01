@@ -9,6 +9,7 @@
  */
 
 import { parseUpload, JOINED_PREFIX } from './parts.js';
+import { DEAD_LETTER_QUEUE, OWN_FILE, logIngest } from './ingest-log.js';
 
 export { EpisodePipeline } from './pipeline.js';
 
@@ -20,34 +21,48 @@ function pipelineFor(env, upload) {
 export default {
   /**
    * Queue consumer — handles R2 object-create events.
-   * Each message contains an R2 event with the uploaded object key.
+   * Each message contains an R2 event with the uploaded object key. What
+   * becomes of each upload goes in the ingest log (ingest-log.js), which the
+   * admin page's Uploads tab lists. A message whose hand-over keeps failing
+   * ends up, after the queue's retries, on the dead-letter queue, which this
+   * Worker also consumes, to log it as given up.
    */
   async queue(batch, env) {
     for (const message of batch.messages) {
       const event = message.body;
       const key = event.object?.key;
+      const size = event.object?.size ?? null;
 
-      if (!key) {
-        console.warn('Queue message missing object key, acking:', JSON.stringify(event));
+      if (batch.queue === DEAD_LETTER_QUEUE) {
+        console.error(`Gave up on ${key}: every try to start it failed`);
+        await logIngest(env.DB, { key: key ?? '(no file name)', size, outcome: 'gave up', detail: 'every try to start it failed, so nothing was processed: upload it again' });
         message.ack();
         continue;
       }
 
-      // The pipeline's own joined shows, other files, copies and names that
-      // aren't a show date
-      if (key.startsWith(JOINED_PREFIX)) {
-        console.log(`Skipping ${key}: a show the pipeline joined`);
+      if (!key) {
+        console.warn('Queue message missing object key, acking:', JSON.stringify(event));
+        await logIngest(env.DB, { key: '(no file name)', outcome: 'skipped', detail: 'an upload event without a file name' });
+        message.ack();
+        continue;
+      }
+
+      // The pipeline's own files (joined shows, the site's .m4a), unlogged;
+      // then other files, copies and names that aren't a show date, logged
+      if (key.startsWith(JOINED_PREFIX) || OWN_FILE.test(key)) {
+        console.log(`Skipping ${key}: the pipeline's own file`);
         message.ack();
         continue;
       }
       const upload = parseUpload(key);
       if (upload.error) {
         console.log(`Skipping ${key}: ${upload.error}`);
+        await logIngest(env.DB, { key, size, outcome: 'skipped', detail: upload.error });
         message.ack();
         continue;
       }
 
-      console.log(`Processing R2 event: ${key} (${event.object?.size ?? 'unknown'} bytes)`);
+      console.log(`Processing R2 event: ${key} (${size ?? 'unknown'} bytes)`);
 
       try {
         const res = await pipelineFor(env, upload).fetch('http://internal/process', {
@@ -58,9 +73,11 @@ export default {
 
         const result = await res.json();
         console.log(`DO response for ${key}:`, JSON.stringify(result));
+        await logIngest(env.DB, { key, size, outcome: 'started', detail: result?.status ? `its show's pipeline: ${result.status}` : null });
         message.ack();
       } catch (err) {
         console.error(`Failed to dispatch ${key} to DO:`, err.message);
+        await logIngest(env.DB, { key, size, outcome: 'retrying', detail: `try ${message.attempts ?? '?'}: ${err.message}` });
         message.retry();
       }
     }

@@ -16,7 +16,8 @@ roe-episode-search/
 │       └── map.html           # Places mentioned map
 ├── roe-pipeline/              # Cloudflare Worker — serverless episode processing
 │   └── src/
-│       ├── index.js           # Queue consumer + /process and /status (bearer token)
+│       ├── index.js           # Queue consumer (+ its dead-letter queue) + /process and /status (bearer token)
+│       ├── ingest-log.js      # D1 ingest_log: what became of each upload (the admin page's Uploads tab)
 │       ├── pipeline.js        # EpisodePipeline DO, one per show date: one step (or chunk) per alarm, retries, resume
 │       ├── parts.js           # Which files make the show: parts, copies, what to wait for
 │       ├── mp3-join.js        # Join a split show's parts into one MP3 in R2, with a new Xing header

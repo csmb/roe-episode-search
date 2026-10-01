@@ -980,6 +980,19 @@ async function handlePlaceDetail(url, env, request) {
 async function handleAdminApi(url, env, request) {
 	const path = url.pathname.slice('/api/admin/'.length);
 
+	// The pipeline's ingest log (N5): what became of each recent upload, for the Uploads tab
+	if (path === 'ingest-log') {
+		try {
+			const { results } = await env.DB.prepare(
+				'SELECT id, at, key, size, outcome, detail FROM ingest_log ORDER BY id DESC LIMIT 100'
+			).all();
+			return json({ uploads: results }, 200, request);
+		} catch (err) {
+			console.error('/api/admin/ingest-log failed', err);
+			return json({ error: "Couldn't read the upload log" }, 500, request);
+		}
+	}
+
 	if (path === 'unreviewed') {
 		try {
 			// One query for every unreviewed episode and its guests, instead of

@@ -98,3 +98,70 @@ describe('queue consumer', () => {
     vi.restoreAllMocks();
   });
 });
+
+describe('ingest log (N5)', () => {
+  const message = (key, attempts = 1) => {
+    const m = { body: key === null ? {} : { object: { key, size: 7 } }, attempts, acked: false, retried: false };
+    m.ack = () => { m.acked = true; };
+    m.retry = () => { m.retried = true; };
+    return m;
+  };
+  const fakeDb = () => {
+    const rows = [];
+    return { rows, prepare: sql => ({ bind: (...args) => ({ run: async () => { rows.push({ sql, args }); } }) }) };
+  };
+  const quiet = () => { for (const k of ['log', 'warn', 'error']) vi.spyOn(console, k).mockImplementation(() => {}); };
+
+  it('records what became of each upload, and not the pipeline\'s own files', async () => {
+    const { env } = envWith('s3cret');
+    env.DB = fakeDb();
+    quiet();
+    const messages = [
+      'Roll Over Easy 2026-10-01.mp3', 'Roll Over Easy Oct 1.mp3', 'Roll Over Easy 2026-10-01 (1).mp3',
+      'joined/Roll Over Easy 2026-10-01.mp3', 'roll-over-easy_2026-10-01_07-30-00.m4a', null,
+    ].map(k => message(k));
+    await worker.queue({ queue: 'roe-pipeline-queue', messages }, env);
+    vi.restoreAllMocks();
+    expect(messages.every(m => m.acked)).toBe(true);
+    const logged = env.DB.rows.map(r => ({ key: r.args[1], size: r.args[2], outcome: r.args[3], detail: r.args[4] }));
+    expect(logged.map(r => [r.key, r.outcome])).toEqual([
+      ['Roll Over Easy 2026-10-01.mp3', 'started'],
+      ['Roll Over Easy Oct 1.mp3', 'skipped'],
+      ['Roll Over Easy 2026-10-01 (1).mp3', 'skipped'],
+      ['(no file name)', 'skipped'],
+    ]);
+    expect(logged[0]).toMatchObject({ size: 7, detail: "its show's pipeline: idle" });
+    expect(logged[1].detail).toContain('Roll Over Easy 2026-10-01.mp3'); // how to name it
+    expect(logged[2].detail).toContain('second copy');
+    expect(env.DB.rows[0].sql).toMatch(/^INSERT INTO ingest_log \(at, key, size, outcome, detail\)/);
+    expect(Number.isNaN(Date.parse(env.DB.rows[0].args[0]))).toBe(false);
+  });
+
+  it('records a failed hand-over as retrying, and the dead-letter queue\'s copy as given up', async () => {
+    const env = { DB: fakeDb(), EPISODE_PIPELINE: { idFromName: n => n, get: () => ({ fetch: async () => { throw new Error('overloaded'); } }) } };
+    quiet();
+    const m = message('Roll Over Easy 2026-10-01.mp3', 2);
+    await worker.queue({ queue: 'roe-pipeline-queue', messages: [m] }, env);
+    const dead = message('Roll Over Easy 2026-10-01.mp3', 1);
+    await worker.queue({ queue: 'roe-pipeline-dlq', messages: [dead] }, env);
+    vi.restoreAllMocks();
+    expect(m.retried).toBe(true);
+    expect(dead.acked).toBe(true);
+    expect(env.DB.rows.map(r => [r.args[3], r.args[4]])).toEqual([
+      ['retrying', 'try 2: overloaded'],
+      ['gave up', expect.stringContaining('nothing was processed')],
+    ]);
+  });
+
+  it('never lets a failed log write stop an upload', async () => {
+    const { env, calls } = envWith('s3cret');
+    env.DB = { prepare: () => { throw new Error('no such table: ingest_log'); } };
+    quiet();
+    const m = message('Roll Over Easy 2026-10-01.mp3');
+    await worker.queue({ queue: 'roe-pipeline-queue', messages: [m] }, env);
+    vi.restoreAllMocks();
+    expect(m.acked).toBe(true);
+    expect(calls).toHaveLength(1);
+  });
+});
+

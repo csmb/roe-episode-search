@@ -74,3 +74,14 @@ CREATE TABLE IF NOT EXISTS place_narratives (
     year_max INTEGER,
     generated_at TEXT
 );
+
+-- What became of each upload the pipeline's queue saw (roe-pipeline/src/ingest-log.js):
+-- started, skipped (with why), retrying or gave up. The admin page's Uploads tab lists them.
+CREATE TABLE IF NOT EXISTS ingest_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at TEXT NOT NULL,
+    key TEXT NOT NULL,
+    size INTEGER,
+    outcome TEXT NOT NULL,
+    detail TEXT
+);

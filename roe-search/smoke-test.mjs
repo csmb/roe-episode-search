@@ -54,6 +54,7 @@ await check('robots.txt', '/robots.txt', (res, body) =>
 await check('unknown API path', '/api/no-such-route', status(404));
 await check('unknown page', '/no-such-page', status(404));
 await check('admin API without password', '/api/admin/unreviewed', status(401));
+await check('upload log without password', '/api/admin/ingest-log', status(401));
 
 // Episode list and one episode
 const list = await check('/api/episodes', '/api/episodes', (res, body) => {

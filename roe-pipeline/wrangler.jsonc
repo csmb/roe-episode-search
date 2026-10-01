@@ -50,11 +50,19 @@
     }
   ],
 
-  // Queue consumer for R2 event notifications
+  // Queue consumer for R2 event notifications. A message that fails all its
+  // retries goes to the dead-letter queue, which this Worker also consumes, to
+  // record it in D1's ingest_log (the admin page's Uploads tab) as given up.
   "queues": {
     "consumers": [
       {
         "queue": "roe-pipeline-queue",
+        "max_batch_size": 1,
+        "max_retries": 3,
+        "dead_letter_queue": "roe-pipeline-dlq"
+      },
+      {
+        "queue": "roe-pipeline-dlq",
         "max_batch_size": 1,
         "max_retries": 3
       }
