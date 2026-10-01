@@ -7,9 +7,9 @@
  * 2026-09-30, for the hundreds of older lines that still had "Soul Drew" or
  * "Beta Breakers". A dry run unless --yes.
  *
- * Lines are found with a LIKE per correction, then corrected with
- * applyWordCorrections itself (whole words only), so a line changes exactly as
- * a new transcript's would. The changes are listed per correction and per
+ * Lines are found with a LIKE per correction, then corrected the way
+ * applyWordCorrections does (whole words, in the list's order), so a line
+ * changes exactly as a new transcript's would. The changes are listed per correction and per
  * episode, with examples, and saved in transcripts/.backups/<date>-spellings-plan/
  * (a dry run) or <date>-spellings/ (--yes).
  *
@@ -20,8 +20,12 @@
  * entries of the episodes whose lines changed are made from the old text, so
  * the command that redoes them is printed (and their IDs saved in episodes.txt).
  *
+ * --skip <corrections> leaves some out (their keys, comma-separated): on
+ * 2026-09-30 "soldier" was, since 758 old lines had it and a few of them are
+ * the real word ("Toy Soldier", "Soldier Boy").
+ *
  * Usage:
- *   node scripts/fix-spellings.js [--yes] [--local]
+ *   node scripts/fix-spellings.js [--skip <key>,…] [--yes] [--local]
  */
 
 import fs from 'node:fs';
@@ -29,26 +33,43 @@ import path from 'node:path';
 
 import { escapeSQL, loadEnv, parseFlags, queryJSON, runSQLFile } from './lib.js';
 import { newBackupDir } from './episode-backup.js';
-import { WORD_CORRECTIONS, applyWordCorrections } from '../roe-pipeline/src/clean-segments.js';
+import { WORD_CORRECTIONS } from '../roe-pipeline/src/clean-segments.js';
 
-const USAGE = 'Usage: node scripts/fix-spellings.js [--yes] [--local]';
+const USAGE = 'Usage: node scripts/fix-spellings.js [--skip <key>,…] [--yes] [--local]';
 const EXAMPLES = 3; // per correction, in the list
 
-/** The SELECT that finds every line a correction might change (applyWordCorrections decides). */
+/** The SELECT that finds every line a correction might change (correctWith decides). */
 export function candidateSQL(keys = Object.keys(WORD_CORRECTIONS)) {
 	if (keys.length === 0) throw new Error('No word corrections to apply');
 	const where = keys.map((k) => `lower(text) LIKE '%${escapeSQL(k.toLowerCase())}%'`).join(' OR ');
 	return `SELECT id, episode_id, text FROM transcript_segments WHERE ${where} ORDER BY episode_id, start_ms, id`;
 }
 
+const wordRe = (key, flags) => new RegExp(`\\b${key}\\b`, flags);
+
+/** The corrections in `keys` applied to a text, in the list's order, exactly as applyWordCorrections does. */
+export function correctWith(text, keys = Object.keys(WORD_CORRECTIONS)) {
+	for (const key of Object.keys(WORD_CORRECTIONS)) {
+		if (keys.includes(key)) text = text.replace(wordRe(key, 'gi'), WORD_CORRECTIONS[key]);
+	}
+	return text;
+}
+
+/** The correction keys left after --skip; an unknown key stops the run. */
+export function keysToApply(skip) {
+	const out = (skip ?? '').split(',').map((k) => k.trim().toLowerCase()).filter(Boolean);
+	const unknown = out.filter((k) => !(k in WORD_CORRECTIONS));
+	if (unknown.length > 0) throw new Error(`--skip: no correction called ${unknown.join(', ')} (they are: ${Object.keys(WORD_CORRECTIONS).join(', ')})`);
+	return Object.keys(WORD_CORRECTIONS).filter((k) => !out.includes(k));
+}
+
 /** Which lines change, and how, with the corrections that changed each. */
-export function spellingChanges(rows) {
+export function spellingChanges(rows, keys = Object.keys(WORD_CORRECTIONS)) {
 	const changes = [];
 	for (const r of rows) {
-		const text = applyWordCorrections(r.text);
+		const text = correctWith(r.text, keys);
 		if (text === r.text) continue;
-		const keys = Object.keys(WORD_CORRECTIONS).filter((k) => new RegExp(`\\b${k}\\b`, 'i').test(r.text));
-		changes.push({ id: r.id, episode_id: r.episode_id, old: r.text, new: text, keys });
+		changes.push({ id: r.id, episode_id: r.episode_id, old: r.text, new: text, keys: keys.filter((k) => wordRe(k, 'i').test(r.text)) });
 	}
 	return changes;
 }
@@ -109,7 +130,7 @@ function writeBackup(dir, changes, { isLocal }) {
 
 async function main() {
 	loadEnv();
-	const { flags, rest } = parseFlags(process.argv.slice(2), { '--yes': 'flag', '--local': 'flag' }, USAGE);
+	const { flags, rest } = parseFlags(process.argv.slice(2), { '--skip': 'value', '--yes': 'flag', '--local': 'flag' }, USAGE);
 	if (rest.length > 0) {
 		console.error(USAGE);
 		process.exit(1);
@@ -118,8 +139,9 @@ async function main() {
 	if (process.env.ROE_PERSIST_TO && !target.isLocal) throw new Error('ROE_PERSIST_TO is set (a test run): add --local');
 	const where = `in the ${target.isLocal ? 'local D1 copy' : 'production database'}`;
 
-	const changes = spellingChanges(queryJSON(candidateSQL(), target));
-	console.log(`${flags.yes ? 'Correcting' : 'Dry run (--yes to write):'} transcript lines ${where}\n`);
+	const keys = keysToApply(flags.skip);
+	const changes = spellingChanges(queryJSON(candidateSQL(keys), target), keys);
+	console.log(`${flags.yes ? 'Correcting' : 'Dry run (--yes to write):'} transcript lines ${where}${flags.skip ? ` (leaving out: ${flags.skip})` : ''}\n`);
 	const report = reportLines(changes);
 	console.log(report.join('\n'));
 	const episodes = [...new Set(changes.map((c) => c.episode_id))];

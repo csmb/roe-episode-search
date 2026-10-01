@@ -11,7 +11,8 @@ import { DatabaseSync } from 'node:sqlite';
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'roe-test-'));
 after(() => fs.rmSync(tmp, { recursive: true, force: true }));
 process.env.ROE_PERSIST_TO ??= tmp; // a test run: no keys from .env
-const { candidateSQL, spellingChanges, updateStatement, restoreStatement, reportLines } = await import('../fix-spellings.js');
+const { candidateSQL, spellingChanges, updateStatement, restoreStatement, reportLines, correctWith, keysToApply } = await import('../fix-spellings.js');
+const { applyWordCorrections } = await import('../../roe-pipeline/src/clean-segments.js');
 
 const SCHEMA = fs.readFileSync(new URL('../../schema.sql', import.meta.url), 'utf8');
 const EP = 'roll-over-easy_2018-07-19_07-30-00';
@@ -66,4 +67,17 @@ test('on the real schema: the lines change, keyword search follows, and restore.
 	assert.deepEqual(found('Soul'), [1]);
 	assert.throws(() => updateStatement({ id: 'x', old: 'a', new: 'b' }), /Not a line id/);
 	assert.match(updateStatement({ id: 7, old: "Soul Drew's", new: "Suldrew's" }), /SET text = 'Suldrew''s' WHERE id = 7 AND text = 'Soul Drew''s';$/);
+});
+
+test('every correction, or all but some (--skip): the same result as the pipelines', () => {
+	for (const text of ['Soul Drew ran Beta Breakers', 'Good morning, Soldier.', "It sold Drew's hints", 'Toy Soldier has espresso; Soldrew says hi']) {
+		assert.equal(correctWith(text), applyWordCorrections(text));
+	}
+	const keys = keysToApply('soldier');
+	assert.ok(!keys.includes('soldier') && keys.includes('soldrew'));
+	assert.equal(correctWith('Toy Soldier has espresso; Soldrew says hi', keys), 'Toy Soldier has espresso; Suldrew says hi');
+	assert.deepEqual(spellingChanges([{ id: 9, episode_id: EP, text: 'Good morning, Soldier.' }], keys), []);
+	assert.ok(!candidateSQL(keys).includes('soldier'));
+	assert.throws(() => keysToApply('soldier,soldiers'), /no correction called soldiers/);
+	assert.equal(keysToApply('').length, keysToApply(undefined).length);
 });
