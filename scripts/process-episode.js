@@ -86,7 +86,7 @@ const db = { isLocal: false };
 
 const WHISPER_MODEL_CANDIDATES = [
 	path.join(os.homedir(), '.cache', 'whisper-cpp', 'ggml-large-v3.bin'),
-	path.join(os.homedir(), 'Library', 'Mobile Documents', 'com~apple~CloudDocs', 'code', 'transcribe_audio', 'whisper-env', 'ggml-large-v3.bin'),
+	path.join(os.homedir(), 'code', 'transcribe_audio', 'whisper-env', 'ggml-large-v3.bin'),
 ];
 const WHISPER_MODEL_PATH = WHISPER_MODEL_CANDIDATES.find((p) => fs.existsSync(p)) || WHISPER_MODEL_CANDIDATES[0];
 
