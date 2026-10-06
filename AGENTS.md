@@ -22,7 +22,10 @@ roe-episode-search/
 │       ├── parts.js           # Which files make the show: parts, copies, what to wait for
 │       ├── mp3-join.js        # Join a split show's parts into one MP3 in R2, with a new Xing header
 │       ├── transcribe.js      # OpenAI Whisper API, six minutes of audio at a time
+│       ├── whisper-prompt.js  # Spelling hints sent to Whisper with every request
+│       ├── mp3-frames.js      # MPEG frame parsing: cut and join MP3s on frame boundaries
 │       ├── gap-retry.js       # Re-send 5+ minute holes as 3-minute clips
+│       ├── coverage.js        # Does a transcript cover its recording (checked before it's accepted or seeded)
 │       ├── clean-segments.js  # Loop/hallucination/wrong-language cleaning
 │       ├── summary.js         # GPT-4o-mini title/summary/guests (writes nothing)
 │       ├── seed-db.js         # One D1 batch: episode row + segments (+FTS) + guests
@@ -31,6 +34,8 @@ roe-episode-search/
 │       ├── places.js          # GPT-4o-mini places + Nominatim geocoding
 │       ├── sentiment.js       # Place sentiment, quotes and narratives
 │       ├── hosts.js           # The hosts' names (never guests); the site imports it too
+│       ├── limits.js          # Time limits for outside calls; which failures are worth retrying
+│       ├── stored-lists.js    # Long lists in Durable Object storage, paged under the 128 KiB cap
 │       └── parse-episode-id.js # Filename → episode ID
 ├── scripts/                   # Local tools (Node.js 24.2+)
 │   ├── process-episode.js     # Local pipeline: transcribe (whisper.cpp or --engine openai) → seed → embed → summary → upload
@@ -59,13 +64,13 @@ roe-episode-search/
 │   ├── test/                  # node:test files for the scripts' own logic
 │   ├── archive/               # Retired one-off scripts, reference only (see its README)
 │   └── ...                    # ~15 more utility scripts
-├── schema.sql                 # D1 schema (episodes, segments, FTS5, guests, places)
+├── schema.sql                 # D1 schema (episodes, segments, FTS5, guests, places, ingest log)
 ├── transcripts/               # Generated JSON transcripts (local only)
 └── docs/superpowers/          # Design specs and plans (local only: git ignores this folder)
 ```
 
 The MP3 archive (661 files) is outside the repo, in iCloud Drive at
-`~/Library/Mobile Documents/com~apple~CloudDocs/BFF.fm/Roll Over Easy/All Episodes/`.
+`~/Library/Mobile Documents/com~apple~CloudDocs/BFF.fm/Roll Over Easy/All episodes/`.
 
 ## Component Quick Reference
 
@@ -74,7 +79,7 @@ The MP3 archive (661 files) is outside the repo, in iCloud Drive at
 | **roe-search** | `roe-search/src/index.js` | Search frontend + API. Serves HTML pages, FTS5/semantic search, audio streaming, admin endpoints | D1, R2, Vectorize, Workers AI |
 | **roe-pipeline** | `roe-pipeline/src/index.js` | How new episodes arrive. R2 upload → queue → one Durable Object per show date, which waits 10 minutes for more parts, joins a show that came in parts, then runs transcribe → summary → seed → embed → guest-start → places → sentiment, with retries and resume | D1, R2, Vectorize, Workers AI, OpenAI |
 | **scripts** | `scripts/process-episode.js` | Local processing (whisper.cpp or OpenAI + ffmpeg). It imports roe-pipeline's code for transcription (OpenAI), cleaning and loops, file names, summaries, embeddings and interview times, so both pipelines give the same results; no places or sentiment (redo-places.js does those) | D1, R2, Vectorize, OpenAI |
-| **D1 database** | `schema.sql` | SQLite: episodes, transcript_segments, transcript_fts (FTS5), episode_guests, places, place_mentions | |
+| **D1 database** | `schema.sql` | SQLite: episodes, transcript_segments, transcript_fts (FTS5), episode_guests, places, place_mentions, place_narratives, ingest_log | |
 | **R2 bucket** | `roe-audio` | Audio file storage. Public URL: `pub-e95bd2be3f9d4147b2955503d75e50c1.r2.dev` | |
 | **Vectorize** | `roe-transcripts` | 768-dim embeddings (cosine). Model: `@cf/baai/bge-base-en-v1.5` | |
 
@@ -290,16 +295,16 @@ an existing episode. `scripts/cleanup-places.js` removes false positives from D1
 (GPT-4o-mini) writes `scripts/cleanup_report.json`, and `--apply` deletes exactly the places
 listed there (edit it first to keep any), refusing if one was renamed or removed since, after a
 backup with `undo.sql` in `transcripts/.backups/<date>-cleanup-places/`.
-The April 2026 map build (external business lists matched against transcripts) is archived
-in `scripts/archive/`: it caused the fake pins and common-word places cleaned up in
-September, so don't re-run it as is. Guest lists are edited in the admin page; the old
-`backfill-guests.js` is archived too, because it overwrites reviewed guests.
+`scripts/archive/` holds retired scripts that must not be re-run as they are: the old map
+build (external business lists matched against transcripts), which adds fake pins and
+common-word places, and `backfill-guests.js`, which overwrites reviewed guests. Guest lists
+are edited in the admin page.
 
 ## Key Files
 
 | File | What's In It |
 |------|-------------|
-| `schema.sql` | D1 schema — episodes, transcript_segments, transcript_fts (FTS5), episode_guests, places, place_mentions |
+| `schema.sql` | D1 schema — episodes, transcript_segments, transcript_fts (FTS5), episode_guests, places, place_mentions, place_narratives, ingest_log |
 | `roe-search/wrangler.jsonc` | Worker config — D1, R2, Vectorize, AI bindings, and the per-IP rate limits (`ratelimits`) |
 | `roe-pipeline/wrangler.jsonc` | Worker config — D1, R2, Vectorize, Durable Object, queue bindings |
 | `.env` | Secrets: CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN, OPENAI_API_KEY, PIPELINE_TOKEN (for roe-pipeline's /process and /status) |
