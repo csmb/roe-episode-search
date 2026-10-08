@@ -176,11 +176,14 @@ describe('applyWordCorrections', () => {
     expect(applyWordCorrections('the excitement around Beta Breakers')).toBe('the excitement around Bay to Breakers');
     expect(applyWordCorrections('Oh, a Beta Breaker shirt, too.')).toBe('Oh, a Bay to Breakers shirt, too.');
     expect(applyWordCorrections('the only beta-breakers one we have')).toBe('the only Bay to Breakers one we have');
+    expect(applyWordCorrections('chalico phoenix thank you both so very much boom')).toBe('Shalico phoenix thank you both so very much boom');
+    expect(applyWordCorrections('so i you know chaleco walked')).toBe('so i you know Shalico walked');
   });
 
   it('leaves real words and already-right spellings alone, and changes nothing a second time', () => {
     for (const text of ["It sold Drew's hints last night", '193 soldiers, women and children', 'Suldrew at Bay to Breakers', 'the soldering iron',
-      "i've not been to toy soldier", 'the Toy Soldier espresso machine', 'after Soldier Boy', 'are those soldier boys']) {
+      "i've not been to toy soldier", 'the Toy Soldier espresso machine', 'after Soldier Boy', 'are those soldier boys',
+      'Shout out to Shalico and Phoenix.']) {
       expect(applyWordCorrections(text)).toBe(text);
     }
     const once = applyWordCorrections('Soul Drew ran Beta Breakers');

@@ -17,7 +17,7 @@ export const SF_VOCAB_PROMPT = [
   'Muni Diaries, Noise Pop, Litquake, KQED, KALW, Hoodline, Mission Local, Tablehopper,',
   'SFMOMA, the Exploratorium,',
   'Hamburger Haven, Bi-Rite, Tartine, Humphry Slocombe,',
-  'Emperor Norton, Herb Caen, Karl the Fog,',
+  'Emperor Norton, Herb Caen, Karl the Fog, Shalico,',
   'the Ferry Building,',
   'Sequoia, The Early Bird, Suldrew, BFF.fm, Roll Over Easy.',
 ].join(' ');

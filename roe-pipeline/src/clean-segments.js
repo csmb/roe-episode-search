@@ -35,6 +35,7 @@ export function isPromptEcho(text) {
 // (the scripts through lib.js), and scripts/fix-spellings.js applies them to the
 // lines D1 already has. The owner's corrections of 2026-09-30: it's "Suldrew"
 // and "Bay to Breakers" ("sold Drew" is left out: it is also real speech).
+// 2026-10-08: it's "Shalico" (SF in Bloom), heard as "Chalico" and "Chaleco".
 export const WORD_CORRECTIONS = {
   soldier: 'Suldrew',
   soldrew: 'Suldrew',
@@ -44,6 +45,8 @@ export const WORD_CORRECTIONS = {
   'beta breakers': 'Bay to Breakers',
   'beta breaker': 'Bay to Breakers',
   'beta-breakers': 'Bay to Breakers',
+  chalico: 'Shalico',
+  chaleco: 'Shalico',
 };
 
 // Corrections that need more than whole words. "soldier" is Suldrew, the

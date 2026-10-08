@@ -2,8 +2,9 @@ import { describe, it, expect } from 'vitest';
 import { SF_VOCAB_PROMPT, PROMPT_TERMS, normalizeTerm } from '../src/whisper-prompt.js';
 
 describe('SF_VOCAB_PROMPT', () => {
-  // Whisper only reads the last ~224 tokens of a prompt. The current list is
-  // 503 characters = 177 Whisper tokens; 560 characters keeps it near 200.
+  // Whisper only reads the last ~224 tokens of a prompt. The list was 503
+  // characters = 177 Whisper tokens; with Shalico it is 512, about 180; 560
+  // characters keeps it near 200.
   it('stays short enough for Whisper to read all of it', () => {
     expect(SF_VOCAB_PROMPT.length).toBeLessThanOrEqual(560);
   });
