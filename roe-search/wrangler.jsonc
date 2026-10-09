@@ -76,9 +76,11 @@
     "enabled": true
   },
   "rules": [
+    // The pages, and Leaflet and Fuse for the map pages: imported as text and
+    // served as they are (wrangler wants one rule per type).
     {
       "type": "Text",
-      "globs": ["**/*.html"],
+      "globs": ["**/*.html", "**/vendor/*.js", "**/vendor/*.css"],
       "fallthrough": false
     },
     // The header photo: imported as bytes and served by the Worker.

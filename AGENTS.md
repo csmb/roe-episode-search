@@ -8,12 +8,14 @@ Searchable archive of the Roll Over Easy podcast. Live at rollovereasy.org.
 roe-episode-search/
 ├── roe-search/                # Cloudflare Worker — search frontend + API
 │   └── src/
-│       ├── index.js           # All routes (search, audio proxy, admin)
+│       ├── index.js           # All routes (search, audio proxy, admin, the photo and vendor files)
 │       ├── frontend.html      # Homepage (On This Day, shared-clip card, audio player)
 │       ├── episodes.html      # Browse all episodes
 │       ├── guests.html        # Guest directory (not linked from the menu)
 │       ├── admin.html         # Admin panel (password-protected: guest mgmt, search)
-│       └── map.html           # Places mentioned map
+│       ├── map.html           # Places mentioned map
+│       ├── http.js            # Request helpers: rate-limit keys (IPv6 by /64), path IDs, byte ranges, If-Range
+│       └── vendor/            # Leaflet 1.9.4 and Fuse 7.0.0, served by the Worker (versioned names, cached for good)
 ├── roe-pipeline/              # Cloudflare Worker — serverless episode processing
 │   └── src/
 │       ├── index.js           # Queue consumer (+ its dead-letter queue) + /process and /status (bearer token)
@@ -27,7 +29,7 @@ roe-episode-search/
 │       ├── mp3-frames.js      # MPEG frame parsing: cut and join MP3s on frame boundaries
 │       ├── gap-retry.js       # Re-send 5+ minute holes as 3-minute clips
 │       ├── coverage.js        # Does a transcript cover its recording (checked before it's accepted or seeded)
-│       ├── clean-segments.js  # Loop/hallucination/wrong-language cleaning
+│       ├── clean-segments.js  # Loop/hallucination/wrong-language/invented-address cleaning; word corrections
 │       ├── summary.js         # GPT-4o-mini title/summary/guests (writes nothing)
 │       ├── seed-db.js         # One D1 batch: episode row + segments (+FTS) + guests
 │       ├── embeddings.js      # Workers AI embeddings (45s window, 35s step)
@@ -57,11 +59,12 @@ roe-episode-search/
 │   ├── episode-backup.js      # Back up an episode (with restore SQL) before a delete or merge
 │   ├── repair-archive.js      # Redo damaged transcripts from a worklist: stage, check, then publish one at a time
 │   ├── scan-transcripts.js    # Read-only scan of D1's transcripts (loops, holes, early stops, junk, durations)
-│   ├── clean-junk-lines.js    # Delete junk lines in D1 by rule, then redo the embeddings (dry run unless --yes)
+│   ├── clean-junk-lines.js    # Delete junk lines in D1 by rule (echo, loops, urls), then redo the embeddings (dry run unless --yes)
+│   ├── repair-missing-m4a.js  # Make the .m4a of shows that have only their MP3 (after each Thursday; dry run unless --yes)
 │   ├── transcript-checks.js   # The checks those three share (and the old prompt's terms)
 │   ├── fill-interview-times.js  # After a repair: empty, 60:00 or sign-off interview times from the detector (dry run unless --yes)
 │   ├── reanchor-place-quotes.js # After a repair: place-quote times moved to where the quotes are now (dry run unless --yes)
-│   ├── fix-spellings.js       # The word corrections applied to D1's existing lines (dry run unless --yes)
+│   ├── fix-spellings.js       # The word corrections applied to D1's existing lines (dry run unless --yes); --spared puts the real word back
 │   ├── repaired-episodes.js   # What those two share: --only / --from-repair / --all, D1 lines a page at a time
 │   ├── test/                  # node:test files for the scripts' own logic
 │   ├── archive/               # Retired one-off scripts, reference only (see its README)
@@ -96,6 +99,19 @@ cd roe-search && npm run dev    # http://roe.localhost:8791 (the port is pinned 
 ```
 cd roe-search && npx wrangler deploy
 npm run smoke    # checks every route the pages use on rollovereasy.org; run after each deploy
+```
+
+### Run the site's tests
+```
+cd roe-search && npm test    # src/http.js: rate-limit keys, path IDs, byte ranges, If-Range
+```
+
+### After Thursday's show
+roe-pipeline can't convert audio, so a new show plays from its raw MP3 (bigger, never cached, a
+slower lookup) until its .m4a exists:
+```
+node scripts/repair-missing-m4a.js          # lists the shows without one
+node scripts/repair-missing-m4a.js --yes    # converts, uploads, points audio_file at it (backup first)
 ```
 
 ### Run roe-pipeline locally

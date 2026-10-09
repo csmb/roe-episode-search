@@ -3,15 +3,19 @@
  * Smoke test for the live site: requests every route the pages rely on and
  * checks the fields they read, so a deploy that silently drops a route (as
  * 34357ed did in April) fails loudly. A few checks also pin behaviour: search
- * ranking, the On This Day fallback, /latest skipping unfinished episodes, the
- * header photo the pages use, the map's cache header, and the http and www
- * redirects with HSTS. Read-only; 25 requests (22 against another address),
- * and one more with ADMIN_PASSWORD set (search ranking needs the admin password).
+ * ranking, On This Day (today's Pacific date, and the fallback), /latest
+ * skipping unfinished episodes, the header photo and the Leaflet and Fuse files
+ * the pages use, the .m4a audio path (the oldest show) with its validators, the
+ * map's cache header, and the http and www redirects with HSTS. Read-only; 31
+ * requests (28 against another address), and one more with ADMIN_PASSWORD set
+ * (search ranking needs the admin password).
  *
  *   npm run smoke                 # https://rollovereasy.org
  *   node smoke-test.mjs http://roe.localhost:8791
  *   ADMIN_PASSWORD=… npm run smoke   # also checks search ranking
  */
+
+import { createHash } from 'node:crypto';
 
 const BASE = (process.argv[2] || 'https://rollovereasy.org').replace(/\/$/, '');
 const failures = [];
@@ -39,7 +43,9 @@ const status = code => res => res.status === code ? null : `status ${res.status}
 // Pages
 const pages = {};
 for (const [name, path] of [['homepage', '/'], ['episodes page', '/episodes'], ['map page', '/map'], ['admin page', '/admin']]) {
-	pages[path] = await check(name, path, (res, body) => res.status !== 200 ? `status ${res.status}` : !String(body).includes('<html') ? 'not HTML' : null);
+	pages[path] = await check(name, path, (res, body) => res.status !== 200 ? `status ${res.status}`
+		: !String(body).includes('<html') ? 'not HTML'
+		: String(body).includes('unpkg.com') ? 'still loads a library from unpkg' : null);
 }
 // The header photo the homepage points at: served by the Worker as a small WebP.
 const hero = String(pages['/'] || '').match(/class="hero-image" src="([^"]+)"/)?.[1];
@@ -48,7 +54,18 @@ else {
 	await check('header image', hero, (res, body) =>
 		res.status !== 200 ? `status ${res.status}`
 			: res.headers.get('content-type') !== 'image/webp' ? `content-type ${res.headers.get('content-type')}`
-			: !(body?.byteLength > 0 && body.byteLength < 300 * 1024) ? `${body?.byteLength} bytes, expected under 300 KB` : null);
+			: !(body?.byteLength > 0 && body.byteLength < 60 * 1024) ? `${body?.byteLength} bytes, expected under 60 KB` : null);
+}
+// Leaflet and Fuse, served by the Worker for the map pages (no CDN), each the bytes its page's
+// integrity hash names: a file changed without a new name would be refused by browsers, and kept for a year
+const vendor = new Map([...Object.values(pages).join('\n').matchAll(/(?:src|href)="(\/vendor\/[^"]+)" integrity="(sha384-[^"]+)"/g)].map((m) => [m[1], m[2]]));
+if (vendor.size !== 3) failures.push(`vendor files: the pages use ${[...vendor.keys()].join(', ') || 'none'}, expected Leaflet's .js and .css and Fuse`);
+for (const [path, integrity] of vendor) {
+	await check(`vendor ${path}`, path, (res, body) =>
+		res.status !== 200 ? `status ${res.status}`
+			: !/^text\/(javascript|css)/.test(res.headers.get('content-type') || '') ? `content-type ${res.headers.get('content-type')}`
+			: !/immutable/.test(res.headers.get('cache-control') || '') ? `Cache-Control is ${JSON.stringify(res.headers.get('cache-control'))}`
+			: `sha384-${createHash('sha384').update(body).digest('base64')}` !== integrity ? 'not the bytes its integrity hash names' : null);
 }
 await check('robots.txt', '/robots.txt', (res, body) =>
 	res.status !== 200 ? `status ${res.status}` : !/Disallow: \//.test(body) ? 'does not block crawlers' : null);
@@ -72,6 +89,7 @@ if (BASE === 'https://rollovereasy.org') {
 	skipped.push('the http and www redirects and HSTS (rollovereasy.org only)');
 }
 await check('unknown API path', '/api/no-such-route', status(404));
+await check('broken escape in an episode ID', '/api/episode/%C0%AF', status(404));
 await check('unknown page', '/no-such-page', status(404));
 await check('admin API without password', '/api/admin/unreviewed', status(401));
 await check('upload log without password', '/api/admin/ingest-log', status(401));
@@ -96,10 +114,24 @@ if (latest) {
 	await check('/api/episode/{id}/places', `/api/episode/${latest}/places`, (res, body) =>
 		res.status !== 200 ? `status ${res.status}` : !Array.isArray(body?.places) ? 'no places array' : null);
 	await check('audio (range request)', `/audio/${latest}.m4a`, res =>
-		res.status !== 206 ? `status ${res.status}, expected 206` : null, { headers: { Range: 'bytes=0-99' } });
+		res.status !== 206 ? `status ${res.status}, expected 206`
+			: !res.headers.get('etag') ? 'no ETag' : null, { headers: { Range: 'bytes=0-99' } });
 }
+// The newest show may still play from its MP3 (until repair-missing-m4a.js); the oldest is an .m4a
+const oldest = list?.episodes?.[0]?.id;
+if (oldest) {
+	await check('audio .m4a (oldest show)', `/audio/${oldest}.m4a`, res =>
+		res.status !== 206 ? `status ${res.status}, expected 206`
+			: res.headers.get('content-type') !== 'audio/mp4' ? `content-type ${res.headers.get('content-type')}, expected audio/mp4`
+			: !/^bytes 0-99\/\d+$/.test(res.headers.get('content-range') || '') ? `Content-Range ${res.headers.get('content-range')}`
+			: !res.headers.get('etag') || !res.headers.get('last-modified') ? 'no ETag or Last-Modified' : null, { headers: { Range: 'bytes=0-99' } });
+}
+// Today in San Francisco, with shows (from a nearby day when none aired on this one)
+const pacificToday = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles', month: '2-digit', day: '2-digit' }).format(new Date());
 await check('/api/on-this-day', '/api/on-this-day', (res, body) =>
-	res.status !== 200 ? `status ${res.status}` : !Array.isArray(body?.episodes) ? 'no episodes array' : null);
+	res.status !== 200 ? `status ${res.status}`
+		: body?.date !== pacificToday ? `date ${body?.date}, expected today's Pacific date ${pacificToday}`
+		: !(body.episodes?.length >= 1) ? 'no episodes' : null);
 // No show has aired on January 2, so the section falls back to a nearby day with
 // one (12-31 since the only January 1 show, 2015's all-music one, came off the site).
 const NEAR_JAN_2 = ['12-29', '12-30', '12-31', '01-01', '01-03', '01-04', '01-05'];
@@ -113,7 +145,7 @@ await check('keyword search without password', '/api/search?q=stairway', status(
 await check('semantic search without password', '/api/semantic-search?q=coffee', status(401));
 // Keyword search ranks episodes by matching lines: the 2016 staircase show says "stairway" most.
 // The password only goes over https, or to this machine
-const PASSWORD_SAFE = BASE.startsWith('https://') || /^http:\/\/([\w-]+\.)*localhost(:\d+)?$|^http:\/\/127\.0\.0\.1(:\d+)?$/.test(BASE);
+const PASSWORD_SAFE = BASE === 'https://rollovereasy.org' || /^http:\/\/([\w-]+\.)*localhost(:\d+)?$|^http:\/\/127\.0\.0\.1(:\d+)?$/.test(BASE);
 if (process.env.ADMIN_PASSWORD && PASSWORD_SAFE) {
 	await check('/api/search', '/api/search?q=stairway', (res, body) => {
 		if (res.status !== 200) return `status ${res.status}`;
@@ -122,7 +154,7 @@ if (process.env.ADMIN_PASSWORD && PASSWORD_SAFE) {
 		return body.has_more === true ? null : `has_more is ${body.has_more}, expected true`;
 	}, { headers: { 'X-Admin-Password': process.env.ADMIN_PASSWORD } });
 } else {
-	skipped.push(process.env.ADMIN_PASSWORD ? 'search ranking (not sending the password over plain http)' : 'search ranking (set ADMIN_PASSWORD to run it)');
+	skipped.push(process.env.ADMIN_PASSWORD ? 'search ranking (the password only goes to rollovereasy.org or this machine)' : 'search ranking (set ADMIN_PASSWORD to run it)');
 }
 await check('/api/guests', '/api/guests', (res, body) =>
 	res.status !== 200 ? `status ${res.status}` : !Array.isArray(body?.guests) || body.guests.length === 0 ? 'no guests' : null);

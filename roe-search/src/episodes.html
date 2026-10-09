@@ -6,8 +6,8 @@
 <title>Episodes - Roll Over Easy</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>☕</text></svg>">
 <script>if ('serviceWorker' in navigator) navigator.serviceWorker.getRegistrations().then(rs => rs.forEach(r => r.unregister())); // none of these pages uses one; clear any that another local project left on this origin</script>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
+<link rel="stylesheet" href="/vendor/leaflet-1.9.4.css" integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H">
+<script defer src="/vendor/leaflet-1.9.4.js" integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH"></script>
 <style>
 	* { box-sizing: border-box; margin: 0; padding: 0; }
 	body {
@@ -120,13 +120,23 @@
 		height: 200px;
 		border-radius: 8px;
 		border: 1px solid #e0e0e0;
+		background: #eef0f1; /* until its map loads */
 	}
 	.episode-mini-map .leaflet-control-zoom { display: none; }
+	/* Three lines whatever it says ("12 places mentioned on this program", then their
+	   names), so a card doesn't grow as its map loads and move the page under a shared link. */
 	.map-places-label {
 		font-size: 0.75rem;
+		line-height: 1.5;
 		color: #6b6b6b;
 		text-align: center;
 		margin-top: 4px;
+		height: 4.5em;
+		overflow: hidden;
+		display: -webkit-box;
+		-webkit-box-orient: vertical;
+		-webkit-line-clamp: 3;
+		line-clamp: 3;
 	}
 
 	/* Episode action buttons */
@@ -157,6 +167,7 @@
 	.ep-btn.copied { background: #e8f5e9; color: #2e7d32; }
 
 	/* Highlighted episode from share link */
+	.episode { scroll-margin-top: 16px; } /* where a shared link's card lands, when it's too tall to centre */
 	.episode.highlighted {
 		box-shadow: 0 0 0 2px #e85d04, 0 2px 8px rgba(0,0,0,0.06);
 	}
@@ -278,6 +289,10 @@
 		white-space: nowrap;
 		flex-shrink: 0;
 	}
+	/* While the audio waits for data, the time says so, in the same space (the seek bar keeps its width) */
+	.player-time { position: relative; min-width: 10ch; }
+	.player-bar.buffering .player-time { color: transparent; }
+	.player-bar.buffering .player-time::after { content: 'Buffering…'; position: absolute; inset: 0; text-align: center; color: rgba(255,255,255,0.6); }
 
 	@media (max-width: 768px) {
 		.hero { padding: 2rem 1.5rem; }
@@ -287,7 +302,7 @@
 		.episode-map-wrap { width: 100%; }
 		.episode-mini-map { width: 100%; height: 200px; }
 	}
-	/* "Reduce motion": no spinning, sliding or pulsing (the share-link scroll checks it too). */
+	/* "Reduce motion": no spinning, sliding or pulsing. */
 	@media (prefers-reduced-motion: reduce) {
 		*, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 	}
@@ -296,7 +311,7 @@
 <body>
 
 <div class="hero">
-	<img class="hero-image" src="/ferry-building-v1.webp" alt="" role="presentation">
+	<img class="hero-image" src="/ferry-building-v2.webp" alt="" role="presentation">
 	<div class="hero-content">
 		<h1><a href="/">Roll Over Easy</a></h1>
 		<div class="tagline">All Episodes</div>
@@ -431,7 +446,7 @@ async function loadEpisodes() {
 
 			if (ep.place_count > 0) {
 				html += '<div class="episode-map-wrap">';
-				html += '<div class="episode-mini-map" id="ep-map-' + i + '"></div>';
+				html += '<div class="episode-mini-map" id="ep-map-' + i + '" data-episode="' + escapeAttr(ep.id) + '"></div>';
 				html += '<div class="map-places-label" id="ep-map-label-' + i + '">' + ep.place_count + ' place' + (ep.place_count !== 1 ? 's' : '') + ' mentioned on this program</div>';
 				html += '</div>';
 			}
@@ -440,27 +455,7 @@ async function loadEpisodes() {
 
 			div.innerHTML = html;
 
-			if (ep.place_count > 0) {
-				const epId = ep.id;
-				const container = div.querySelector('#ep-map-' + i);
-				const label = div.querySelector('#ep-map-label-' + i);
-				const observer = new IntersectionObserver((entries) => {
-					entries.forEach(async (entry) => {
-						if (entry.isIntersecting) {
-							observer.unobserve(container);
-							try {
-								const res = await fetch('/api/episode/' + encodeURIComponent(epId) + '/places');
-								const pdata = await res.json();
-								if (pdata.places && pdata.places.length > 0) {
-									initMiniMap(container, pdata.places);
-									updateMapLabel(label, pdata.places);
-								}
-							} catch (err) {}
-						}
-					});
-				}, { rootMargin: '200px' });
-				observer.observe(container);
-			}
+			if (ep.place_count > 0) mapObserver.observe(div.querySelector('#ep-map-' + i));
 
 			episodesEl.appendChild(div);
 		}
@@ -468,6 +463,42 @@ async function loadEpisodes() {
 		statusEl.textContent = "Couldn't load episodes — try again.";
 		console.error(err);
 	}
+}
+
+// Leaflet loads deferred, so it runs after this script: the mini-maps wait for it, the list doesn't
+const leafletReady = new Promise(resolve => {
+	if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', resolve, { once: true });
+	else resolve();
+});
+
+// A card's map loads once the card has been near the screen for a quarter of a
+// second, so a fast scroll, or the jump to a shared link, loads only the cards it stops at.
+const MAP_DELAY_MS = 250;
+const mapTimers = new Map();
+const mapObserver = new IntersectionObserver((entries) => {
+	for (const entry of entries) {
+		const container = entry.target;
+		clearTimeout(mapTimers.get(container));
+		mapTimers.delete(container);
+		if (!entry.isIntersecting) continue;
+		mapTimers.set(container, setTimeout(() => {
+			mapTimers.delete(container);
+			mapObserver.unobserve(container);
+			loadCardMap(container);
+		}, MAP_DELAY_MS));
+	}
+}, { rootMargin: '200px' });
+
+async function loadCardMap(container) {
+	try {
+		const res = await fetch('/api/episode/' + encodeURIComponent(container.dataset.episode) + '/places');
+		const pdata = await res.json();
+		if (!pdata.places || pdata.places.length === 0) return;
+		await leafletReady;
+		if (typeof L === 'undefined') return; // it didn't load: no map
+		initMiniMap(container, pdata.places);
+		updateMapLabel(container.nextElementSibling, pdata.places);
+	} catch (err) {}
 }
 
 function escapeHtml(str) {
@@ -492,8 +523,12 @@ function updateMapLabel(label, places) {
 	label.innerHTML = text;
 }
 
+// A picture of where the show went, not a map to explore: a swipe that starts on
+// it scrolls the page, and it takes no keyboard focus. Its places still name themselves on a tap.
 function initMiniMap(container, places) {
-	const map = L.map(container, { scrollWheelZoom: false, zoomControl: false });
+	const map = L.map(container, {
+		dragging: false, touchZoom: false, doubleClickZoom: false, scrollWheelZoom: false, boxZoom: false, keyboard: false, zoomControl: false,
+	});
 	L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}', {
 		attribution: 'Tiles &copy; Esri',
 		maxNativeZoom: 16,
@@ -599,10 +634,20 @@ audioPlayer.addEventListener('error', () => {
 	if (activeBtn) { activeBtn.classList.remove('playing'); activeBtn = null; }
 	playerTitle.textContent = "Couldn't load the audio — try again.";
 });
+// Waiting for data mid-play (a slow connection, or a seek): "Buffering…" where the time is
+const showBuffering = () => { if (!audioPlayer.paused && audioPlayer.readyState < 3) playerBar.classList.add('buffering'); };
+audioPlayer.addEventListener('waiting', showBuffering);
+audioPlayer.addEventListener('stalled', showBuffering);
+for (const event of ['playing', 'pause', 'ended', 'error', 'emptied']) {
+	audioPlayer.addEventListener(event, () => playerBar.classList.remove('buffering'));
+}
 
 playPauseBtn.addEventListener('click', () => {
-	// After a failed load, play tries it again.
-	if (audioPlayer.error && lastPlay) return playEpisode(...lastPlay);
+	// After a failed load, play tries it again, from where it stopped (or was moved to since)
+	if (audioPlayer.error && lastPlay) {
+		if (audioPlayer.currentTime > 0) lastPlay[1] = Math.floor(audioPlayer.currentTime);
+		return playEpisode(...lastPlay);
+	}
 	if (audioPlayer.paused) audioPlayer.play().catch(() => {});
 	else audioPlayer.pause();
 });
@@ -684,15 +729,16 @@ episodesEl.addEventListener('click', (e) => {
 	playEpisode(audioUrl, start, title);
 });
 
-// Scroll to linked episode after load
+// Jump to a shared link's episode after load: at once, not a smooth scroll past
+// hundreds of cards (which loaded each one's map and could land off target).
 function scrollToLinkedEpisode() {
 	const hash = location.hash.slice(1);
 	if (!hash) return;
 	const el = document.getElementById(hash);
 	if (!el) return;
 	el.classList.add('highlighted');
-	const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-	el.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'center' });
+	// Centred, unless it's taller than the screen (most are on phones): then its top, title and all
+	el.scrollIntoView({ block: el.offsetHeight > innerHeight - 32 ? 'start' : 'center' });
 	setTimeout(() => { el.classList.remove('highlighted'); el.classList.add('highlight-fade'); }, 2000);
 }
 

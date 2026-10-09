@@ -63,6 +63,9 @@ CREATE TABLE IF NOT EXISTS place_mentions (
     analyzed_at TEXT,
     PRIMARY KEY (place_id, episode_id)
 );
+-- One episode's places (the mini-maps, /api/episodes' counts): without it every
+-- such query read the whole table (11,748 rows for 13 places).
+CREATE INDEX IF NOT EXISTS idx_place_mentions_episode ON place_mentions(episode_id);
 
 CREATE TABLE IF NOT EXISTS place_narratives (
     place_id INTEGER PRIMARY KEY REFERENCES places(id),

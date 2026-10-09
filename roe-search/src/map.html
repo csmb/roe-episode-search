@@ -6,9 +6,9 @@
 	<title>Map - Roll Over Easy</title>
 	<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>☕</text></svg>">
 	<script>if ('serviceWorker' in navigator) navigator.serviceWorker.getRegistrations().then(rs => rs.forEach(r => r.unregister())); // none of these pages uses one; clear any that another local project left on this origin</script>
-	<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous" />
-	<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
-	<script src="https://unpkg.com/fuse.js@7.0.0/dist/fuse.min.js" integrity="sha384-PCSoOZTpbkikBEtd/+uV3WNdc676i9KUf01KOA8CnJotvlx8rRrETbDuwdjqTYvt" crossorigin="anonymous"></script>
+	<link rel="stylesheet" href="/vendor/leaflet-1.9.4.css" integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" />
+	<script defer src="/vendor/leaflet-1.9.4.js" integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH"></script>
+	<script defer src="/vendor/fuse-7.0.0.min.js" integrity="sha384-PCSoOZTpbkikBEtd/+uV3WNdc676i9KUf01KOA8CnJotvlx8rRrETbDuwdjqTYvt"></script>
 	<style>
 		* { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -224,7 +224,8 @@
 		  background: #fff; border-radius: 12px 12px 0 0;
 		  box-shadow: 0 -2px 16px rgba(0,0,0,0.25);
 		  padding: 16px 18px calc(16px + env(safe-area-inset-bottom));
-		  max-height: 75vh; overflow-y: auto;
+		  max-height: 75vh;
+		  max-height: min(75vh, calc(100dvh - 280px)); overflow-y: auto; /* short phones keep some map above it */
 		  transform: translateY(100%); transition: transform 0.25s ease, visibility 0s 0.25s;
 		  visibility: hidden; /* closed: out of the tab order, once it has slid away */
 		}
@@ -246,7 +247,7 @@
 </head>
 <body>
 	<div class="hero">
-		<img class="hero-image" src="/ferry-building-v1.webp" alt="" role="presentation">
+		<img class="hero-image" src="/ferry-building-v2.webp" alt="" role="presentation">
 		<div class="hero-content">
 			<h1><a href="/">Roll Over Easy</a></h1>
 			<div class="tagline">SF Places Map · <span id="place-count">Loading…</span></div>
@@ -261,7 +262,14 @@
 	  <div id="pd-sheet-body"></div>
 	</div>
 
-	<script>
+	<!-- A module runs after the deferred Leaflet and Fuse above, so the page draws before they arrive -->
+	<script type="module">
+		if (typeof L === 'undefined' || typeof Fuse === 'undefined') {
+			document.getElementById('loading').textContent = "Couldn't load the map. Reload the page to try again.";
+			document.getElementById('place-count').textContent = 'places unavailable';
+			throw new Error('Leaflet or Fuse did not load');
+		}
+
 		const SearchControl = L.Control.extend({
 			options: { position: 'topleft' },
 			onAdd() {
@@ -302,11 +310,34 @@
 		}
 
 		// Search results and ?place= links open a place the same way: the marker's click
-		// handler (bottom sheet on phones, detail popup on desktop).
+		// handler (bottom sheet on phones, detail popup on desktop). On phones the sheet
+		// covers the bottom of the map, so the place is centred in the strip above it
+		// once the sheet has its content (openPlaceDetail).
+		let centreOnOpen = null;
 		function openPlace(circle) {
-			if (reducedMotion.matches) map.setView(circle.getLatLng(), 17, { animate: false });
-			else map.flyTo(circle.getLatLng(), 17, { duration: 0.6 });
-			circle.fire('click');
+			if (isMobile()) {
+				centreOnOpen = { name: circle.placeName, latlng: circle.getLatLng() };
+				circle.fire('click');
+			} else {
+				// The popup opens once the map has arrived, so its own auto-pan can make room
+				// for it under the header (set first: setView without animation ends at once)
+				map.once('moveend', () => circle.fire('click'));
+				flyToPlace(circle.getLatLng());
+			}
+		}
+		function flyToPlace(latlng) {
+			if (reducedMotion.matches) map.setView(latlng, 17, { animate: false });
+			else map.flyTo(latlng, 17, { duration: 0.6 });
+		}
+		function centreAboveSheet(latlng) {
+			const zoom = 17;
+			const box = map.getContainer().getBoundingClientRect();
+			// The strip of map left to see: below the search box, above the sheet
+			const top = Math.max(box.top, document.querySelector('.map-search')?.getBoundingClientRect().bottom ?? box.top);
+			const bottom = Math.max(top + 40, Math.min(box.bottom, window.innerHeight - pdSheet.offsetHeight));
+			// The map's centre sits this far below the place, which then sits mid-way down the strip
+			const shift = box.top + box.height / 2 - (top + bottom) / 2;
+			flyToPlace(map.unproject(map.project(latlng, zoom).add([0, shift]), zoom));
 		}
 
 		function selectResult(name, input, list) {
@@ -474,6 +505,8 @@
 		  resetActiveDetailFlag = typeof resetFlag === 'function' ? resetFlag : null;
 		  lastDetailName = place.name;
 		  setPlaceUrl(place.name);
+		  const centre = mobile && centreOnOpen?.name === place.name ? centreOnOpen.latlng : null;
+		  centreOnOpen = null;
 		  const loadingHtml = `<div class="place-detail"><h3>${escapeHtml(place.name)}</h3>` +
 		    `<div class="pd-loading">Loading insights…</div></div>`;
 
@@ -505,6 +538,7 @@
 
 		  if (mobile) {
 		    pdSheetBody.innerHTML = html;
+		    if (centre) centreAboveSheet(centre);
 		  } else {
 		    circle.setPopupContent(html);
 		  }
@@ -581,6 +615,7 @@
 					weight: 1.5,
 				}).addTo(map);
 
+				circle.placeName = place.name;
 				markersByName.set(place.name, circle);
 
 				// Desktop: hover shows the summary popup, click opens the detail.

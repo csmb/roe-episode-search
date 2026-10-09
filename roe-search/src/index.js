@@ -3,13 +3,17 @@ import EPISODES_HTML from './episodes.html';
 import GUESTS_HTML from './guests.html';
 import ADMIN_HTML from './admin.html';
 import MAP_HTML from './map.html';
-import FERRY_BUILDING_WEBP from './ferry-building-v1.webp';
+import FERRY_BUILDING_WEBP from './ferry-building-v2.webp';
+import LEAFLET_JS from './vendor/leaflet-1.9.4.js';
+import LEAFLET_CSS from './vendor/leaflet-1.9.4.css';
+import FUSE_JS from './vendor/fuse-7.0.0.min.js';
 import { HOST_NAMES } from '../../roe-pipeline/src/hosts.js';
+import { decodePathPart, ifRangeMatches, parseRange, rangeBounds, rateLimitKey } from './http.js';
 
 // ── Rate limiting ─────────────────────────────────────────────────────
 // Per-IP budgets, counted by Cloudflare's rate-limiting bindings ("ratelimits"
 // in wrangler.jsonc, which also sets their sizes), so every copy of the Worker
-// draws on the same count. Cloudflare counts per location and may let a few
+// draws on the same count. An IPv6 client counts as its /64 (rateLimitKey). Cloudflare counts per location and may let a few
 // extra through: this slows one client hammering the site; it isn't exact
 // accounting.
 //
@@ -120,7 +124,7 @@ async function timingSafeEqual(a, b) {
 }
 
 // ── Admin password ────────────────────────────────────────────────────
-// Wrong passwords are counted per IP (ADMIN_GUESS_LIMITER: 5 a minute). Past
+// Wrong passwords are counted per IP, an IPv6 client per /64 (ADMIN_GUESS_LIMITER: 5 a minute). Past
 // that, the client is shut out of every password route for ADMIN_BLOCK_SEC,
 // the right password included: counting only the misses would let a guesser
 // carry on regardless and just wait for a 200. The block is kept in this
@@ -206,7 +210,8 @@ export default {
 
 async function handleRequest(request, env) {
 	const url = new URL(request.url);
-	const clientIP = request.headers.get('CF-Connecting-IP') || 'unknown';
+	// What the rate limits and the admin block count by: the address, or an IPv6 address's /64
+	const clientIP = rateLimitKey(request.headers.get('CF-Connecting-IP') || 'unknown');
 
 	const redirect = canonicalRedirect(url);
 	if (redirect) return redirect;
@@ -273,12 +278,11 @@ async function handleRequest(request, env) {
 	}
 	if (url.pathname.startsWith('/api/episode/')) {
 		const rest = url.pathname.slice('/api/episode/'.length);
-		if (rest.endsWith('/places')) {
-			const episodeId = decodeURIComponent(rest.slice(0, -'/places'.length));
-			return handleEpisodePlaces(episodeId, env, request);
-		}
-		const episodeId = decodeURIComponent(rest);
-		return handleEpisodeById(episodeId, env, request);
+		const places = rest.endsWith('/places');
+		// A broken percent-escape (bots send "%C0%AF") names no episode
+		const episodeId = decodePathPart(places ? rest.slice(0, -'/places'.length) : rest);
+		if (episodeId === null) return json({ error: 'Episode not found' }, 404, request);
+		return places ? handleEpisodePlaces(episodeId, env, request) : handleEpisodeById(episodeId, env, request);
 	}
 	if (url.pathname === '/episodes') {
 		return new Response(EPISODES_HTML, { headers: HTML_HEADERS });
@@ -289,12 +293,15 @@ async function handleRequest(request, env) {
 	if (url.pathname.startsWith('/audio/')) {
 		return handleAudio(request, url, env);
 	}
-	// The header photo on every page. Cached for good, so a new picture needs a new
-	// name: bump the -v1 in the file, here and in the five pages.
-	if (url.pathname === '/ferry-building-v1.webp') {
-		return new Response(FERRY_BUILDING_WEBP, {
+	// The header photo on every page (800 px, faint behind the title), and the map
+	// pages' Leaflet and Fuse, served from here rather than unpkg so a slow or
+	// failed CDN can't hold up or break a page. Cached for good, so a new version
+	// needs a new name: the file, here and in the pages that use it.
+	const asset = STATIC_FILES[url.pathname];
+	if (asset) {
+		return new Response(asset[0], {
 			headers: {
-				'Content-Type': 'image/webp',
+				'Content-Type': asset[1],
 				'Cache-Control': 'public, max-age=31536000, immutable',
 				'X-Content-Type-Options': 'nosniff',
 			},
@@ -316,6 +323,13 @@ async function handleRequest(request, env) {
 		headers: HTML_HEADERS,
 	});
 }
+
+const STATIC_FILES = {
+	'/ferry-building-v2.webp': [FERRY_BUILDING_WEBP, 'image/webp'],
+	'/vendor/leaflet-1.9.4.js': [LEAFLET_JS, 'text/javascript; charset=utf-8'],
+	'/vendor/leaflet-1.9.4.css': [LEAFLET_CSS, 'text/css; charset=utf-8'],
+	'/vendor/fuse-7.0.0.min.js': [FUSE_JS, 'text/javascript; charset=utf-8'],
+};
 
 function sanitizeFtsQuery(input) {
 	const terms = input
@@ -656,95 +670,86 @@ async function handleAudio(request, url, env) {
 		return new Response('Not found', { status: 404 });
 	}
 
-	const rangeHeader = request.headers.get('Range');
+	// bytes=START-END, bytes=START- and the last N bytes (bytes=-N); anything else gets the whole file
+	let range = parseRange(request.headers.get('Range'));
 
-	// Parse the Range header. Supports normal (bytes=START-END / bytes=START-)
-	// and suffix (bytes=-N, "last N bytes") forms. The old regex required a
-	// digit before the dash, so suffix ranges fell through to a full 200.
-	let r2Range = null;     // option passed to R2
-	let suffixLen = null;   // set when this is a suffix range
-	if (rangeHeader) {
-		const m = rangeHeader.match(/^bytes=(\d*)-(\d*)$/);
-		if (m) {
-			const start = m[1], end = m[2];
-			if (start === '' && end !== '') {
-				suffixLen = parseInt(end, 10);
-				if (suffixLen > 0) r2Range = { suffix: suffixLen };
-			} else if (start !== '') {
-				const offset = parseInt(start, 10);
-				r2Range = end !== ''
-					? { offset, length: parseInt(end, 10) - offset + 1 }
-					: { offset };
-			}
-		}
-	}
-
-	// Returns the R2 object, null if the key doesn't exist, or a 416 Response.
-	const fetchObject = async (k) => {
-		try {
-			return await env.AUDIO.get(k, r2Range ? { range: r2Range } : {});
-		} catch (err) {
-			// R2 throws on an unsatisfiable range (e.g. offset past EOF) — answer
-			// with 416 + the object size instead of a 500.
-			console.error('/audio: R2 get failed, answering 416 if the object exists', { key: k, range: r2Range }, err);
-			const head = await env.AUDIO.head(k);
-			if (!head) return null;
-			return new Response('Range Not Satisfiable', {
-				status: 416,
-				headers: { 'Content-Range': `bytes */${head.size}`, 'Accept-Ranges': 'bytes' },
-			});
-		}
-	};
-
-	let object = await fetchObject(key);
+	// The .m4a, or until scripts/repair-missing-m4a.js makes it, the raw MP3
+	// audio_file names: roe-pipeline can't convert audio, so a new show has only that.
+	let objectKey = key;
+	let object = await getAudio(env, key, range);
 	let isFallback = false;
 	if (!object) {
-		// Episodes ingested by the roe-pipeline Worker only have the raw MP3 in
-		// R2 (the Worker can't transcode); {id}.m4a arrives later via
-		// scripts/repair-missing-m4a.js. Until then, serve the raw MP3.
 		const rawKey = await rawMp3Key(key.slice(0, -'.m4a'.length), env);
 		if (rawKey) {
-			object = await fetchObject(rawKey);
+			objectKey = rawKey;
+			object = await getAudio(env, rawKey, range);
 			isFallback = true;
 		}
 	}
-
-	if (object instanceof Response) return object;
+	// A range past the end of the file: a 416, unless it came with If-Range, when
+	// the file has likely been replaced by a shorter one: the whole new one then
+	if (object instanceof Response) {
+		if (!request.headers.has('If-Range')) return object;
+		range = null;
+		object = await getAudio(env, objectKey, null);
+	}
 	if (!object) {
 		return new Response('Not found', { status: 404 });
+	}
+	// A range resuming bytes from another version of the file (an .m4a replaced
+	// since, or the MP3 before it): send the whole file instead.
+	if (range && !ifRangeMatches(request.headers.get('If-Range'), object.httpEtag, object.uploaded)) {
+		await object.body.cancel();
+		range = null;
+		object = await getAudio(env, objectKey, null);
+		if (!object) return new Response('Not found', { status: 404 });
 	}
 
 	const headers = new Headers();
 	headers.set('Content-Type', isFallback ? 'audio/mpeg' : 'audio/mp4');
 	headers.set('Accept-Ranges', 'bytes');
+	// Validators, so a browser can tell a replaced file from the one it has parts of
+	headers.set('ETag', object.httpEtag);
+	headers.set('Last-Modified', object.uploaded.toUTCString());
 	// Don't cache the fallback: once the m4a lands, byte ranges cached from
 	// the MP3 would be spliced into the m4a stream.
 	headers.set('Cache-Control', isFallback ? 'no-store' : 'public, max-age=86400');
 
-	if (r2Range) {
-		const size = object.size; // full object size, not the slice length
-		let offset, length;
-		if (suffixLen !== null) {
-			length = Math.min(suffixLen, size);
-			offset = size - length;
-		} else {
-			offset = r2Range.offset;
-			length = r2Range.length != null ? Math.min(r2Range.length, size - offset) : (size - offset);
+	if (range) {
+		const bounds = rangeBounds(range, object.size); // object.size: the whole file, not the slice
+		if (!bounds) {
+			await object.body.cancel();
+			return rangeNotSatisfiable(object.size);
 		}
-		if (offset >= size || length <= 0) {
-			return new Response('Range Not Satisfiable', {
-				status: 416,
-				headers: { 'Content-Range': `bytes */${size}`, 'Accept-Ranges': 'bytes' },
-			});
-		}
-		const end = offset + length - 1;
-		headers.set('Content-Range', `bytes ${offset}-${end}/${size}`);
-		headers.set('Content-Length', String(length));
+		headers.set('Content-Range', `bytes ${bounds.start}-${bounds.end}/${object.size}`);
+		headers.set('Content-Length', String(bounds.length));
 		return new Response(object.body, { status: 206, headers });
 	}
 
 	headers.set('Content-Length', String(object.size));
 	return new Response(object.body, { status: 200, headers });
+}
+
+const rangeNotSatisfiable = (size) => new Response('Range Not Satisfiable', {
+	status: 416,
+	headers: { 'Content-Range': `bytes */${size}`, 'Accept-Ranges': 'bytes' },
+});
+
+// One audio file from R2 (a range of it if asked): the object, null if there is
+// no such file, or a 416 for a range that starts past its end. R2 refuses a range
+// that runs past the end by throwing, so it is asked again for the part that
+// exists. Any other failure (R2 down) is thrown on, for the router's 500.
+async function getAudio(env, key, range) {
+	try {
+		return await env.AUDIO.get(key, range ? { range } : {});
+	} catch (err) {
+		if (!range) throw err;
+		const head = await env.AUDIO.head(key);
+		if (!head) return null;
+		const bounds = rangeBounds(range, head.size);
+		if (!bounds) return rangeNotSatisfiable(head.size);
+		return env.AUDIO.get(key, { range: { offset: bounds.start, length: bounds.length } });
+	}
 }
 
 // R2 key of the episode's raw MP3, taken from the audio_file URL the
