@@ -7,6 +7,11 @@
   // that zone, such as Cloudflare Access on /admin.
   "workers_dev": false,
   "preview_urls": false,
+  // The custom domains (rollovereasy.org, and www.rollovereasy.org, which only
+  // redirects to it: canonicalRedirect in src/index.js) are attached in the
+  // dashboard, not listed here as "routes": with routes, `wrangler dev` makes every
+  // local request look like http://rollovereasy.org/…, which the redirect would
+  // send to the live site.
   "d1_databases": [
     {
       "binding": "DB",

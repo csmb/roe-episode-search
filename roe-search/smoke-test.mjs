@@ -4,8 +4,9 @@
  * checks the fields they read, so a deploy that silently drops a route (as
  * 34357ed did in April) fails loudly. A few checks also pin behaviour: search
  * ranking, the On This Day fallback, /latest skipping unfinished episodes, the
- * header photo the pages use and the map's cache header. Read-only; 22 requests,
- * 23 with ADMIN_PASSWORD set (search ranking needs the admin password).
+ * header photo the pages use, the map's cache header, and the http and www
+ * redirects with HSTS. Read-only; 25 requests (22 against another address),
+ * and one more with ADMIN_PASSWORD set (search ranking needs the admin password).
  *
  *   npm run smoke                 # https://rollovereasy.org
  *   node smoke-test.mjs http://roe.localhost:8791
@@ -51,6 +52,25 @@ else {
 }
 await check('robots.txt', '/robots.txt', (res, body) =>
 	res.status !== 200 ? `status ${res.status}` : !/Disallow: \//.test(body) ? 'does not block crawlers' : null);
+// Only rollovereasy.org answers http and www (with a redirect to https://rollovereasy.org) and sends HSTS.
+if (BASE === 'https://rollovereasy.org') {
+	for (const [name, from] of [['http redirects to https', 'http://rollovereasy.org/episodes?x=1'], ['www redirects to the apex', 'https://www.rollovereasy.org/episodes?x=1']]) {
+		try {
+			const res = await fetch(from, { redirect: 'manual' });
+			const to = res.headers.get('location');
+			if (res.status === 301 && to === 'https://rollovereasy.org/episodes?x=1') passed++;
+			else failures.push(`${name}: status ${res.status}, Location ${to}`);
+		} catch (err) {
+			failures.push(`${name}: ${err.cause?.code ?? err.message}`);
+		}
+	}
+	await check('HSTS on pages', '/', res => {
+		const age = Number(/max-age=(\d+)/.exec(res.headers.get('strict-transport-security') || '')?.[1]);
+		return age >= 15552000 ? null : `Strict-Transport-Security is ${JSON.stringify(res.headers.get('strict-transport-security'))}`;
+	}, { method: 'HEAD' });
+} else {
+	skipped.push('the http and www redirects and HSTS (rollovereasy.org only)');
+}
 await check('unknown API path', '/api/no-such-route', status(404));
 await check('unknown page', '/no-such-page', status(404));
 await check('admin API without password', '/api/admin/unreviewed', status(401));
@@ -92,7 +112,9 @@ await check('/api/on-this-day fallback', '/api/on-this-day?date=01-02', (res, bo
 await check('keyword search without password', '/api/search?q=stairway', status(401));
 await check('semantic search without password', '/api/semantic-search?q=coffee', status(401));
 // Keyword search ranks episodes by matching lines: the 2016 staircase show says "stairway" most.
-if (process.env.ADMIN_PASSWORD) {
+// The password only goes over https, or to this machine
+const PASSWORD_SAFE = BASE.startsWith('https://') || /^http:\/\/([\w-]+\.)*localhost(:\d+)?$|^http:\/\/127\.0\.0\.1(:\d+)?$/.test(BASE);
+if (process.env.ADMIN_PASSWORD && PASSWORD_SAFE) {
 	await check('/api/search', '/api/search?q=stairway', (res, body) => {
 		if (res.status !== 200) return `status ${res.status}`;
 		const first = body?.results?.[0]?.episode_id;
@@ -100,7 +122,7 @@ if (process.env.ADMIN_PASSWORD) {
 		return body.has_more === true ? null : `has_more is ${body.has_more}, expected true`;
 	}, { headers: { 'X-Admin-Password': process.env.ADMIN_PASSWORD } });
 } else {
-	skipped.push('search ranking (set ADMIN_PASSWORD to run it)');
+	skipped.push(process.env.ADMIN_PASSWORD ? 'search ranking (not sending the password over plain http)' : 'search ranking (set ADMIN_PASSWORD to run it)');
 }
 await check('/api/guests', '/api/guests', (res, body) =>
 	res.status !== 200 ? `status ${res.status}` : !Array.isArray(body?.guests) || body.guests.length === 0 ? 'no guests' : null);

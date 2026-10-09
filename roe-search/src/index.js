@@ -67,7 +67,22 @@ const HTML_HEADERS = {
 	'X-Content-Type-Options': 'nosniff',
 	'X-Frame-Options': 'DENY',
 	'Referrer-Policy': 'strict-origin-when-cross-origin',
+	// Browsers that have seen the site use https only, for 180 days (subdomains
+	// left out: foggy.rollovereasy.org is another project). Ignored over http.
+	'Strict-Transport-Security': 'max-age=15552000',
 };
+
+// The one address the site lives at. Plain http and www.rollovereasy.org get a
+// permanent redirect there, so the admin password never crosses the network
+// unencrypted and www works. Other hosts (roe.localhost in development) are left alone.
+const CANONICAL_HOST = 'rollovereasy.org';
+
+function canonicalRedirect(url) {
+	const host = url.hostname.replace(/\.$/, ''); // "rollovereasy.org." is the same name
+	const www = host === `www.${CANONICAL_HOST}`;
+	if (!www && !(host === CANONICAL_HOST && (url.protocol === 'http:' || host !== url.hostname))) return null;
+	return Response.redirect(`https://${CANONICAL_HOST}${url.pathname}${url.search}`, 301);
+}
 
 // Deliberately unchanged for cross-site consumers. /api/episodes/latest sets its
 // own Access-Control-Allow-Origin: * instead of adding callers here, because
@@ -192,6 +207,9 @@ export default {
 async function handleRequest(request, env) {
 	const url = new URL(request.url);
 	const clientIP = request.headers.get('CF-Connecting-IP') || 'unknown';
+
+	const redirect = canonicalRedirect(url);
+	if (redirect) return redirect;
 
 	// CORS preflight for cross-origin API requests
 	if (request.method === 'OPTIONS') {
