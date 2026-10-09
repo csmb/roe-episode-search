@@ -106,15 +106,17 @@
 	.uploads-list { display: grid; gap: 8px; }
 	.upload-row { display: grid; grid-template-columns: 9.5rem minmax(0, 1fr); gap: 2px 14px; padding: 10px 12px; border: 1px solid #e0e0e0; border-radius: 8px; background: #fff; }
 	.upload-row.problem { border-color: #e2b07a; background: #fffaf3; }
-	.upload-when { color: #777; font-size: 0.85rem; font-variant-numeric: tabular-nums; }
+	.upload-when { color: #666; font-size: 0.85rem; font-variant-numeric: tabular-nums; }
 	.upload-file { font-weight: 600; overflow-wrap: anywhere; }
 	.upload-detail { grid-column: 2; color: #555; font-size: 0.9rem; overflow-wrap: anywhere; }
-	.outcome { display: inline-block; font-size: 0.75rem; font-weight: 600; padding: 1px 8px; border-radius: 10px; margin-right: 8px; vertical-align: 1px; background: #e8f3ec; color: #1f6b3f; }
-	.outcome.skipped, .outcome.retrying { background: #fdeedd; color: #8a4500; }
-	.outcome.gave-up { background: #fde6e3; color: #a3271c; }
+	.outcome { display: inline-block; font-size: 0.75rem; font-weight: 600; padding: 1px 8px; border-radius: 10px; margin-right: 8px; vertical-align: 1px; background: #eef1f4; color: #3d4a57; }
+	.outcome.published { background: #e8f3ec; color: #1f6b3f; }
+	.outcome.skipped, .outcome.retrying, .outcome.waiting, .outcome.published-with-problems { background: #fdeedd; color: #8a4500; }
+	.outcome.gave-up, .outcome.failed { background: #fde6e3; color: #a3271c; }
 	@media (max-width: 560px) {
 		.upload-row { grid-template-columns: minmax(0, 1fr); }
 		.upload-detail { grid-column: 1; }
+		.upload-file .outcome { display: table; margin: 0 0 4px; }
 	}
 
 	/* Alpha bar */
@@ -623,7 +625,7 @@
 
 	<!-- Panel: Uploads -->
 	<div id="panel-uploads" style="display:none;">
-		<p class="uploads-intro">Each file uploaded for the pipeline, newest first, and what became of it. "Skipped" says why (a name it can't read, a second copy), "Retrying" means it couldn't start yet, and "Gave up" means every try failed: upload it again with a show-date name.</p>
+		<p class="uploads-intro">Each upload, newest first. When a show's run ends it gets a second row saying how it went, and what to do if anything went wrong. The number on the tab counts shows whose latest row needs a look.</p>
 		<div id="uploads-status" class="status"></div>
 		<div id="uploads-list" class="uploads-list"></div>
 	</div>
@@ -811,7 +813,8 @@ async function loadAndRender() {
 
 // ── Render: Uploads ────────────────────────────────────────────────────
 
-const UPLOAD_PROBLEMS = new Set(['skipped', 'retrying', 'gave up']);
+const UPLOAD_PROBLEMS = new Set(['skipped', 'retrying', 'gave up', 'failed', 'waiting', 'published with problems']);
+const OUTCOME_LABELS = { 'gave up': 'Gave up', waiting: 'Waiting for you', 'published with problems': 'Published with problems' };
 const PROBLEM_DAYS = 14; // the tab's badge counts problems this recent
 
 function renderUploads(uploads) {
@@ -819,7 +822,14 @@ function renderUploads(uploads) {
 	const status = document.getElementById('uploads-status');
 	const badge = document.getElementById('uploads-badge');
 	const since = Date.now() - PROBLEM_DAYS * 86400000;
-	const recentProblems = uploads.filter(u => UPLOAD_PROBLEMS.has(u.outcome) && Date.parse(u.at) >= since).length;
+	// A show counts once, by its newest row (rows come newest first): a run that
+	// failed and then went through is no longer a problem.
+	const latest = new Map();
+	for (const u of uploads) {
+		const show = /\d{4}-\d{2}-\d{2}/.exec(u.key)?.[0] ?? u.key;
+		if (!latest.has(show)) latest.set(show, u);
+	}
+	const recentProblems = [...latest.values()].filter(u => UPLOAD_PROBLEMS.has(u.outcome) && Date.parse(u.at) >= since).length;
 	badge.textContent = recentProblems;
 	badge.style.display = recentProblems > 0 ? '' : 'none';
 	status.textContent = uploads.length === 0
@@ -836,13 +846,13 @@ function renderUploads(uploads) {
 		file.className = 'upload-file';
 		const chip = document.createElement('span');
 		chip.className = 'outcome ' + String(u.outcome).replace(/\s+/g, '-');
-		chip.textContent = u.outcome === 'gave up' ? 'Gave up' : String(u.outcome).charAt(0).toUpperCase() + String(u.outcome).slice(1);
+		chip.textContent = OUTCOME_LABELS[u.outcome] ?? String(u.outcome).charAt(0).toUpperCase() + String(u.outcome).slice(1);
 		file.append(chip, document.createTextNode(u.key));
 		row.append(when, file);
 		if (u.detail) {
 			const detail = document.createElement('div');
 			detail.className = 'upload-detail';
-			detail.textContent = u.detail;
+			detail.textContent = u.detail.charAt(0).toUpperCase() + u.detail.slice(1);
 			row.append(detail);
 		}
 		return row;

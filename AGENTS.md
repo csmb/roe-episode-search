@@ -17,7 +17,8 @@ roe-episode-search/
 ├── roe-pipeline/              # Cloudflare Worker — serverless episode processing
 │   └── src/
 │       ├── index.js           # Queue consumer (+ its dead-letter queue) + /process and /status (bearer token)
-│       ├── ingest-log.js      # D1 ingest_log: what became of each upload (the admin page's Uploads tab)
+│       ├── ingest-log.js      # D1 ingest_log: what became of each upload and run (the admin page's Uploads tab)
+│       ├── notify.js          # The owner's notice when a run ends (NOTIFY_URL: an ntfy topic or a Slack webhook)
 │       ├── pipeline.js        # EpisodePipeline DO, one per show date: one step (or chunk) per alarm, retries, resume
 │       ├── parts.js           # Which files make the show: parts, copies, what to wait for
 │       ├── mp3-join.js        # Join a split show's parts into one MP3 in R2, with a new Xing header
@@ -50,6 +51,7 @@ roe-episode-search/
 │   ├── rewrite-summaries.js   # Rewrite only the summary text (repaired episodes): dry run, review file, --apply --yes
 │   ├── summary-engines.js     # Its summary-only prompt; GPT-4o-mini or a local model through Ollama
 │   ├── cleanup-places.js      # Remove false positive places from D1
+│   ├── prune-place-links.js   # Remove map links whose show never names the place (plan, then --apply --yes)
 │   ├── redo-places.js         # Redo one episode's places with roe-pipeline's code
 │   ├── delete-episode.js      # Back up, then remove an episode from D1 and Vectorize (--yes)
 │   ├── episode-backup.js      # Back up an episode (with restore SQL) before a delete or merge
@@ -290,8 +292,16 @@ network), and roe-pipeline's vitest covers `replaceEmbeddings`.
 ### Places on the map
 
 New episodes get their places from roe-pipeline's `extract-places` step, which only keeps
-names the transcript mentions. `scripts/redo-places.js <episode-id>` runs the same code for
-an existing episode. `scripts/cleanup-places.js` removes false positives from D1: its dry run
+names the transcript mentions (`mentionsPlace` in sentiment.js, which the quote picker uses too:
+whole words and no accents; "Dolores" counts for Dolores Park and "the Mission" for the Mission
+District, but not "Golden Gate Bridge" for Golden Gate Park, "Mission Street" for the Mission
+District or "Supermarket" for Market Street; a one-word short name that is an everyday word,
+like "market" or "king", needs its "Street" after it). `scripts/redo-places.js <episode-id>`
+runs the same code for an existing episode. `scripts/prune-place-links.js` applies the same
+check to every existing link: its plan (read-only) lists the links whose show never names the
+place in `transcripts/.backups/<date>-place-links-plan/` (plan.json, review.md), keeping any whose
+stored quote names it; `--apply <plan.json> --yes` removes what the list still holds, then places
+left with no link and their narratives, after a backup with `undo.sql`. `scripts/cleanup-places.js` removes false positives from D1: its dry run
 (GPT-4o-mini) writes `scripts/cleanup_report.json`, and `--apply` deletes exactly the places
 listed there (edit it first to keep any), refusing if one was renamed or removed since, after a
 backup with `undo.sql` in `transcripts/.backups/<date>-cleanup-places/`.
@@ -307,7 +317,7 @@ are edited in the admin page.
 | `schema.sql` | D1 schema — episodes, transcript_segments, transcript_fts (FTS5), episode_guests, places, place_mentions, place_narratives, ingest_log |
 | `roe-search/wrangler.jsonc` | Worker config — D1, R2, Vectorize, AI bindings, and the per-IP rate limits (`ratelimits`) |
 | `roe-pipeline/wrangler.jsonc` | Worker config — D1, R2, Vectorize, Durable Object, queue bindings |
-| `.env` | Secrets: CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN, OPENAI_API_KEY, PIPELINE_TOKEN (for roe-pipeline's /process and /status) |
+| `.env` | Secrets: CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN, OPENAI_API_KEY, PIPELINE_TOKEN (for roe-pipeline's /process and /status). roe-pipeline's optional NOTIFY_URL is a Worker secret only |
 | `r2-cors.json` | R2 CORS rules (GET/HEAD from all origins) |
 | `scripts/batch-progress.json` | Checkpoint/resume state for process-all.js |
 | `scripts/archive/README.md` | What the retired scripts were, and which must not be re-run |

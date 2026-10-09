@@ -15,6 +15,7 @@ export const TIMEOUT_MS = {
   sunrise: 10_000,
   geocode: 15_000,
   ai: 60_000,              // Workers AI embeddings and Vectorize upserts
+  notify: 10_000,          // the owner's notice (notify.js)
 };
 
 /** An error a retry can't fix, so the pipeline gives up on the step at once. */
@@ -35,7 +36,8 @@ const PERMANENT_STATUSES = new Set([400, 401, 403, 404, 413, 422]);
 
 /** Error for a failed HTTP response, e.g. "Whisper API error 500: …". */
 export function apiError(service, status, body) {
-  const message = `${service} error ${status}: ${String(body).slice(0, 500)}`;
+  // OpenAI echoes part of a rejected key ("sk-proj-AbC1***…wxyz"); the message reaches the upload log and notices
+  const message = `${service} error ${status}: ${String(body).replace(/sk-[\w*.-]+/g, 'sk-…').slice(0, 500)}`;
   const err = PERMANENT_STATUSES.has(status) ? new PermanentError(message) : new Error(message);
   err.status = status;
   return err;

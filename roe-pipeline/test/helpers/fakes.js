@@ -329,6 +329,11 @@ export function fakeFetch({
       call.kind = 'geocode';
       return Response.json(geocode(call));
     }
+    // The owner's notices (NOTIFY_URL): an ntfy topic in tests
+    if (call.url.startsWith('https://ntfy.example/')) {
+      Object.assign(call, { kind: 'notify', title: init.headers?.Title, body: String(init.body) });
+      return new Response('ok');
+    }
     throw new Error(`unexpected fetch: ${call.url}`);
   };
   fn.calls = calls;

@@ -153,6 +153,38 @@ describe('ingest log (N5)', () => {
     ]);
   });
 
+  it('records an upload the pipeline turns down as skipped, with its reason', async () => {
+    const answers = [
+      Response.json({ status: 'already_exists', episodeId: 'x' }),
+      Response.json({ error: 'Not in R2: Roll Over Easy 2026-10-01.mp3' }, { status: 404 }),
+      Response.json({ status: 'different_file', episodeId: 'x', error: 'The file changed after the episode was published; delete the episode to redo it' }, { status: 409 }),
+    ];
+    const env = { DB: fakeDb(), EPISODE_PIPELINE: { idFromName: n => n, get: () => ({ fetch: async () => answers.shift() }) } };
+    quiet();
+    const messages = [1, 2, 3].map(() => message('Roll Over Easy 2026-10-01.mp3'));
+    await worker.queue({ queue: 'roe-pipeline-queue', messages }, env);
+    vi.restoreAllMocks();
+    expect(messages.every(m => m.acked)).toBe(true);
+    expect(env.DB.rows.map(r => [r.args[3], r.args[4]])).toEqual([
+      ['skipped', expect.stringContaining('already on the site')],
+      ['skipped', 'Not in R2: Roll Over Easy 2026-10-01.mp3'],
+      ['skipped', expect.stringContaining('The file changed after the episode was published')],
+    ]);
+  });
+
+  it('asks the queue to try a failed hand-over again later each time', async () => {
+    const env = { DB: fakeDb(), EPISODE_PIPELINE: { idFromName: n => n, get: () => ({ fetch: async () => { throw new Error('overloaded'); } }) } };
+    quiet();
+    const delays = [];
+    for (const attempts of [1, 2, 4]) {
+      const m = message('Roll Over Easy 2026-10-01.mp3', attempts);
+      m.retry = opts => { delays.push(opts?.delaySeconds); };
+      await worker.queue({ queue: 'roe-pipeline-queue', messages: [m] }, env);
+    }
+    vi.restoreAllMocks();
+    expect(delays).toEqual([60, 120, 480]);
+  });
+
   it('never lets a failed log write stop an upload', async () => {
     const { env, calls } = envWith('s3cret');
     env.DB = { prepare: () => { throw new Error('no such table: ingest_log'); } };

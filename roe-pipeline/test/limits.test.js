@@ -10,6 +10,12 @@ describe('apiError', () => {
     for (const status of [400, 401, 403, 404, 413, 422]) expect(isPermanent(apiError('X', status, ''))).toBe(true);
     for (const status of [408, 429, 500, 502, 503]) expect(isPermanent(apiError('X', status, ''))).toBe(false);
     expect(apiError('Whisper API', 500, 'busy').message).toBe('Whisper API error 500: busy');
+  });
+  it('drops what OpenAI echoes of a rejected key, as the message reaches the upload log and notices', () => {
+    const body = '{"error":{"message":"Incorrect API key provided: sk-proj-AbC1****************************wxyz. You can find your API key at …"}}';
+    const message = apiError('OpenAI API', 401, body).message;
+    expect(message).not.toMatch(/sk-proj|wxyz/);
+    expect(message).toContain('Incorrect API key provided: sk-…');
     expect(isPermanent(new PermanentError('x'))).toBe(true);
     expect(isPermanent(new Error('x'))).toBe(false);
   });

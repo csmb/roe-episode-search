@@ -55,10 +55,12 @@
   // record it in D1's ingest_log (the admin page's Uploads tab) as given up.
   "queues": {
     "consumers": [
+      // A failed hand-over is retried after 1, 2, 4… minutes (src/index.js), so
+      // six retries span about an hour before the dead-letter queue.
       {
         "queue": "roe-pipeline-queue",
         "max_batch_size": 1,
-        "max_retries": 3,
+        "max_retries": 6,
         "dead_letter_queue": "roe-pipeline-dlq"
       },
       {

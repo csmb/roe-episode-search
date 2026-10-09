@@ -175,6 +175,89 @@ describe('a whole run', () => {
   });
 });
 
+describe('telling the owner how a run ended', () => {
+  const NOTIFY_URL = 'https://ntfy.example/roe-test';
+  const outcomes = t => t.env.DB.rows('SELECT key, outcome, detail FROM ingest_log ORDER BY id');
+  const notices = t => t.fetch.calls.filter(c => c.kind === 'notify');
+
+  it('logs a clean run as published, and sends the notice when NOTIFY_URL is set', async () => {
+    const t = setup({ env: { NOTIFY_URL } });
+    await t.process();
+    await drain(t);
+    expect(outcomes(t)).toEqual([{ key: KEY, outcome: 'published', detail: expect.stringContaining('“Stairway Streets!”') }]);
+    expect(outcomes(t)[0].detail).toContain('300 lines');
+    expect(notices(t)).toEqual([expect.objectContaining({ url: NOTIFY_URL, title: 'On the site: Roll Over Easy 2026-10-01', body: expect.stringContaining('Stairway Streets!') })]);
+  });
+
+  it('sends nothing without NOTIFY_URL', async () => {
+    const t = setup();
+    await t.process();
+    await drain(t);
+    expect(outcomes(t).map(r => r.outcome)).toEqual(['published']);
+    expect(notices(t)).toEqual([]);
+  });
+
+  it('says what went wrong in a published run: a skipped step, or a transcript that stops early', async () => {
+    const t = setup({ env: { NOTIFY_URL } });
+    t.env.VECTORIZE.upsert = async () => { throw new Error('Vectorize is down'); };
+    await t.process();
+    await drain(t);
+    expect(outcomes(t)).toEqual([{ key: KEY, outcome: 'published with problems', detail: expect.stringContaining('Search index skipped (') }]);
+    expect(notices(t)[0].title).toBe('On the site, with problems: Roll Over Easy 2026-10-01');
+
+    const short = setup({ fetch: { speech: sec => (sec < 40 * 60 ? `Line at ${Math.round(sec)} seconds.` : null) } });
+    await short.process();
+    await drain(short);
+    const [row] = outcomes(short);
+    expect(row.outcome).toBe('published with problems');
+    // The last line, at 39:55, runs to 40:05
+    expect(row.detail).toMatch(/^No transcript for 40:05–50:00\. The transcript stops at 40\.1 min of the 50\.0 min recording \(80%\)\. “Stairway Streets!” is on the site/);
+  });
+
+  it('logs a failed run with its reason', async () => {
+    const t = setup({ env: { NOTIFY_URL }, fetch: { speech: () => null } });
+    await t.process();
+    await drain(t);
+    expect(outcomes(t)).toEqual([{ key: KEY, outcome: 'failed', detail: expect.stringContaining('came back empty') }]);
+    expect(notices(t)[0].title).toBe('Failed: Roll Over Easy 2026-10-01');
+  });
+
+  it('logs a run that waits for the owner, with the reason', async () => {
+    const P1 = 'Roll Over Easy 2026-10-01 1.mp3';
+    const P3 = 'Roll Over Easy 2026-10-01 3.mp3';
+    // Two different recordings (identical ones would be a copy, left out)
+    const t = setup({ env: { NOTIFY_URL }, files: { [P1]: whisperAudio(10 * 60), [P3]: whisperAudio(10 * 60, { firstFrame: Math.round(20 * 60 / FRAME_SEC) }) } });
+    await t.process({ key: P1 });
+    await t.process({ key: P3 });
+    await drain(t);
+    expect(outcomes(t)).toEqual([{ key: P3, outcome: 'waiting', detail: expect.stringContaining('Waiting for part 2') }]);
+    expect(notices(t)[0].title).toBe('Waiting for you: Roll Over Easy 2026-10-01');
+  });
+
+  it('never lets a failed report undo a finished run', async () => {
+    const t = setup();
+    t.storage.get = async () => { throw new Error('storage is down'); };
+    await expect(t.pipeline.report('published', 'On the site.')).resolves.toBeUndefined();
+  });
+
+  it('escapes Slack’s markup in a notice, so a title can’t ping the channel', async () => {
+    const t = setup({ env: { NOTIFY_URL: 'https://hooks.slack.com/services/T0/B0/x' } });
+    const sent = [];
+    vi.stubGlobal('fetch', async (url, init) => { sent.push(JSON.parse(init.body)); return new Response('ok'); });
+    await t.pipeline.report('published', '“<!channel> Gratitude & <https://x.example|Tower>” is on the site.');
+    expect(sent).toEqual([{ text: '*On the site: Roll Over Easy*\n“&lt;!channel&gt; Gratitude &amp; &lt;https://x.example|Tower&gt;” is on the site.' }]);
+  });
+
+  it('files a show already on the site when its wait ends as skipped, not waiting', async () => {
+    const t = setup({ env: { NOTIFY_URL } });
+    await t.process();
+    t.env.DB.sqlite.exec(`INSERT INTO episodes (id, title) VALUES ('${ID}', 'Published meanwhile')`);
+    await t.settle();
+    expect(outcomes(t)).toEqual([{ key: KEY, outcome: 'skipped', detail: expect.stringContaining('already on the site') }]);
+    expect(notices(t)[0].title).toBe('Not run: Roll Over Easy 2026-10-01');
+  });
+});
+
 describe('cleaning the finished transcript', () => {
   it('drops a loop the per-chunk check misses, reports its stretch as a hole, and fixes misheard names', async () => {
     // Minutes 20-30: Whisper cycling through six lines, too many for the chunk's

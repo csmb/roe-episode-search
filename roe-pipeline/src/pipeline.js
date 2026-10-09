@@ -24,6 +24,9 @@
  *   help (a 4xx answer, an empty transcript, a missing file).
  * - A run that failed, or has been silent for an hour, picks up where it
  *   stopped when the file is uploaded again or POST /process is called.
+ * - How a run ends (published, published with problems, failed, or waiting for
+ *   the owner) goes on the admin page's Uploads tab and, with NOTIFY_URL set,
+ *   to the owner as a notice (report(), notify.js).
  *
  * Stored keys: status (waiting | processing | failed | completed), step,
  * episodeId, seen (the uploads so far), settleAt (end of the wait), force,
@@ -46,6 +49,9 @@ import { extractAndSeedPlaces } from './places.js';
 import { scoreAndSeedSentiment } from './sentiment.js';
 import { PermanentError, isPermanent } from './limits.js';
 import { pageEntries, readPages } from './stored-lists.js';
+import { checkCoverage } from './coverage.js';
+import { logIngest } from './ingest-log.js';
+import { notify } from './notify.js';
 
 const NEXT_STEP = {
   'join': 'transcribe',
@@ -58,6 +64,11 @@ const NEXT_STEP = {
   'score-places': 'finalize',
 };
 const SOFT_STEPS = new Set(['embeddings', 'guest-start', 'extract-places', 'score-places']);
+// How the owner's notices name the steps
+const STEP_NAMES = {
+  upload: 'Upload', join: 'Joining the parts', transcribe: 'Transcript', summary: 'Summary', 'seed-db': 'Publishing',
+  embeddings: 'Search index', 'guest-start': 'Interview time', 'extract-places': 'Places', 'score-places': 'Place quotes',
+};
 
 export const MAX_ATTEMPTS = 4;
 export const RETRY_DELAYS_MS = [60_000, 5 * 60_000, 15 * 60_000];
@@ -167,7 +178,7 @@ export class EpisodePipeline {
     const settleAt = s.get('settleAt');
     try {
       if (await this.isPublished(episodeId)) {
-        return this.hold('The episode is already on the site, so nothing was run. Delete it first to redo it.');
+        return this.hold('The episode is already on the site, so nothing was run. Delete it first to redo it.', { outcome: 'skipped' });
       }
       const found = await findParts(this.env.AUDIO_BUCKET, s.get('seen') || [], episodeId);
       const plan = await planParts(this.env.AUDIO_BUCKET, found.files, { force: s.get('force') });
@@ -193,12 +204,63 @@ export class EpisodePipeline {
     }
   }
 
-  /** Keep waiting, for the owner: /status shows why. */
-  async hold(problem, { parts, ignored, missing } = {}) {
+  /** Keep waiting, for the owner: /status, the Uploads tab and the notice say why. */
+  async hold(problem, { parts, ignored, missing, outcome = 'waiting' } = {}) {
     const storage = this.state.storage;
     await storage.delete(['parts', 'ignored', 'missing']);
     await storage.put({ problem, ...(parts && { parts }), ...(ignored && { ignored }), ...(missing && { missing }) });
     console.warn(`[${await storage.get('episodeId')}] Waiting: ${problem}`);
+    await this.report(outcome, problem, ((await storage.get('seen')) || []).at(-1));
+  }
+
+  /**
+   * How the run ended, for the owner: a row on the admin page's Uploads tab
+   * (ingest_log) and a notice (notify.js, when NOTIFY_URL is set). Never throws.
+   * @param {'published'|'published with problems'|'failed'|'waiting'|'skipped'} outcome
+   * @param {string} detail
+   * @param {string} [file] - the upload to file it under; else the run's first part
+   */
+  async report(outcome, detail, file) {
+    let s;
+    try {
+      s = await this.state.storage.get(['episodeId', 'parts', 'key']);
+    } catch (err) {
+      // The run's own state is already saved; a report that can't be made mustn't change it
+      console.error(`Couldn't report "${outcome}": ${err.message}`);
+      return;
+    }
+    const key = file ?? s.get('parts')?.[0]?.key ?? s.get('key') ?? '(no file name)';
+    await logIngest(this.env.DB, { key, outcome, detail });
+    const date = /\d{4}-\d{2}-\d{2}/.exec(s.get('episodeId') ?? key)?.[0] ?? '';
+    // The status first, so a phone's lock screen doesn't cut it off
+    const headline = {
+      published: 'On the site',
+      'published with problems': 'On the site, with problems',
+      failed: 'Failed',
+      waiting: 'Waiting for you',
+      skipped: 'Not run',
+    }[outcome];
+    await notify(this.env, { title: `${headline}: Roll Over Easy ${date}`.trim(), message: detail, problem: !['published', 'skipped'].includes(outcome) });
+  }
+
+  /** What a finished run says about itself: its title and size, and anything that went wrong. */
+  async publishedOutcome() {
+    const s = await this.state.storage.get(['summaryResult', 'durationMs', 'holes', 'warnings']);
+    const lines = (await this.loadSegments()).length;
+    const mmss = ms => `${Math.floor(ms / 60_000)}:${String(Math.floor(ms / 1000) % 60).padStart(2, '0')}`;
+    const problems = [];
+    const holes = s.get('holes') || [];
+    if (holes.length) problems.push(`No transcript for ${holes.map(h => `${mmss(h.startMs)}–${mmss(h.endMs)}`).join(', ')}`);
+    for (const w of s.get('warnings') || []) {
+      const name = STEP_NAMES[w.step] ?? w.step;
+      if (w.message.startsWith('Skipped: ')) problems.push(`${name} skipped (${w.message.slice('Skipped: '.length)})`);
+      else problems.push(w.step === 'transcribe' ? w.message : `${name}: ${w.message}`);
+    }
+    const head = `“${s.get('summaryResult')?.title ?? 'Untitled'}” is on the site (${Math.round((s.get('durationMs') || 0) / 60_000)} min, ${lines.toLocaleString('en-US')} lines)`;
+    // Problems first: a notice's preview shows only its start
+    return problems.length
+      ? { outcome: 'published with problems', detail: `${problems.join('. ')}. ${head}.` }
+      : { outcome: 'published', detail: `${head}.` };
   }
 
   async isPublished(episodeId) {
@@ -327,7 +389,7 @@ export class EpisodePipeline {
       }
 
       case 'transcribe':
-        return this.transcribeStep(key, deadline);
+        return this.transcribeStep(key, deadline, warn);
 
       case 'summary': {
         const segments = await this.loadSegments();
@@ -379,6 +441,7 @@ export class EpisodePipeline {
         // seed-db writes the audio link; this covers runs from the old code, which wrote it here.
         await env.DB.prepare('UPDATE episodes SET audio_file = COALESCE(audio_file, ?) WHERE id = ?')
           .bind(this.audioUrl(key), episodeId).run();
+        const { outcome, detail } = await this.publishedOutcome();
         // Keep only what /status reports afterwards, including any unfilled holes
         const keep = await storage.get(['episodeId', 'key', 'startedAt', 'holes', 'warnings', 'parts', 'ignored']);
         const kept = Object.fromEntries([...keep].filter(([, v]) => !(Array.isArray(v) && v.length === 0)));
@@ -386,6 +449,7 @@ export class EpisodePipeline {
         await storage.put({ ...kept, status: 'completed', completedAt: Date.now() });
         await storage.deleteAlarm();
         console.log(`[${episodeId}] Pipeline completed successfully`);
+        await this.report(outcome, detail);
         return null;
       }
 
@@ -395,7 +459,7 @@ export class EpisodePipeline {
   }
 
   /** One chunk per alarm; once every chunk is in, assemble the transcript. */
-  async transcribeStep(key, deadline) {
+  async transcribeStep(key, deadline, warn = () => {}) {
     const storage = this.state.storage;
     if (!this.env.OPENAI_API_KEY) throw new PermanentError('OPENAI_API_KEY is not set');
     const head = await this.env.AUDIO_BUCKET.head(key);
@@ -439,6 +503,10 @@ export class EpisodePipeline {
       throw new PermanentError('Transcription came back empty; nothing was published. Check the audio file.');
     }
 
+    // A transcript that stops early or runs past the audio is still published (its
+    // holes are retried above), but the owner hears about it
+    for (const problem of checkCoverage(segments, durationMs).problems) warn(`The transcript ${problem.replace(/^it /, '')}`);
+
     await this.storeSegments(segments);
     // Stretches still missing after every retry, shown by /status
     await storage.put({ durationMs, holes });
@@ -473,6 +541,7 @@ export class EpisodePipeline {
     await storage.put({ status: 'failed', error: message, failedAt: new Date().toISOString() });
     await storage.delete('lastError');
     console.error(`[${await storage.get('episodeId')}] Pipeline failed at step "${step}": ${message}`);
+    await this.report('failed', `${STEP_NAMES[step] ?? step}: ${message}`);
   }
 
   audioUrl(key) {

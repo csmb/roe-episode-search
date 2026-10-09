@@ -13,6 +13,15 @@ import { DEAD_LETTER_QUEUE, OWN_FILE, logIngest } from './ingest-log.js';
 
 export { EpisodePipeline } from './pipeline.js';
 
+// Answers from a show's pipeline that mean the upload won't be run
+const TURNED_DOWN = new Set(['already_exists', 'different_file', 'refused']);
+// The others, in the owner's words on the Uploads tab
+const STARTED_HOW = {
+  waiting: 'starts in 10 minutes, unless more parts of the show come in',
+  resumed: 'picked up where it stopped',
+  already_processing: 'its show is already running',
+};
+
 /** The Durable Object for the episode `upload` belongs to. */
 function pipelineFor(env, upload) {
   return env.EPISODE_PIPELINE.get(env.EPISODE_PIPELINE.idFromName(upload.episodeId));
@@ -73,12 +82,22 @@ export default {
 
         const result = await res.json();
         console.log(`DO response for ${key}:`, JSON.stringify(result));
-        await logIngest(env.DB, { key, size, outcome: 'started', detail: result?.status ? `its show's pipeline: ${result.status}` : null });
+        // Turned down (already on the site, a changed file, not in R2…): say why, as nothing will happen
+        if (!res.ok || TURNED_DOWN.has(result?.status)) {
+          const why = result?.error ?? (result?.status === 'already_exists'
+            ? 'that show is already on the site, so nothing was run; delete the episode first to redo it'
+            : `its show's pipeline answered ${res.status}`);
+          await logIngest(env.DB, { key, size, outcome: 'skipped', detail: why });
+        } else {
+          const how = STARTED_HOW[result?.status] ?? (result?.status ? `its show's pipeline: ${result.status}` : null);
+          await logIngest(env.DB, { key, size, outcome: 'started', detail: how });
+        }
         message.ack();
       } catch (err) {
         console.error(`Failed to dispatch ${key} to DO:`, err.message);
         await logIngest(env.DB, { key, size, outcome: 'retrying', detail: `try ${message.attempts ?? '?'}: ${err.message}` });
-        message.retry();
+        // 1, 2, 4… minutes: a short outage (or a deploy) shouldn't use up every try at once
+        message.retry({ delaySeconds: Math.min(3600, 60 * 2 ** ((message.attempts ?? 1) - 1)) });
       }
     }
   },
