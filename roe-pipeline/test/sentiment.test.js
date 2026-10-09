@@ -44,6 +44,15 @@ describe('findPlacePassages', () => {
     expect(p[0].start_ms).toBe(0); // hit at idx 1, CONTEXT_BEFORE=2 -> clamps to idx 0
     expect(p[0].text).toContain('Dolores Park');
   });
+  it('finds no passage for a place the lines only seem to name', () => {
+    const lines = [
+      { start_ms: 0, text: 'I love San Francisco, and I love the Golden Gate Bridge' },
+      { start_ms: 1000, text: 'we shopped at TNT Supermarket' },
+      { start_ms: 2000, text: 'It\'s just stuff taken out of context or maybe not.' },
+    ];
+    expect(findPlacePassages(lines, 'Golden Gate Park')).toEqual([]);
+    expect(findPlacePassages(lines, 'Market Street')).toEqual([]);
+  });
   it('merges overlapping windows', () => {
     const close = [
       { start_ms: 0, text: 'Dolores Park is great' },

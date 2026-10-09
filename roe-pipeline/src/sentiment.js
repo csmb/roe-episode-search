@@ -13,31 +13,84 @@ const CONTEXT_BEFORE = 2;
 const CONTEXT_AFTER = 2;
 const MAX_PASSAGE_CHARS = 6000; // ~1500 tokens
 
-export function placeMatchVariants(name) {
-  const base = String(name).toLowerCase().trim();
-  const variants = new Set();
-  if (base.length >= 3) variants.add(base);
-  const stripped = base
-    .replace(/\b(district|street|avenue|park|square|plaza)\b/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-  if (stripped.length >= 3) variants.add(stripped);
+// Words for a kind of place. A shortened name followed by one of these is a
+// different place: "Golden Gate" + "Bridge" isn't Golden Gate Park, "Mission"
+// + "Street" isn't the Mission District.
+const PLACE_KINDS = new Set([
+  'bridge', 'street', 'st', 'avenue', 'ave', 'boulevard', 'blvd', 'road', 'way', 'lane', 'drive',
+  'park', 'square', 'plaza', 'district', 'tower', 'beach', 'bay', 'station', 'hill', 'heights',
+  'valley', 'garden', 'gardens', 'playground', 'field', 'center', 'library', 'school', 'hospital',
+  'theater', 'theatre', 'hall', 'building',
+]);
+// What a shortened name may be followed by and still be the same place ("King St.").
+const SAME_KIND = { street: ['street', 'st'], avenue: ['avenue', 'ave'] };
+// One-word short names that are everyday words, other cities or common names:
+// "Market Street" and "King Street" count only when "Street" (or "St") follows,
+// never through "the F Market" or "the king".
+const EVERYDAY_WORDS = new Set([
+  'market', 'union', 'king', 'main', 'post', 'water', 'church', 'pine', 'bush', 'oak', 'page', 'clay',
+  'grove', 'bay', 'beach', 'lake', 'ocean', 'pacific', 'california', 'washington', 'financial', 'design',
+  'central', 'diamond', 'front', 'battery', 'mason', 'baker', 'grant', 'taylor', 'howard', 'harrison',
+  'jackson', 'franklin', 'lincoln', 'scott', 'pierce', 'jones', 'irving', 'clement', 'bryant', 'cole',
+  'fell', 'green', 'mint', 'sunset', 'south', 'north', 'east', 'west', 'stockton', 'sacramento',
+  'first', 'second', 'third', 'fourth', 'fifth', 'sixth', 'seventh', 'eighth', 'ninth', 'tenth',
+]);
+const isEveryday = word => EVERYDAY_WORDS.has(word) || /^\d+(?:st|nd|rd|th)$/.test(word);
+
+/** Lower case, no accents, straight apostrophes, single spaces: how names and lines are compared. */
+export function normalizeForMatch(text) {
+  return String(text).normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().replace(/[’‘]/g, "'").replace(/\s+/g, ' ');
+}
+const normalize = normalizeForMatch;
+
+/**
+ * The forms a place can be named by: its whole name, the name without a
+ * trailing district/street/avenue/park/square/plaza ("Dolores" for Dolores
+ * Park, with the kind it dropped), and each side of an intersection.
+ */
+function placeForms(name) {
+  const base = normalize(name).trim();
+  const forms = [];
+  if (base.length >= 3) forms.push({ text: base });
+  const m = /^(.*\S)\s+(district|street|avenue|park|square|plaza)$/.exec(base);
+  if (m && m[1].length >= 3) forms.push({ text: m[1], kind: m[2], everyday: !m[1].includes(' ') && isEveryday(m[1]) });
   if (base.includes('&')) {
     for (const part of base.split('&')) {
       const p = part.trim();
-      if (p.length >= 3) variants.add(p);
+      if (p.length >= 3) forms.push({ text: p });
     }
   }
-  return [...variants];
+  return forms;
+}
+
+export function placeMatchVariants(name) {
+  return [...new Set(placeForms(name).map(f => f.text))];
+}
+
+// Whether `hay` (normalized) names the place in this form, as whole words.
+function namesIn(hay, { text, kind, everyday }) {
+  const pattern = new RegExp(`(?<![\\p{L}\\p{N}])${text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}])(?:\\s+(\\p{L}+))?`, 'gu');
+  for (const hit of hay.matchAll(pattern)) {
+    if (!kind) return true;
+    const next = hit[1];
+    if ((SAME_KIND[kind] || [kind]).includes(next)) return true;
+    if (everyday || PLACE_KINDS.has(next)) continue;
+    return true;
+  }
+  return false;
+}
+
+/** Whether `text` names the place: see placeForms, PLACE_KINDS and EVERYDAY_WORDS. */
+export function mentionsPlace(text, name) {
+  const hay = normalize(text);
+  return placeForms(name).some(form => namesIn(hay, form));
 }
 
 export function findPlacePassages(segments, placeName) {
-  const variants = placeMatchVariants(placeName);
-  if (variants.length === 0) return [];
+  if (placeForms(placeName).length === 0) return [];
   const hitIdx = [];
   segments.forEach((s, i) => {
-    const t = (s.text || '').toLowerCase();
-    if (variants.some(v => t.includes(v))) hitIdx.push(i);
+    if (mentionsPlace(s.text || '', placeName)) hitIdx.push(i);
   });
   if (hitIdx.length === 0) return [];
 

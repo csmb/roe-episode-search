@@ -4,7 +4,7 @@
  */
 
 import { apiError, PermanentError, TIMEOUT_MS } from './limits.js';
-import { placeMatchVariants } from './sentiment.js';
+import { mentionsPlace, normalizeForMatch } from './sentiment.js';
 
 const SF_VIEWBOX = '-122.517,37.833,-122.355,37.708';
 const NOMINATIM_DELAY_MS = 1100;
@@ -57,26 +57,27 @@ export function cleanPlaceNames(names) {
  * Keep only names the transcript mentions. GPT copies the examples in the
  * prompt (Ocean Beach, Dolores Park, Coit Tower…) into its answer: on episodes
  * since April, 46 of 206 place links named a place their transcript never
- * mentions. A name counts when it appears as the sentiment step matches it
- * ("Mission District" via "mission"). An intersection counts only when its two
- * streets are named together ("17th and Valencia", "Valencia & 17th Street"),
- * so "24th & Mission" isn't kept because a show says "the 24th" and "Mission".
+ * mentions. A name counts when the sentiment step would find it (mentionsPlace:
+ * whole words, "Mission District" via "the Mission" but not via "Mission
+ * Street", "Golden Gate Park" not via "Golden Gate Bridge", "Market Street" not
+ * via "Supermarket"). An intersection counts only when its two streets are
+ * named together ("17th and Valencia", "Valencia & 17th Street"), so
+ * "24th & Mission" isn't kept because a show says "the 24th" and "Mission".
  */
 export function placesInTranscript(names, text) {
-  const haystack = text.toLowerCase().replace(/\s+/g, ' ');
-  const found = v => v.length >= 3 && haystack.includes(v);
+  const haystack = normalizeForMatch(text);
   const STREET = '(?:street|avenue|st|ave|boulevard|blvd)';
   const bare = side => side.replace(new RegExp(`\\b${STREET}\\b`, 'g'), '').replace(/\s+/g, ' ').trim();
   const pattern = side => bare(side).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + `(?:\\s+${STREET}\\.?)?`;
   return names.filter(name => {
-    const lower = name.toLowerCase().trim();
+    const lower = normalizeForMatch(name).trim();
     const sides = lower.split('&').map(s => s.trim()).filter(Boolean);
     if (sides.length === 2 && bare(sides[0]) && bare(sides[1])) {
       const [a, b] = sides.map(pattern);
       const join = '\\s*(?:and|&|at|,)\\s*';
       return new RegExp(`\\b${a}${join}${b}\\b|\\b${b}${join}${a}\\b`).test(haystack);
     }
-    return placeMatchVariants(name).some(found);
+    return mentionsPlace(haystack, name);
   });
 }
 

@@ -38,6 +38,26 @@ describe('placesInTranscript', () => {
       .toEqual(['Dolores Park', '17th Street & Valencia Street', 'Mission District']);
   });
 
+  it('needs the place itself, not a longer word or a different place that starts the same', () => {
+    // Oct 8, 2026 linked Golden Gate Park and Market Street through these lines
+    const text = 'I love the Golden Gate Bridge. We took the F Market, then shopped at TNT Supermarket. '
+      + 'We were talking and looking around, down Mission Street and Dolores Street.';
+    expect(placesInTranscript(['Golden Gate Park', 'Market Street', 'King Street', 'Mission District', 'Dolores Park'], text))
+      .toEqual([]);
+  });
+
+  it('still finds a place by the short name people use for it', () => {
+    const text = 'Up on Valencia, then a picnic in Golden Gate. Later Market St. and King Street, '
+      + 'lunch at St. Francis Fountain and coffee at Manny’s.';
+    expect(placesInTranscript(['Valencia Street', 'Golden Gate Park', 'Market Street', 'King Street', 'St. Francis Fountain', "Manny's"], text))
+      .toEqual(['Valencia Street', 'Golden Gate Park', 'Market Street', 'King Street', 'St. Francis Fountain', "Manny's"]);
+  });
+
+  it('ignores accents, as transcripts write them both ways', () => {
+    expect(placesInTranscript(['Cesar Chavez Street', 'Café Réveille'], 'a stretch of road called César Chávez, then coffee at Cafe Reveille'))
+      .toEqual(['Cesar Chavez Street', 'Café Réveille']);
+  });
+
   it('keeps an intersection only when its two streets are named together', () => {
     expect(placesInTranscript(['24th & Mission'], 'Tacos in the Mission.')).toEqual([]);
     expect(placesInTranscript(['24th & Mission'], 'On the 24th we went to the Mission.')).toEqual([]);
