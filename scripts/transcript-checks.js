@@ -5,11 +5,11 @@
  * (what is wrong with the transcripts on the site). No D1 and no files here.
  *
  * They use the pipelines' own checks: checkCoverage, findGaps (holes of 5+
- * minutes), findLoops, isMostlyNonLatin and isPromptEcho, plus the same echo
+ * minutes), findLoops, isMostlyNonLatin, isPromptEcho and isBareWebAddress, plus the same echo
  * rule with the terms of the prompt Whisper was sent until 2026-09-27.
  */
 
-import { findLoops, isMostlyNonLatin, isPromptEcho } from '../roe-pipeline/src/clean-segments.js';
+import { findLoops, isBareWebAddress, isMostlyNonLatin, isPromptEcho } from '../roe-pipeline/src/clean-segments.js';
 import { checkCoverage, MIN_COVERAGE } from '../roe-pipeline/src/coverage.js';
 import { findGaps, MIN_GAP_MS } from '../roe-pipeline/src/gap-retry.js';
 import { normalizeTerm } from '../roe-pipeline/src/whisper-prompt.js';
@@ -63,7 +63,7 @@ export function countWords(lines) {
 	return n;
 }
 
-export const JUNK_RULES = ['echo', 'loops', 'non-latin'];
+export const JUNK_RULES = ['echo', 'loops', 'non-latin', 'urls'];
 export const OPENING_MS = 10 * 60_000; // Whisper's wrong-language gibberish is at the start of a show
 
 /**
@@ -71,16 +71,20 @@ export const OPENING_MS = 10 * 60_000; // Whisper's wrong-language gibberish is 
  * - echo: the spelling-hint prompt read back as speech (today's terms or the old ones)
  * - loops: the repeats in Whisper's repetition loops (findLoops; each looping line keeps its first copy)
  * - non-latin: lines mostly in another script, in the first `openingMs` of the show
+ * - urls: lines that are nothing but an http(s):// address, which Whisper invents over silence
  *
  * @param {Array<{start_ms: number, end_ms: number, text: string}>} lines - in time order (D1 rows keep their id)
  * @returns {Array<{line: object, rule: string}>}
  */
-export function junkLines(lines, { rules = ['echo', 'loops'], openingMs = OPENING_MS } = {}) {
+export function junkLines(lines, { rules = ['echo', 'loops', 'urls'], openingMs = OPENING_MS } = {}) {
 	const unknown = rules.filter((r) => !JUNK_RULES.includes(r));
 	if (unknown.length > 0) throw new Error(`No junk rule called ${unknown.join(', ')} (rules: ${JUNK_RULES.join(', ')})`);
 	const found = new Map();
 	if (rules.includes('echo')) {
 		for (const l of lines) if (isAnyPromptEcho(l.text)) found.set(l, 'echo');
+	}
+	if (rules.includes('urls')) {
+		for (const l of lines) if (isBareWebAddress(l.text) && !found.has(l)) found.set(l, 'urls');
 	}
 	if (rules.includes('non-latin')) {
 		for (const l of lines) if (l.start_ms < openingMs && isMostlyNonLatin(l.text) && !found.has(l)) found.set(l, 'non-latin');
@@ -92,10 +96,10 @@ export function junkLines(lines, { rules = ['echo', 'loops'], openingMs = OPENIN
 	return lines.filter((l) => found.has(l)).map((line) => ({ line, rule: found.get(line) }));
 }
 
-/** The lines that carry the show: no loop repeats, prompt echoes or wrong-language lines (anywhere). */
+/** The lines that carry the show: no loop repeats, prompt echoes, wrong-language lines (anywhere) or invented addresses. */
 export function realLines(lines) {
 	const loopFree = findLoops(lines).segments;
-	return loopFree.filter((l) => !isAnyPromptEcho(l.text) && !isMostlyNonLatin(l.text));
+	return loopFree.filter((l) => !isAnyPromptEcho(l.text) && !isMostlyNonLatin(l.text) && !isBareWebAddress(l.text));
 }
 
 const minutes = (ms) => (ms / 60_000).toFixed(1);

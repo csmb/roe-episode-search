@@ -11,6 +11,8 @@
  *              episodes that today's filter no longer sees)
  *   loops      the repeats in Whisper's repetition loops (each looping line keeps
  *              its first copy), e.g. 2026-04-30's "the" ×365
+ *   urls       lines that are nothing but an http(s):// address, which Whisper
+ *              invents over silence or music (2026-10-01's "https://www.youtube.com.com")
  *   non-latin  wrong-language lines in a show's first 10 minutes (not in the
  *              default rules: that stretch is then untranscribed; redoing the
  *              transcript fixes it properly)
@@ -31,7 +33,7 @@
  * covered too.
  *
  * Usage:
- *   node scripts/clean-junk-lines.js (--only <date|id>,… | --all) [--rules echo,loops] [--yes] [--no-embed] [--local]
+ *   node scripts/clean-junk-lines.js (--only <date|id>,… | --all) [--rules echo,loops,urls] [--yes] [--no-embed] [--local]
  */
 
 import { execFileSync } from 'node:child_process';
@@ -47,9 +49,9 @@ import { JUNK_RULES, junkLines } from './transcript-checks.js';
 import { readTranscript, rememberStaleVectors, staleVectors, transcriptPath } from './transcript-file.js';
 
 const DELETE_IDS_PER_STATEMENT = 1000;
-export const DEFAULT_RULES = ['echo', 'loops'];
+export const DEFAULT_RULES = ['echo', 'loops', 'urls'];
 
-const USAGE = 'Usage: node scripts/clean-junk-lines.js (--only <date|id>,… | --all) [--rules echo,loops,non-latin] [--yes] [--no-embed] [--local]';
+const USAGE = 'Usage: node scripts/clean-junk-lines.js (--only <date|id>,… | --all) [--rules echo,loops,urls,non-latin] [--yes] [--no-embed] [--local]';
 const minutes = (ms) => (ms / 60_000).toFixed(1);
 
 /** The DELETE statements for these line IDs of one episode. */

@@ -1,7 +1,7 @@
 /**
  * Clean Whisper transcription artifacts from segments.
  * Removes: zero-duration, consecutive duplicates, internal loops, hallucinations,
- * wrong-language lines and read-back spelling hints.
+ * wrong-language lines, read-back spelling hints and invented web addresses.
  */
 
 import { PROMPT_TERMS, normalizeTerm } from './whisper-prompt.js';
@@ -17,6 +17,16 @@ export function isMostlyNonLatin(text) {
   if (letters.length < 3) return false;
   const latin = text.match(/\p{Script=Latin}/gu) || [];
   return latin.length / letters.length < 0.5;
+}
+
+/**
+ * True when a line is nothing but a web address starting http:// or https://.
+ * Nobody says the scheme aloud: Whisper writes these over silence or music
+ * (2026-10-01 had "https://www.youtube.com.com" for 40 s). Addresses people do
+ * say ("Yelp.com.", "www.rollovereasy.org.") stay; D1 has hundreds of them.
+ */
+export function isBareWebAddress(text) {
+  return /^https?:\/\/\S+$/i.test(text.trim().replace(/[.,!?]+$/, ''));
 }
 
 /**
@@ -52,9 +62,11 @@ export const WORD_CORRECTIONS = {
 // Corrections that need more than whole words. "soldier" is Suldrew, the
 // listener, except in "Toy Soldier" (a coffee shop) and "Soldier Boy" (a
 // rapper): the owner, 2026-09-30, "it's mainly just to capture when we talk
-// about him, the individual, not businesses or whatnot".
+// about him, the individual, not businesses or whatnot". Nor after foot,
+// buffalo, unknown or tin, where it is the word: 2020-06-04 read "a foot
+// Suldrew" four times in a James Baldwin clip.
 const CORRECTION_PATTERNS = {
-  soldier: '(?<!\\btoy\\s)\\bsoldier\\b(?!\\s+boys?\\b)',
+  soldier: '(?<!\\b(?:toy|foot|buffalo|unknown|tin)\\s+)\\bsoldier\\b(?!\\s+boys?\\b)',
 };
 
 /** Where a correction applies in a text: its key as whole words, or its own pattern. */
@@ -101,8 +113,8 @@ export function cleanSegments(segments) {
     // Drop hallucinated short phrases
     if (hallucinated.has(seg.text.trim().toLowerCase())) continue;
 
-    // Drop wrong-language gibberish and read-back spelling hints
-    if (isMostlyNonLatin(seg.text) || isPromptEcho(seg.text)) continue;
+    // Drop wrong-language gibberish, read-back spelling hints and invented web addresses
+    if (isMostlyNonLatin(seg.text) || isPromptEcho(seg.text) || isBareWebAddress(seg.text)) continue;
 
     cleaned.push(seg);
   }

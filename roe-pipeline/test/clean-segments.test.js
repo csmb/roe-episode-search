@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { applyWordCorrections, cleanSegments, dropRepeatedLines, findLoops, isMostlyNonLatin, isPromptEcho } from '../src/clean-segments.js';
+import { applyWordCorrections, cleanSegments, dropRepeatedLines, findLoops, isBareWebAddress, isMostlyNonLatin, isPromptEcho } from '../src/clean-segments.js';
 
 describe('cleanSegments', () => {
   it('removes zero-duration segments', () => {
@@ -88,15 +88,29 @@ describe('isPromptEcho', () => {
     expect(isPromptEcho('We walked past Tartine and Bi-Rite on the way to Dolores Park.')).toBe(false);
     expect(isPromptEcho('Coffee, eggs, toast, and a little jam.')).toBe(false);
   });
+
+  it('flags a line that is nothing but an http(s):// address, which no one says aloud', () => {
+    expect(isBareWebAddress('https://www.youtube.com.com')).toBe(true);
+    expect(isBareWebAddress(' https://www.youtube.com.com. ')).toBe(true);
+    expect(isBareWebAddress('http://example.com/watch?v=abc')).toBe(true);
+  });
+
+  it('keeps addresses people do say, and speech around an address (lines from D1)', () => {
+    for (const text of ['Yelp.com.', 'www.rollovereasy.org.', 'www.sfbrewersguild.com', 'So go to dftsf.com.',
+      "i think it's a capital i curl dash capital i w https backslash backslash www.whitehouse.gov", 'tell you about HTTP', '']) {
+      expect(isBareWebAddress(text)).toBe(false);
+    }
+  });
 });
 
-describe('cleanSegments wrong-language and prompt-echo lines', () => {
+describe('cleanSegments wrong-language, prompt-echo and web-address lines', () => {
   it('drops them and keeps the rest', () => {
     const result = cleanSegments([
       { start_ms: 0, end_ms: 4000, text: 'Good morning, San Francisco!' },
       { start_ms: 4000, end_ms: 8000, text: 'ශ්‍රී ලංකාවේ අද උදෑසන' },
       { start_ms: 8000, end_ms: 12000, text: 'Muni, BART, Caltrain, the N-Judah, SoMa, the Tenderloin,' },
       { start_ms: 12000, end_ms: 16000, text: 'Café au lait at the Ferry Building.' },
+      { start_ms: 16000, end_ms: 46000, text: 'https://www.youtube.com.com' },
     ]);
     expect(result.map(s => s.text)).toEqual(['Good morning, San Francisco!', 'Café au lait at the Ferry Building.']);
   });
@@ -184,6 +198,11 @@ describe('applyWordCorrections', () => {
     for (const text of ["It sold Drew's hints last night", '193 soldiers, women and children', 'Suldrew at Bay to Breakers', 'the soldering iron',
       "i've not been to toy soldier", 'the Toy Soldier espresso machine', 'after Soldier Boy', 'are those soldier boys',
       'Shout out to Shalico and Phoenix.']) {
+      expect(applyWordCorrections(text)).toBe(text);
+    }
+    // The real word after foot, buffalo, unknown and tin (2020-06-04's James Baldwin clip had "a foot soldier" ×4)
+    for (const text of ['will ever become a foot soldier with us?', 'Buffalo Soldier, dreadlock Rasta', 'the Tomb of the Unknown Soldier',
+      'a tin soldier', 'a foot  soldier']) {
       expect(applyWordCorrections(text)).toBe(text);
     }
     const once = applyWordCorrections('Soul Drew ran Beta Breakers');

@@ -7,7 +7,7 @@
  * never has to fit in one alarm's 15 minutes, and a crash costs one chunk.
  */
 
-import { cleanSegments, dropRepeatedLines, findLoops, applyWordCorrections, isMostlyNonLatin, isPromptEcho } from './clean-segments.js';
+import { cleanSegments, dropRepeatedLines, findLoops, applyWordCorrections, isBareWebAddress, isMostlyNonLatin, isPromptEcho } from './clean-segments.js';
 import { pickChunkSlice } from './mp3-frames.js';
 import { fillGaps, retryHole, findBoundaryHole, findGaps, MIN_GAP_MS } from './gap-retry.js';
 import { SF_VOCAB_PROMPT } from './whisper-prompt.js';
@@ -23,6 +23,8 @@ const TAIL_MARGIN  = 64 * 1024;        // extra bytes read past TARGET_CHUNK so
                                        // findChunkEnd can always find the next
                                        // frame boundary just past the limit.
 const COMPRESSION_RATIO_MAX = 2.4;     // Whisper's own "this segment is looping" threshold
+const NO_SPEECH_PROB_MAX = 0.6;        // with AVG_LOGPROB_MIN, Whisper's own "this was silence"
+const AVG_LOGPROB_MIN = -1;
 
 /**
  * Progress of a new transcription of the R2 object `head` describes. The size
@@ -152,8 +154,9 @@ function retryWhisper(apiKey, deadline) {
  * Workers runtime serializes those in a way OpenAI's parser rejected with
  * "Invalid file format" for some files (observed 2026-04-24).
  *
- * Segments in the wrong script or that read the prompt back are dropped here,
- * so fillGaps sees those stretches as holes and retries them.
+ * Segments in the wrong script, that read the prompt back, that are a bare
+ * web address or that Whisper marks as no speech are dropped here, so fillGaps
+ * sees those stretches as holes and retries them.
  *
  * @param {Uint8Array} chunkBytes - mp3 bytes (caller guarantees frame boundaries).
  */
@@ -213,9 +216,13 @@ export async function transcribeChunk(chunkBytes, apiKey, timeOffsetSec, { timeo
   const segments = [];
   for (const seg of data.segments || []) {
     const text = (seg.text || '').trim();
-    if (!text || isMostlyNonLatin(text) || isPromptEcho(text)) continue;
+    if (!text || isMostlyNonLatin(text) || isPromptEcho(text) || isBareWebAddress(text)) continue;
     // Whisper's own sign that a segment is looping ("the the the the …")
     if (seg.compression_ratio > COMPRESSION_RATIO_MAX) continue;
+    // Its sign that it heard no speech and isn't sure of the words: text over
+    // silence or music ("Thank you for watching."). The same test Whisper's own
+    // decoder uses to call a stretch silent.
+    if (seg.no_speech_prob > NO_SPEECH_PROB_MAX && seg.avg_logprob < AVG_LOGPROB_MIN) continue;
     // A line repeating one of the last few (Whisper stuck on a lyric) is dropped
     // here, so fillGaps sees the stretch as a hole and retries it instead of
     // treating the loop as speech.

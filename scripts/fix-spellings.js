@@ -24,8 +24,15 @@
  * 2026-09-30 "soldier" was, since 758 old lines had it and a few of them are
  * the real word ("Toy Soldier", "Soldier Boy").
  *
+ * --spared goes the other way: where a line has a correction's spelling at a
+ * place today's rules keep the real word (a looser rule wrote it), the real
+ * word goes back. 2026-10-09: 2020-06-04's repaired transcript read "a foot
+ * Suldrew" four times, from before "foot soldier" was spared. Same backup,
+ * checks and undo; saved under <date>-spellings-spared(-plan)/.
+ *
  * Usage:
  *   node scripts/fix-spellings.js [--skip <key>,…] [--yes] [--local]
+ *   node scripts/fix-spellings.js --spared [--yes] [--local]
  */
 
 import fs from 'node:fs';
@@ -35,7 +42,7 @@ import { escapeSQL, loadEnv, parseFlags, queryJSON, runSQLFile } from './lib.js'
 import { newBackupDir } from './episode-backup.js';
 import { WORD_CORRECTIONS, correctionPattern } from '../roe-pipeline/src/clean-segments.js';
 
-const USAGE = 'Usage: node scripts/fix-spellings.js [--skip <key>,…] [--yes] [--local]';
+const USAGE = 'Usage: node scripts/fix-spellings.js [--skip <key>,…] [--yes] [--local]\n       node scripts/fix-spellings.js --spared [--yes] [--local]';
 const EXAMPLES = 3; // per correction, in the list
 
 /** The SELECT that finds every line a correction might change (correctWith decides). */
@@ -51,6 +58,37 @@ export function correctWith(text, keys = Object.keys(WORD_CORRECTIONS)) {
 		if (keys.includes(key)) text = text.replace(correctionPattern(key), WORD_CORRECTIONS[key]);
 	}
 	return text;
+}
+
+/** The SELECT that finds every line with a correction's spelling (sparedChanges decides). */
+export function sparedCandidateSQL() {
+	const spellings = [...new Set(Object.values(WORD_CORRECTIONS).map((v) => v.toLowerCase()))];
+	return `SELECT id, episode_id, text FROM transcript_segments WHERE ${spellings.map((v) => `lower(text) LIKE '%${escapeSQL(v)}%'`).join(' OR ')} ORDER BY episode_id, start_ms, id`;
+}
+
+const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * Lines where a correction's spelling stands at a place today's rules keep the
+ * real word: each such spelling turned back into the word. Only a correction
+ * with exceptions ("soldier" after foot, toy…) can spare a place.
+ */
+export function sparedChanges(rows) {
+	const changes = [];
+	for (const r of rows) {
+		let text = r.text;
+		const keys = [];
+		for (const [key, spelling] of Object.entries(WORD_CORRECTIONS)) {
+			text = text.replace(new RegExp(`\\b${escapeRegExp(spelling)}\\b`, 'g'), (match, offset, whole) => {
+				const word = whole.slice(0, offset) + key + whole.slice(offset + match.length);
+				if ([...word.matchAll(correctionPattern(key))].some((m) => m.index === offset)) return match;
+				if (!keys.includes(key)) keys.push(key);
+				return key;
+			});
+		}
+		if (text !== r.text) changes.push({ id: r.id, episode_id: r.episode_id, old: r.text, new: text, keys });
+	}
+	return changes;
 }
 
 /** The correction keys left after --skip; an unknown key stops the run. */
@@ -87,31 +125,31 @@ export function restoreStatement(c) {
 	return `UPDATE transcript_segments SET text = '${escapeSQL(c.old)}' WHERE id = ${checkId(c.id)} AND text = '${escapeSQL(c.new)}';`;
 }
 
-/** The list for the owner: per correction (with examples), then per episode. */
-export function reportLines(changes) {
+/** The list for the owner: per correction (with examples), then per episode. `spared`: words put back. */
+export function reportLines(changes, { spared = false } = {}) {
 	const out = [];
 	const episodes = [...new Set(changes.map((c) => c.episode_id))];
-	out.push(`${changes.length} line${changes.length === 1 ? '' : 's'} to correct in ${episodes.length} episode${episodes.length === 1 ? '' : 's'}:`);
+	out.push(`${changes.length} line${changes.length === 1 ? '' : 's'} to ${spared ? 'put back' : 'correct'} in ${episodes.length} episode${episodes.length === 1 ? '' : 's'}:`);
 	for (const [key, to] of Object.entries(WORD_CORRECTIONS)) {
 		const theirs = changes.filter((c) => c.keys.includes(key));
 		if (theirs.length === 0) continue;
-		out.push(`  "${key}" -> "${to}": ${theirs.length} line${theirs.length === 1 ? '' : 's'}`);
+		out.push(`  ${spared ? `"${to}" -> "${key}"` : `"${key}" -> "${to}"`}: ${theirs.length} line${theirs.length === 1 ? '' : 's'}`);
 		for (const c of theirs.slice(0, EXAMPLES)) out.push(`      ${c.episode_id.match(/\d{4}-\d{2}-\d{2}/)?.[0] ?? c.episode_id}  "${c.old.slice(0, 90)}" -> "${c.new.slice(0, 90)}"`);
 	}
 	return out;
 }
 
-function writeBackup(dir, changes, { isLocal }) {
+function writeBackup(dir, changes, { isLocal, spared = false }) {
 	const applied = changes.map(updateStatement).join('\n') + '\n';
 	fs.writeFileSync(path.join(dir, 'lines.json'), JSON.stringify(changes, null, 1));
 	fs.writeFileSync(path.join(dir, 'restore.sql'), [
-		'-- Puts back the transcript lines fix-spellings.js corrected,',
+		`-- Puts back the transcript lines fix-spellings.js ${spared ? 'changed (--spared)' : 'corrected'},`,
 		'-- each only where it is still the corrected text.',
 		...changes.map(restoreStatement),
 	].join('\n') + '\n');
 	fs.writeFileSync(path.join(dir, 'applied.sql'), applied);
 	fs.writeFileSync(path.join(dir, 'README.txt'), [
-		`Transcript lines corrected by fix-spellings.js --yes, ${new Date().toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })}, in the ${isLocal ? 'local D1 copy (--local)' : 'production D1 database'}.`,
+		`Transcript lines ${spared ? 'put back by fix-spellings.js --spared --yes' : 'corrected by fix-spellings.js --yes'}, ${new Date().toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })}, in the ${isLocal ? 'local D1 copy (--local)' : 'production D1 database'}.`,
 		'',
 		`  lines.json    the ${changes.length} lines as they were and as they became`,
 		'  applied.sql   exactly what was run (each only where the line was still the one read)',
@@ -128,22 +166,26 @@ function writeBackup(dir, changes, { isLocal }) {
 
 async function main() {
 	loadEnv();
-	const { flags, rest } = parseFlags(process.argv.slice(2), { '--skip': 'value', '--yes': 'flag', '--local': 'flag' }, USAGE);
-	if (rest.length > 0) {
+	const { flags, rest } = parseFlags(process.argv.slice(2), { '--skip': 'value', '--spared': 'flag', '--yes': 'flag', '--local': 'flag' }, USAGE);
+	if (rest.length > 0 || (flags.spared && flags.skip)) {
 		console.error(USAGE);
 		process.exit(1);
 	}
+	const spared = !!flags.spared;
 	const target = { isLocal: !!flags.local };
 	if (process.env.ROE_PERSIST_TO && !target.isLocal) throw new Error('ROE_PERSIST_TO is set (a test run): add --local');
 	const where = `in the ${target.isLocal ? 'local D1 copy' : 'production database'}`;
 
 	const keys = keysToApply(flags.skip);
-	const changes = spellingChanges(queryJSON(candidateSQL(keys), target), keys);
-	console.log(`${flags.yes ? 'Correcting' : 'Dry run (--yes to write):'} transcript lines ${where}${flags.skip ? ` (leaving out: ${flags.skip})` : ''}\n`);
-	const report = reportLines(changes);
+	const changes = spared
+		? sparedChanges(queryJSON(sparedCandidateSQL(), target))
+		: spellingChanges(queryJSON(candidateSQL(keys), target), keys);
+	console.log(`${flags.yes ? (spared ? 'Putting back the real word in' : 'Correcting') : 'Dry run (--yes to write):'} transcript lines ${where}${flags.skip ? ` (leaving out: ${flags.skip})` : ''}\n`);
+	const report = reportLines(changes, { spared });
 	console.log(report.join('\n'));
 	const episodes = [...new Set(changes.map((c) => c.episode_id))];
-	const dir = newBackupDir(flags.yes ? 'spellings' : 'spellings-plan');
+	const name = spared ? 'spellings-spared' : 'spellings';
+	const dir = newBackupDir(flags.yes ? name : `${name}-plan`);
 	fs.writeFileSync(path.join(dir, 'report.txt'), `${report.join('\n')}\n`);
 	fs.writeFileSync(path.join(dir, 'episodes.txt'), `${episodes.join(',')}\n`);
 	if (!flags.yes) {
@@ -153,7 +195,7 @@ async function main() {
 	}
 	if (changes.length === 0) return;
 
-	const applied = writeBackup(dir, changes, target);
+	const applied = writeBackup(dir, changes, { ...target, spared });
 	console.log(`\nBacked up to ${dir}`);
 	runSQLFile(applied, target);
 
@@ -164,7 +206,7 @@ async function main() {
 		for (const r of queryJSON(`SELECT id, text FROM transcript_segments WHERE id IN (${ids.slice(i, i + 500).join(', ')})`, target)) now.set(r.id, r.text);
 	}
 	const missed = changes.filter((c) => now.get(c.id) !== c.new);
-	console.log(`Corrected ${changes.length - missed.length} of ${changes.length} lines in ${episodes.length} episodes.`);
+	console.log(`${spared ? 'Put back' : 'Corrected'} ${changes.length - missed.length} of ${changes.length} lines in ${episodes.length} episodes.`);
 	for (const c of missed.slice(0, 20)) console.log(`  line ${c.id} (${c.episode_id}): not corrected (it changed after it was read, or is gone)`);
 	console.log(`\nTheir search entries still have the old text. To redo them:\n  node scripts/generate-embeddings.js --only "$(cat "${path.join(dir, 'episodes.txt')}")"   # a dry run; add --yes`);
 	if (missed.length > 0) process.exitCode = 1;

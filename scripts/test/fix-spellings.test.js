@@ -11,7 +11,7 @@ import { DatabaseSync } from 'node:sqlite';
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'roe-test-'));
 after(() => fs.rmSync(tmp, { recursive: true, force: true }));
 process.env.ROE_PERSIST_TO ??= tmp; // a test run: no keys from .env
-const { candidateSQL, spellingChanges, updateStatement, restoreStatement, reportLines, correctWith, keysToApply } = await import('../fix-spellings.js');
+const { candidateSQL, spellingChanges, sparedCandidateSQL, sparedChanges, updateStatement, restoreStatement, reportLines, correctWith, keysToApply } = await import('../fix-spellings.js');
 const { applyWordCorrections } = await import('../../roe-pipeline/src/clean-segments.js');
 
 const SCHEMA = fs.readFileSync(new URL('../../schema.sql', import.meta.url), 'utf8');
@@ -80,4 +80,26 @@ test('every correction, or all but some (--skip): the same result as the pipelin
 	assert.ok(!candidateSQL(keys).includes('soldier'));
 	assert.throws(() => keysToApply('soldier,soldiers'), /no correction called soldiers/);
 	assert.equal(keysToApply('').length, keysToApply(undefined).length);
+});
+
+test('--spared puts back the real word where a looser rule wrote the correction (2020-06-04: "a foot Suldrew")', () => {
+	const rows = [
+		{ id: 1, episode_id: EP, text: 'Well, Jimmy, do you ever feel that the white liberal will ever become a foot Suldrew with us?' },
+		{ id: 2, episode_id: EP, text: "there's no evidence so far he can't become a foot he cannot become a foot Suldrew until he's" },
+		{ id: 3, episode_id: EP, text: 'Good morning, Suldrew. Buffalo Suldrew on the turntable.' },
+		{ id: 4, episode_id: EP, text: "A Suldrew who says, I'm with London Breed." }, // the listener: stays
+		{ id: 5, episode_id: EP, text: 'Suldrew ran Bay to Breakers' },
+	];
+	const changes = sparedChanges(rows);
+	assert.deepEqual(changes.map((c) => [c.id, c.new, c.keys]), [
+		[1, 'Well, Jimmy, do you ever feel that the white liberal will ever become a foot soldier with us?', ['soldier']],
+		[2, "there's no evidence so far he can't become a foot he cannot become a foot soldier until he's", ['soldier']],
+		[3, 'Good morning, Suldrew. Buffalo soldier on the turntable.', ['soldier']],
+	]);
+	// What it puts back, today's corrections leave alone
+	for (const c of changes) assert.equal(applyWordCorrections(c.new), c.new);
+	const report = reportLines(changes, { spared: true }).join('\n');
+	assert.match(report, /^3 lines to put back in 1 episode:/);
+	assert.match(report, /"Suldrew" -> "soldier": 3 lines/);
+	assert.ok(sparedCandidateSQL().includes("lower(text) LIKE '%suldrew%'"));
 });

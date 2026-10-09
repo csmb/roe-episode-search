@@ -18,7 +18,7 @@ test('junk lines are deleted by ID within their episode, 1,000 to a statement', 
 	assert.equal(sql.length, 3);
 	assert.match(sql[0], /^DELETE FROM transcript_segments WHERE episode_id = 'roll-over-easy_2026-04-30_07-30-00' AND id IN \(5000, 5001, /);
 	assert.deepEqual(sql.map((s) => s.split(',').length), [1000, 1000, 345]);
-	assert.deepEqual(DEFAULT_RULES, ['echo', 'loops']);
+	assert.deepEqual(DEFAULT_RULES, ['echo', 'loops', 'urls']);
 });
 
 test('the embeddings are redone by process-episode with every other step skipped, and no audio file', () => {

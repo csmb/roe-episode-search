@@ -51,6 +51,19 @@ describe('transcribeChunk', () => {
     expect(segments.map(s => s.text)).toEqual(['Good morning!', "It's perfect for me.", 'Sitting on the dock of the bay.', 'Back to the show.']);
   });
 
+  it("drops what Whisper invents over silence or music: its own no-speech sign, and a bare https:// address (2026-10-01's 72:00)", async () => {
+    stubWhisper([
+      { start: 0, end: 4, text: 'Good morning!', no_speech_prob: 0.01, avg_logprob: -0.2 },
+      { start: 4, end: 34, text: 'https://www.youtube.com.com', no_speech_prob: 0.2, avg_logprob: -0.5 },
+      { start: 34, end: 44, text: 'Thank you for watching.', no_speech_prob: 0.82, avg_logprob: -1.3 },
+      { start: 44, end: 48, text: 'Hmm, quiet in here.', no_speech_prob: 0.7, avg_logprob: -0.4 }, // sure of its words: kept
+      { start: 48, end: 52, text: 'Go to Yelp.com.', no_speech_prob: 0.1, avg_logprob: -0.3 },
+      { start: 52, end: 56, text: "It's www.rollovereasy.org.", no_speech_prob: 0.1, avg_logprob: -0.3 },
+    ]);
+    const { segments } = await transcribeChunk(new Uint8Array([1]), 'sk-test', 0);
+    expect(segments.map(s => s.text)).toEqual(['Good morning!', 'Hmm, quiet in here.', 'Go to Yelp.com.', "It's www.rollovereasy.org."]);
+  });
+
   it('puts a time limit on every request: 5 minutes for a chunk, 90 s for a retry clip', async () => {
     stubWhisper([]);
     const timeout = vi.spyOn(AbortSignal, 'timeout');

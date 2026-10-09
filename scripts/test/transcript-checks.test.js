@@ -29,13 +29,15 @@ test('the old prompt: 85 terms; its read-backs are echoes, a real list of three 
 	assert.ok(!isAnyPromptEcho('Sketch Fest, Critical Mass, and then a long story about my bike that has nothing to do with it, really, at all'));
 });
 
-test('junk lines by rule: echoes, loop repeats (first copy kept), and non-Latin lines in the opening only', () => {
+test('junk lines by rule: echoes, loop repeats (first copy kept), non-Latin lines in the opening only, bare https:// addresses', () => {
 	const lines = [
 		{ id: 1, start_ms: 0, end_ms: 3000, text: 'ආයුබෝවන් සුභ උදෑසනක්' },
 		...talk(4000, 20 * MIN),
 		{ id: 2, start_ms: 20 * MIN, end_ms: 20 * MIN + 3000, text: 'The New Wheel, Lazy Bear, Tartine, Humphry Slocombe, Lazy Bear, Toronado, Wesburger,' },
 		...Array.from({ length: 80 }, (_, i) => ({ id: 3 + i, start_ms: 21 * MIN + i * 1000, end_ms: 21 * MIN + i * 1000 + 900, text: 'the' })),
 		{ id: 99, start_ms: 40 * MIN, end_ms: 40 * MIN + 3000, text: 'ආයුබෝවන් සුභ උදෑසනක්' }, // past the opening
+		{ id: 100, start_ms: 72 * MIN, end_ms: 72 * MIN + 30_000, text: 'https://www.youtube.com.com' }, // 2026-10-01
+		{ id: 101, start_ms: 73 * MIN, end_ms: 73 * MIN + 2000, text: 'www.rollovereasy.org.' }, // said on air
 	];
 	const found = (rules) => junkLines(lines, { rules }).map(({ line, rule }) => `${line.id}:${rule}`);
 	assert.deepEqual(found(['echo']), ['2:echo']);
@@ -43,9 +45,11 @@ test('junk lines by rule: echoes, loop repeats (first copy kept), and non-Latin 
 	assert.equal(loops.length, 79); // "the" x80: the repeats go, the first copy stays
 	assert.ok(!loops.includes('3:loops') && loops.includes('4:loops'));
 	assert.deepEqual(found(['non-latin']), ['1:non-latin']);
+	assert.deepEqual(found(['urls']), ['100:urls']);
+	assert.deepEqual(junkLines(lines).map(({ line, rule }) => `${line.id}:${rule}`).filter((x) => !x.endsWith(':loops')), ['2:echo', '100:urls']);
 	assert.throws(() => junkLines(lines, { rules: ['echoes'] }), /No junk rule called echoes/);
 	assert.equal(countWords([{ text: 'Hello, world — 7:30 !' }]), 3);
-	assert.equal(realLines(lines).length, lines.length - 1 - 79 - 2);
+	assert.equal(realLines(lines).length, lines.length - 1 - 79 - 2 - 1);
 });
 
 const transcript = (segments, audioMs, loops = []) => ({ segments, meta: { audio_ms: audioMs, loops } });
